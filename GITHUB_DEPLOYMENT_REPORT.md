@@ -288,13 +288,57 @@ aufgedeckt hat -- beide sind jetzt behoben/dokumentiert:
 4. `ansible-vault encrypt` einmal mit "Passwords do not match"
    fehlgeschlagen -- reiner Tippfehler des Nutzers beim zweimaligen
    Eintippen, kein struktureller Fehler.
+5. Merge von GitHubs Platzhalter-README mit dem bereinigten Stand: per
+   `git fetch && git merge origin/main --allow-unrelated-histories`
+   ohne Force-Push durchgeführt (Auftrag: kein Force-Push, keine
+   Historie ueberschreiben) -- Konflikt in `README.md` mit `--ours`
+   zugunsten des echten Projekt-READMEs aufgelöst. Push danach
+   erfolgreich, per GitHub-API bestätigt (`commits/main` zeigt exakt
+   den lokalen Merge-Commit).
+6. Nach Adressierung des Deploy Keys/SSH-Alias tauchten beim
+   eigentlichen Verbindungsaufbau zum Ziel-NUC nacheinander drei
+   weitere reale, aufeinanderfolgende Probleme auf (alle jetzt behoben):
+   - `ansible_host` in der ausgefüllten `production.yml` war
+     `192.168.0.255` -- die **Broadcast-Adresse** des `/24`-Netzes, kein
+     Host. Per `ip a`-Ausgabe des Nutzers auf dem Ziel-NUC (Interface
+     `wlp58s0`) auf die echte `inet`-Adresse `192.168.0.186` korrigiert;
+     `ansible_user` ebenfalls falsch (`canvastino` statt `pw-hallo`,
+     dem tatsächlichen Login auf dem Ziel-NUC) -- korrigiert.
+   - `ssh ... port 22: Connection refused` -- `openssh-server` war auf
+     dem frischen Ziel-NUC (Ubuntu Desktop, kein Server-Image) nicht
+     installiert. Vom Nutzer selbst nachinstalliert/gestartet
+     (`apt install openssh-server`, `systemctl enable --now ssh`) --
+     das kann und soll Ansible nicht selbst lösen, da es fuer die
+     ERSTE Verbindung ja SSH selbst braucht (Henne-Ei-Problem).
+   - `Host key verification failed` + `ssh_askpass ... No such file`
+     -- der Kontrollrechner kannte den Host-Key des Ziel-NUC noch
+     nicht (`host_key_checking = True` in `ansible.cfg`, bewusst kein
+     `StrictHostKeyChecking=no`), und hatte zudem noch keinen
+     SSH-Key/keine Zugangsdaten fuer den Ziel-NUC hinterlegt (kein
+     `~/.ssh/id_ed25519` o.ä. vorhanden). Gelöst durch einen
+     dedizierten neuen Key (`~/.ssh/id_ed25519_pepper_nuc`) +
+     `ssh-copy-id` (akzeptiert dabei interaktiv den Host-Key) +
+     Eintrag `ansible_ssh_private_key_file` in `production.yml`.
+7. **Echter Bug in `ansible.cfg` gefunden**: `stdout_callback = yaml`
+   (rein kosmetisch, fuer schoenere Konsolenausgabe gedacht) liess
+   `ansible-playbook` mit `TypeError: function() argument 'code' must
+   be code, not str` abstuerzen -- eine Versionsinkompatibilitaet
+   zwischen der apt-installierten `community.general`-Collection und
+   dem per pip installierten, deutlich neueren `ansible-core 2.21.3`
+   auf dem Rechner des Nutzers. **Fix**: `stdout_callback` aus
+   `ansible.cfg` entfernt (faellt auf den eingebauten
+   `ansible.builtin.default`-Callback zurueck, der keine
+   Zusatz-Collection braucht) -- lokal verifiziert, dass der
+   Callback-Loader danach ohne Absturz laedt.
 
-**Damit korrigiert sich Abschnitt 12 unten**: Es GAB inzwischen einen
-echten Testlauf gegen einen echten NUC -- er deckte die beiden oben
-genannten Probleme auf, kam aber noch nicht bis zum eigentlichen
-`bootstrap`/bricht vor der Rollenausführung ab (Punkt 1) bzw. vor dem
-Push (Punkt 2). Der komplette Ansible-Lauf (Bootstrap + Deploy gegen
-den echten NUC) ist damit weiterhin nicht vollständig durchgelaufen.
+**Damit korrigiert sich Abschnitt 12 unten**: Es gab inzwischen mehrere
+echte Testläufe gegen den echten Ziel-NUC, die nacheinander 7 reale
+Probleme aufdeckten (alle oben dokumentiert und behoben). Der
+vollständige `bootstrap`/`site.yml`-Lauf ist zum Zeitpunkt dieses
+Updates noch nicht erfolgreich bis zum Ende durchgelaufen -- der
+letzte bekannte Blocker war der `stdout_callback`-Absturz direkt nach
+dem Start (Punkt 7), der jetzt behoben ist, aber noch nicht erneut
+gegen den echten NUC verifiziert wurde.
 
 ## 12. Bekannte Einschränkungen
 
