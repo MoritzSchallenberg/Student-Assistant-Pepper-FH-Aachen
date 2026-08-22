@@ -1,0 +1,10 @@
+# Beispiel-Zone: Ladestation -- ausserhalb eines geplanten Andockvorgangs
+# hartes Sperrgebiet (verhindert versehentliches Hineinfahren/Kabel-Ueberfahren).
+id: ladestation_beispiel
+type: keepout
+description: "Ladestation -- nur fuer geplantes Andocken, sonst gesperrt."
+polygon:
+  - [8.0, 5.0]
+  - [9.0, 5.0]
+  - [9.0, 6.0]
+  - [8.0, 6.0]

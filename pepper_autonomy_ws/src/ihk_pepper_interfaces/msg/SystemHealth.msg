@@ -1,0 +1,9 @@
+std_msgs/Header header
+bool pepper_bridge_ok
+bool audio_pipeline_ok
+bool anythingllm_ok
+bool navigation_ok
+bool perception_ok
+float32 battery_percent
+string current_mode
+string[] active_warnings

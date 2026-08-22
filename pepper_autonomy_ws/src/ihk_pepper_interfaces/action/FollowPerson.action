@@ -1,0 +1,12 @@
+# EXPERIMENTELL, standardmaessig deaktiviert (siehe SafetyState/allow_motion).
+# Goal
+uint32 track_id
+float32 min_distance_m
+---
+# Result
+bool success
+string abort_reason
+---
+# Feedback
+string status
+float32 current_distance_m

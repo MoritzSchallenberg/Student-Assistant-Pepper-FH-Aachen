@@ -1,0 +1,5 @@
+bool allow_motion
+bool allow_person_approach
+---
+bool success
+string message

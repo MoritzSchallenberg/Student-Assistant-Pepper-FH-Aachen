@@ -1,0 +1,72 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Global Options:
+    Fixed Frame: odom
+    Frame Rate: 30
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Select
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Cell Size: 0.5
+      Plane Cell Count: 20
+    - Class: rviz_default_plugins/TF
+      Name: TF
+      Enabled: true
+    - Class: rviz_default_plugins/RobotModel
+      Name: RobotModel
+      Enabled: true
+      Description Topic:
+        Value: /robot_description
+      TF Prefix: ""
+    - Class: rviz_default_plugins/LaserScan
+      Name: Laser
+      Enabled: true
+      Topic:
+        Value: /laser
+      Size (m): 0.05
+      Color: 255; 0; 0
+      Style: Points
+    - Class: rviz_default_plugins/Range
+      Name: SonarFront
+      Enabled: true
+      Topic:
+        Value: /sonar/front
+      Color: 0; 255; 0
+      Alpha: 0.4
+    - Class: rviz_default_plugins/Range
+      Name: SonarBack
+      Enabled: true
+      Topic:
+        Value: /sonar/back
+      Color: 0; 128; 255
+      Alpha: 0.4
+    - Class: rviz_default_plugins/Odometry
+      Name: Odom
+      Enabled: true
+      Topic:
+        Value: /odom
+      Keep: 100
+      Shape:
+        Value: Axes
+    - Class: rviz_default_plugins/Image
+      Name: FrontCamera
+      Enabled: true
+      Topic:
+        Value: /camera/front/image_raw
+    - Class: rviz_default_plugins/PointCloud2
+      Name: DepthCloud
+      Enabled: true
+      Topic:
+        Value: /camera/depth/points
+      Style: Points
+      Size (Pixels): 3
+      Color Transformer: AxisColor
+      Axis: Z
+Window Geometry:
+  Height: 900
+  Width: 1400

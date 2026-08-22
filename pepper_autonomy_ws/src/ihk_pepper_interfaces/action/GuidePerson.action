@@ -1,0 +1,12 @@
+# Goal
+string waypoint_name
+geometry_msgs/PoseStamped destination
+---
+# Result
+bool success
+string abort_reason
+---
+# Feedback
+string status
+float32 distance_remaining_m
+bool person_following

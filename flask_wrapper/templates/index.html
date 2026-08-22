@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Robot Commands</title>
+</head>
+<body>
+    <h1>Execute Robot Commands</h1>
+
+    <!-- Form for enableAutonomousLife() -->
+    <h2>Enable Autonomous Life</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="enableAutonomousLife">
+        <label>Enabled: 
+            <select name="enabled">
+                <option value="False">False</option>
+                <option value="True">True</option>
+            </select>
+        </label>
+        <button type="submit">Execute</button>
+    </form>
+
+    <!-- Form for enableAutonomousLife() -->
+    <h2>Enable Breathing</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="setBreathing">
+        <label>Enabled: 
+            <select name="enabled">
+                <option value="True">True</option>
+                <option value="False">False</option>
+            </select>
+        </label>
+        <button type="submit">Execute</button>
+    </form>
+    
+    <!-- Form for setLanguage() -->
+    <h2>Set Language</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="setLanguage">
+        <label>Language: <input type="text" name="language" value="German" required></label>
+        <button type="submit">Execute</button>
+    </form>
+
+        <!-- Form for setVolume() -->
+    <h2>Set Volume</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="setVolume">
+        <label>Volume: <input type="number" step="0.01" name="volume" value="1.0" required></label>
+        <button type="submit">Execute</button>
+    </form>
+
+    <!-- Form for showImage() -->
+    <h2>Show Image</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="showImage">
+        <label>Image Path: <input type="text" name="image_path" value="http://192.168.8.110:5000/static/images/maskor_black.png" required></label>
+        <button type="submit">Execute</button>
+    </form>
+        
+    <!-- Form for moveTo() -->
+    <h2>Move To</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="moveTo">
+        <label>X: <input type="number" step="any" name="x" value="1.0" required></label>
+        <label>Y: <input type="number" step="any" name="y" value="0.0" required></label>
+        <label>Theta: <input type="number" step="any" name="theta" value="0.0" required></label>
+        <button type="submit">Execute</button>
+    </form>
+    
+    <!-- Form for say() -->
+    <h2>Say</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="say">
+        <label>Message: <input type="text" name="message" value="Guten Abend, ich bin Pepper, der neue Mitarbeiter der IHK. Ich freue mich darauf, Sie hoffentlich auch bald am Empfang zu begrüßen. Für heute wünsche ich Ihnen aber erst einmal einen inspirierenden Abend und viele spannende Gespräche." required></label>
+        <button type="submit">Execute</button>
+    </form>
+
+    <h2>Move Back</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="moveTo">
+        <label>X: <input type="number" step="any" name="x" value="-1.0" required></label>
+        <label>Y: <input type="number" step="any" name="y" value="0.0" required></label>
+        <label>Theta: <input type="number" step="any" name="theta" value="3.1415" required></label>
+        <button type="submit">Execute</button>
+    </form>
+
+    <h2>Rotate</h2>
+    <form method="post" action="{{ url_for('execute') }}">
+        <input type="hidden" name="function" value="moveTo">
+        <label>X: <input type="number" step="any" name="x" value="0.0" required></label>
+        <label>Y: <input type="number" step="any" name="y" value="0.0" required></label>
+        <label>Theta: <input type="number" step="any" name="theta" value="0.31415" required></label>
+        <button type="submit">Execute</button>
+    </form>
+
+</body>
+</html>

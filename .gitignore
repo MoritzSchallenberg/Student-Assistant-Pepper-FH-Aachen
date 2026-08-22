@@ -1,0 +1,79 @@
+# Grosse/generierte Sachen leben in large_files/ (siehe INSTALL.md) und
+# werden hier zur Sicherheit nochmal explizit ausgeschlossen, falls
+# jemand large_files/ selbst mit hochlaedt oder ein Tool Symlinks doch
+# mitkopiert.
+large_files/
+
+# Alte Vollbackup-Zips gehoeren nicht ins Repo (Modelle/Downloads separat,
+# siehe docs/configuration.md "Modelle & Medien").
+*.zip
+
+# Python
+__pycache__/
+*.pyc
+venv/
+venv_dialog/
+.venv/
+*.egg-info/
+.pytest_cache/
+
+# ROS2 Build-Artefakte
+build/
+install/
+log/
+
+# Zugangsdaten -- siehe .env.example fuer die benoetigten Variablen.
+# ".env.example" bleibt ausdruecklich versioniert (Ausnahme unten).
+.env
+.env.*
+!.env.example
+
+# Datenbanken / Laufzeitdaten (siehe docs/configuration.md -- leben auf
+# dem NUC unter /var/lib/ihk-pepper/, nicht im Repo).
+*.db
+*.sqlite
+*.sqlite3
+
+# Aufnahmen/Ausgezeichnete Sensordaten -- koennen personenbezogene
+# Gespraechsdaten enthalten, gehoeren nie ins Repo.
+*.bag
+*.bag2
+*.wav
+*.mp3
+# Ausnahme: winziges, anonymes Test-Fixture fuer die Audio-Pipeline-Tests
+# (ihk_pepper_tests) -- bewusst versioniert, damit CI die Tests ausfuehren
+# kann (siehe docs/troubleshooting.md).
+!pepper_autonomy_ws/src/ihk_pepper_tests/test/fixtures/*.wav
+
+# Logs
+*.log
+runtime-data/
+
+# Grosse/ladbare ML-Modelle (YOLO/Whisper/sentence-transformers) --
+# werden per Downloadverfahren nachgeladen, siehe docs/configuration.md.
+# *.pt landet z.B. automatisch im CWD, wenn YOLO das Modell selbst
+# herunterlaedt (siehe pepper_autonomy_ws/yolov8n-pose.pt, gefunden beim
+# Vorbereiten dieses Repos -- identisch zu large_files/models/, siehe
+# GITHUB_DEPLOYMENT_REPORT.md).
+models/
+*.pt
+*.onnx
+
+# Geheimnisse allgemein
+secrets/
+
+# Ansible: nur Vorlagen (*.example.yml) und die nicht-geheimen
+# group_vars/all.yml bleiben versioniert. Die echte Inventory und die
+# entschluesselte Vault-Datei nie.
+ansible/inventory/production.yml
+ansible/inventory/group_vars/vault.yml
+ansible/vault-password*
+*.retry
+
+# Von colcon/ament generierte Zwischendateien
+COLCON_IGNORE
+.built_by
+
+# Editor-/OS-Muell
+.DS_Store
+*.swp

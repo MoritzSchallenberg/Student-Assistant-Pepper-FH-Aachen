@@ -1,0 +1,54 @@
+# Beispiel-Tagesthema (Arbeitspaket 18). Kopiere diese Datei fuer neue
+# Themen -- ungueltige/kaputte Dateien werden beim Laden uebersprungen und
+# geloggt, nicht das ganze System blockieren (siehe daily_topic_loader.py).
+#
+# Pflichtfelder: id, title, intro_text, short_description. Alles andere
+# ist optional und hat einen sicheren Default.
+
+id: ihk_ausbildung_beispiel
+title: "Ausbildung bei der IHK Aachen"
+
+# Optional: Gueltigkeitszeitraum (ISO-Datum). Ohne valid_from/valid_to
+# ist das Thema immer gueltig. Bei mehreren gleichzeitig gueltigen Themen
+# gewinnt die hoechste priority.
+valid_from: "2026-01-01"
+valid_to: "2026-12-31"
+priority: 10
+
+intro_text: >
+  Hallo! Heute erzaehle ich dir etwas ueber die Ausbildung bei der IHK
+  Aachen. Schau gerne aufs Tablet, dort zeige ich dir ein kurzes Video.
+
+short_description: "Ein Ueberblick ueber Ausbildungsmoeglichkeiten bei der IHK Aachen."
+
+detailed_text: >
+  Die IHK Aachen bietet zahlreiche Ausbildungsberufe in Industrie, Handel
+  und Dienstleistung an. Dieser Text ist Platzhalter-Inhalt fuer die
+  Tablet-Detailansicht (Arbeitspaket 20) und wird nicht vollstaendig
+  vorgelesen, sondern nur die Kurzfassung (short_description/intro_text).
+
+summary_text: "Das war ein kurzer Ueberblick ueber die Ausbildung bei der IHK Aachen."
+
+# Pfade relativ zum content/-Verzeichnis oder absolut. Wenn die Datei
+# fehlt, greift automatisch fallback_no_video (unten).
+video_path: "content/videos/ihk_ausbildung_beispiel.mp4"
+thumbnail_path: "content/thumbnails/ihk_ausbildung_beispiel.jpg"
+subtitle_path: "content/subtitles/ihk_ausbildung_beispiel.vtt"
+
+fallback_no_video: >
+  Ich habe gerade leider kein Video zur Ausbildung bei der IHK Aachen --
+  aber ich kann dir trotzdem gerne mehr dazu erzaehlen.
+
+anythingllm_workspace: "ihk-ausbildung"
+faq_topic: "ausbildung"
+
+quiz_questions:
+  - question: "In wie vielen Bereichen bietet die IHK Aachen Ausbildungen an -- Industrie, Handel und was noch?"
+    answer: "Dienstleistung"
+  - question: "Welche Kammer bietet diese Ausbildungen in Aachen an?"
+    answer: "Die IHK Aachen"
+
+closing_question: "Hast du noch eine Frage zur Ausbildung bei der IHK?"
+
+gesture_names:
+  - wave_right

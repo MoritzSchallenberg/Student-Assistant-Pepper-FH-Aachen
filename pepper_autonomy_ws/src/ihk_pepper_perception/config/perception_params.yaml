@@ -1,0 +1,17 @@
+perception_node:
+  ros__parameters:
+    # Pepper-Kamera (Fallback, ~1Hz, siehe STATUS.md):
+    image_topic: "/camera/front/image_raw"
+    camera_info_topic: "/camera/front/camera_info"
+    camera_frame: "CameraTop_optical_frame"
+    depth_topic: ""  # Pepper-Tiefenbild: "/camera/depth/image_raw"
+
+    # Fuer externe RealSense umschalten (KEINE Code-Aenderung noetig):
+    #   image_topic: "/camera/color/image_raw"
+    #   camera_info_topic: "/camera/color/camera_info"
+    #   camera_frame: "camera_color_optical_frame"
+    #   depth_topic: "/camera/aligned_depth_to_color/image_raw"
+
+    confidence_threshold: 0.4
+    model_path: "yolov8n-pose.pt"
+    publish_rate_limit_s: 0.0

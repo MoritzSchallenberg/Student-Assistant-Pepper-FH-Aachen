@@ -1,0 +1,15 @@
+name: wave_left
+description: "Winkt mit dem linken Arm (3x)"
+metadata:
+  imported_from: "flask_wrapper/pepper/qicli.py wave(side='L')"
+disable_breathing: []
+restore_after: true
+steps:
+  - {joint: LShoulderPitch, angle: -1.0, duration: 1.0}
+  - {joint: LElbowRoll, angle: -0.9, duration: 1.0}
+  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
+  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}
+  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
+  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}
+  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
+  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}

@@ -1,0 +1,12 @@
+# Goal
+string session_id
+---
+# Result
+bool success
+string final_state
+string error_message
+---
+# Feedback
+uint8 dialogue_state
+string state_name
+string partial_transcript

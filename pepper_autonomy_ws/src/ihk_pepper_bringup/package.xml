@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ihk_pepper_bringup</name>
+  <version>0.1.0</version>
+  <description>Gesamtstart-Launch-Dateien fuer das IHK-Pepper-Autonomiesystem.</description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>ihk_pepper_bridge</exec_depend>
+  <exec_depend>ihk_pepper_audio</exec_depend>
+  <exec_depend>ihk_pepper_dialog</exec_depend>
+  <exec_depend>ihk_pepper_perception</exec_depend>
+  <exec_depend>ihk_pepper_interaction</exec_depend>
+  <exec_depend>ihk_pepper_presentation</exec_depend>
+  <exec_depend>ihk_pepper_navigation</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

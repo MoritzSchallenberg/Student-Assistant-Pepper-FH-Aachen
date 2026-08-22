@@ -1,0 +1,12 @@
+# Goal
+string text
+bool allow_interrupt
+float32 max_duration_s  # 0 = kein Limit
+---
+# Result
+bool success
+string error_message
+float32 duration_s
+---
+# Feedback
+string status

@@ -1,0 +1,39 @@
+# NICHT GETESTET (robot_localization ist auf diesem Entwicklungssystem
+# nicht installiert). Install: sudo apt install ros-jazzy-robot-localization
+#
+# EKF fuer eine stabile odom->base_link Transformation aus Peppers
+# eigener Odometrie (naoqi_driver2, Topic /odom) + IMU
+# (/imu/base, optional zusaetzlich eine RealSense-IMU falls verbaut).
+# Alle Frame-Namen sind ueber ROS-Parameter/Launch-Argumente
+# parametrisierbar (siehe nav2_bringup.launch.py), NICHT hier hart codiert.
+ekf_filter_node:
+  ros__parameters:
+    frequency: 30.0
+    two_d_mode: true
+    publish_tf: true
+    odom_frame: odom
+    base_link_frame: base_link
+    world_frame: odom          # dieser EKF liefert odom->base_link, NICHT map->odom (das macht AMCL)
+
+    odom0: /odom
+    odom0_config: [true,  true,  false,
+                   false, false, true,
+                   true,  true,  false,
+                   false, false, true,
+                   false, false, false]
+    odom0_differential: false
+
+    imu0: /imu/base
+    imu0_config: [false, false, false,
+                  true,  true,  true,
+                  false, false, false,
+                  true,  true,  true,
+                  true,  true,  true]
+    imu0_differential: false
+    imu0_remove_gravitational_acceleration: true
+
+    # Optional: zweite IMU einer RealSense-Kamera, falls verbaut (Abschnitt
+    # 6 verlangt "moeglichst mit einer RealSense" als Option) -- deaktiviert
+    # per Default, siehe robot_localization_with_realsense.yaml.Beispiel unten.
+    # imu1: /camera/imu
+    # imu1_config: [false, false, false, true, true, true, false, false, false, true, true, true, true, true, true]

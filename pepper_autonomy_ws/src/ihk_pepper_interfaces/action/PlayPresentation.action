@@ -1,0 +1,13 @@
+# Goal
+string topic_id
+bool allow_qa
+---
+# Result
+bool success
+string error_message
+bool completed_fully
+---
+# Feedback
+uint8 presentation_state
+string state_name
+float32 progress_seconds

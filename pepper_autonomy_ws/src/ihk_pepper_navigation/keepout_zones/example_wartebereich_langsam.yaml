@@ -1,0 +1,11 @@
+# Beispiel-Zone: Wartebereich mit reduzierter Geschwindigkeit (viele
+# Personen, Pepper soll hier langsamer fahren statt ganz sperren).
+id: wartebereich_beispiel
+type: slow
+max_speed_mps: 0.15
+description: "Wartebereich Empfang -- reduzierte Geschwindigkeit wegen Personendichte."
+polygon:
+  - [0.0, 0.0]
+  - [2.0, 0.0]
+  - [2.0, 2.0]
+  - [0.0, 2.0]

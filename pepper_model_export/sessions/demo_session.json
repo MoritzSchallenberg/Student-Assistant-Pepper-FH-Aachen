@@ -1,0 +1,203 @@
+[
+  {
+    "timestamp": 1787062849.6470435,
+    "action": "set_angle",
+    "joint": "RShoulderPitch",
+    "angle": -1.0,
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062850.6578867,
+    "action": "set_angle",
+    "joint": "RElbowRoll",
+    "angle": 0.9,
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062851.0660374,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 0.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062851.473824,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 1.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062851.8805587,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 0.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062852.291887,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 1.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062852.7029166,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 0.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062853.1190994,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 1.6,
+    "duration": 0.4
+  },
+  {
+    "timestamp": 1787062854.1306317,
+    "action": "set_angle",
+    "joint": "RShoulderPitch",
+    "angle": 1.57,
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062855.1428032,
+    "action": "set_angle",
+    "joint": "RElbowRoll",
+    "angle": 0.2,
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062856.1518917,
+    "action": "set_angle",
+    "joint": "RElbowYaw",
+    "angle": 1.4,
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062856.152555,
+    "action": "restore_joints",
+    "snapshot": {
+      "RShoulderPitch": 1.57,
+      "RElbowRoll": 0.2,
+      "RElbowYaw": 1.4
+    },
+    "duration": 1.0
+  },
+  {
+    "timestamp": 1787062856.1543748,
+    "action": "wave",
+    "side": "R",
+    "repeats": 3
+  },
+  {
+    "timestamp": 1787062858.6634076,
+    "action": "set_angle",
+    "joint": "LShoulderPitch",
+    "angle": 0.0,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062861.1732469,
+    "action": "set_angle",
+    "joint": "RShoulderPitch",
+    "angle": 0.0,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062863.6826022,
+    "action": "set_angle",
+    "joint": "LElbowRoll",
+    "angle": 0.0,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062866.1910658,
+    "action": "set_angle",
+    "joint": "RElbowRoll",
+    "angle": 0.0,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062868.7006288,
+    "action": "set_angle",
+    "joint": "LShoulderRoll",
+    "angle": 1.3,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062871.209323,
+    "action": "set_angle",
+    "joint": "RShoulderRoll",
+    "angle": -1.3,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062871.2099917,
+    "action": "raise_arms_sideways",
+    "angle": 1.3,
+    "duration": 2.5
+  },
+  {
+    "timestamp": 1787062873.7193604,
+    "action": "set_angle",
+    "joint": "LShoulderPitch",
+    "angle": 1.57,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062875.2308574,
+    "action": "set_angle",
+    "joint": "RShoulderPitch",
+    "angle": 1.57,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062876.7385132,
+    "action": "set_angle",
+    "joint": "LShoulderRoll",
+    "angle": 0.1,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062878.2475705,
+    "action": "set_angle",
+    "joint": "RShoulderRoll",
+    "angle": -0.1,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062879.7577305,
+    "action": "set_angle",
+    "joint": "LElbowRoll",
+    "angle": -0.2,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062881.2670474,
+    "action": "set_angle",
+    "joint": "RElbowRoll",
+    "angle": 0.19999999999999996,
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062881.267779,
+    "action": "restore_joints",
+    "snapshot": {
+      "LShoulderPitch": 1.57,
+      "RShoulderPitch": 1.57,
+      "LShoulderRoll": 0.1,
+      "RShoulderRoll": -0.1,
+      "LElbowRoll": -0.2,
+      "RElbowRoll": 0.19999999999999996
+    },
+    "duration": 1.5
+  },
+  {
+    "timestamp": 1787062881.27036,
+    "action": "lower_arms",
+    "duration": 1.5
+  }
+]

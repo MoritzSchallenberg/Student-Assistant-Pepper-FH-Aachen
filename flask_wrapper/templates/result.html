@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Command Result</title>
+</head>
+<body>
+    <h1>Command Execution Result</h1>
+    <p><strong>Function:</strong> {{ function }}</p>
+    {% if error %}
+        <p style="color: red;"><strong>Error:</strong> {{ error }}</p>
+    {% else %}
+        <p><strong>Result:</strong> {{ result }}</p>
+    {% endif %}
+    <a href="{{ url_for('index') }}">Back</a>
+</body>
+</html>

@@ -1,0 +1,13 @@
+# Goal
+uint32 track_id
+float32 target_distance_m
+---
+# Result
+bool success
+string abort_reason
+---
+# Feedback
+# einer aus: person_detected, validating, planning, moving, aligning,
+#            reached, person_lost, path_blocked, safety_abort, done
+string status
+float32 distance_remaining_m

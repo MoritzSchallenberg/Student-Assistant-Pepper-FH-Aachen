@@ -1,0 +1,11 @@
+# Goal
+string gesture_name
+float32 speed_scale  # 1.0 = normale Geschwindigkeit
+---
+# Result
+bool success
+string error_message
+---
+# Feedback
+string status
+float32 progress
