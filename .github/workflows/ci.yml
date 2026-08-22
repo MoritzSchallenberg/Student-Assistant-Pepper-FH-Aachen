@@ -1,0 +1,163 @@
+name: CI
+
+# Laeuft bei Pull Requests und Pushes (Auftrag Abschnitt 10). Stellt NIE
+# eine Verbindung zu Pepper her und loest NIEMALS eine echte Bewegung
+# aus -- alle Jobs laufen isoliert auf GitHub-gehosteten Runnern.
+# Kein automatisches Produktions-Deployment (Auftrag: das passiert
+# bewusst separat ueber ansible-playbook, siehe docs/deployment.md).
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+permissions:
+  contents: read
+
+jobs:
+  # ---- Schnelle, ROS2-unabhaengige Pruefungen ----
+  static-checks:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Python einrichten
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Lint-/Test-Werkzeuge installieren
+        run: |
+          pip install flake8 pyflakes ansible ansible-lint yamllint
+
+      - name: Python-Syntaxpruefung (alle .py-Dateien)
+        run: |
+          set -e
+          fail=0
+          while IFS= read -r -d '' f; do
+            python3 -m py_compile "$f" || fail=1
+          done < <(find flask_wrapper vision_ws pepper_autonomy_ws/src -name "*.py" -print0)
+          exit $fail
+
+      - name: Python-Linting (flake8, nur echte Fehler -- Stil bewusst locker)
+        run: |
+          flake8 --select=E9,F63,F7,F82 --show-source \
+            flask_wrapper vision_ws pepper_autonomy_ws/src
+
+      - name: YAML-Pruefung
+        run: |
+          set -e
+          yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}}}" ansible/
+          find pepper_autonomy_ws/src -path "*/config/*.yaml" -print0 | \
+            xargs -0 -r yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}}}"
+
+      - name: Ansible Syntax-Check (alle Playbooks)
+        run: |
+          cd ansible
+          for pb in playbooks/*.yml; do
+            ansible-playbook --syntax-check "$pb" -i inventory/production.example.yml
+          done
+
+      - name: Ansible-Lint
+        run: |
+          cd ansible
+          ansible-lint .
+
+      - name: ROS2-Paketstruktur pruefen (package.xml + setup.py/CMakeLists vorhanden)
+        run: |
+          set -e
+          for pkg_dir in pepper_autonomy_ws/src/*/; do
+            pkg="${pkg_dir%/}"
+            if [ ! -f "$pkg/package.xml" ]; then
+              echo "FEHLER: $pkg hat keine package.xml"; exit 1
+            fi
+            if [ ! -f "$pkg/setup.py" ] && [ ! -f "$pkg/CMakeLists.txt" ]; then
+              echo "FEHLER: $pkg hat weder setup.py (ament_python) noch CMakeLists.txt (ament_cmake)"; exit 1
+            fi
+            python3 -c "import xml.etree.ElementTree as ET; ET.parse('$pkg/package.xml')"
+          done
+          echo "Alle package.xml wohlgeformt, jedes Paket hat einen Build-Typ."
+
+      - name: Suche nach versehentlich eingecheckten Geheimnissen
+        run: |
+          set -e
+          if git grep -nIE "(password|passwd|api[_-]?key|api[_-]?token|secret)\s*[:=]\s*['\"][^'\"]{4,}['\"]" \
+              -- ':!*.example*' ':!docs/*' ':!*.md' ':!ansible/inventory/group_vars/vault.yml.example'; then
+            echo "FEHLER: moeglicher Klartext-Zugangsdatensatz gefunden (siehe oben)."; exit 1
+          fi
+          if git grep -nIE "BEGIN (RSA|OPENSSH|EC|DSA|PRIVATE) KEY"; then
+            echo "FEHLER: privater Schluessel im Repo gefunden."; exit 1
+          fi
+          echo "Kein offensichtliches Geheimnis gefunden."
+
+      - name: Pruefen, dass keine Datenbanken/grossen Modell-Artefakte eingecheckt sind
+        run: |
+          set -e
+          hits=$(git ls-files | grep -E "\.(sqlite3?|db|pt|onnx|bag|bag2)$" || true)
+          if [ -n "$hits" ]; then
+            echo "FEHLER: Datenbank-/Modell-/Bag-Dateien im Repo gefunden:"
+            echo "$hits"
+            exit 1
+          fi
+          big=$(git ls-files -z | xargs -0 -I{} du -k "{}" 2>/dev/null | awk '$1 > 5120 {print}')
+          if [ -n "$big" ]; then
+            echo "FEHLER: Dateien >5MB im Repo gefunden (siehe .gitignore-Ausnahmen):"
+            echo "$big"
+            exit 1
+          fi
+          echo "Keine grossen/verbotenen Dateitypen gefunden."
+
+  # ---- ROS2-Build + formale Tests (braucht eine echte ROS2-Umgebung) ----
+  ros2-build-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ROS2 Jazzy installieren
+        run: |
+          set -e
+          sudo apt update && sudo apt install -y curl gnupg lsb-release
+          sudo curl -sSL https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
+            -o /usr/share/keyrings/ros-archive-keyring.gpg
+          echo "deb [arch=amd64 signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
+            http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | \
+            sudo tee /etc/apt/sources.list.d/ros2.list
+          sudo apt update
+          sudo apt install -y ros-jazzy-ros-base ros-jazzy-cv-bridge \
+            python3-rosdep python3-colcon-common-extensions python3-pip
+
+      - name: rosdep initialisieren
+        run: |
+          sudo rosdep init || true
+          rosdep update
+
+      - name: Python-Abhaengigkeiten installieren (numpy<2-Zweig, OHNE ihk_pepper_dialog)
+        run: |
+          pip3 install --user "numpy<2" -r pepper_autonomy_ws/requirements.txt pytest
+
+      - name: rosdep install fuer den Workspace
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          rosdep install --from-paths pepper_autonomy_ws/src --ignore-src -y \
+            --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor"
+
+      - name: Workspace bauen (ausser ihk_pepper_dialog und ihk_pepper_behavior_tree)
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          cd pepper_autonomy_ws
+          colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_behavior_tree
+        # ihk_pepper_dialog: braucht das dedizierte venv_dialog (numpy>=2,
+        # sentence-transformers) -- in CI aus Zeit-/Ressourcengruenden
+        # ausgelassen (haengt vom selben schweren Torch-Download ab, der
+        # auch lokal mehrere Minuten dauert). ihk_pepper_behavior_tree:
+        # braucht behaviortree_cpp, siehe IMPLEMENTATION_REPORT.md/
+        # ihk_pepper_behavior_tree/README.md -- NICHT installierbar ohne
+        # den eigenen ROS2-Jazzy-Kanal hinaus, hier bewusst ausgelassen
+        # statt den Build kuenstlich gruen zu faerben.
+
+      - name: pytest-Suite ausfuehren
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source pepper_autonomy_ws/install/setup.bash
+          python3 -m pytest pepper_autonomy_ws/src/ihk_pepper_tests/test/ -v

@@ -1,0 +1,84 @@
+---
+# pepper_services: systemd-Einheiten + pepperctl (Auftrag Abschnitt 8).
+
+- name: Nicht-geheime Umgebungsdatei schreiben
+  become: true
+  ansible.builtin.template:
+    src: env.j2
+    dest: "{{ pepper_config_dir }}/env"
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    mode: "0640"
+  notify: ihk-pepper Dienste neu starten
+
+- name: Geheimnis-Umgebungsdatei schreiben (0600 -- enthaelt Zugangsdaten)
+  become: true
+  ansible.builtin.template:
+    src: env_secrets.j2
+    dest: "{{ pepper_config_dir }}/env_secrets"
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    mode: "0600"
+  no_log: true
+  notify: ihk-pepper Dienste neu starten
+
+- name: Startskripte installieren
+  become: true
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/usr/local/bin/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - { src: start_ros2.sh.j2, dest: ihk-pepper-start-ros2.sh }
+    - { src: start_web.sh.j2, dest: ihk-pepper-start-web.sh }
+  notify: ihk-pepper Dienste neu starten
+
+- name: pepperctl installieren
+  become: true
+  ansible.builtin.template:
+    src: pepperctl.j2
+    dest: /usr/local/bin/pepperctl
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: systemd-Einheiten installieren
+  become: true
+  ansible.builtin.template:
+    src: "{{ item.src }}"
+    dest: "/etc/systemd/system/{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - { src: ihk-pepper-ros2.service.j2, dest: ihk-pepper-ros2.service }
+    - { src: ihk-pepper-web.service.j2, dest: ihk-pepper-web.service }
+    - { src: ihk-pepper.target.j2, dest: ihk-pepper.target }
+  notify:
+    - systemd neu laden
+    - ihk-pepper Dienste neu starten
+
+- name: systemd-Konfiguration neu laden (sofort, damit die folgenden Aufgaben die neuen Units kennen)
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: "Autostart NUR wenn enable_autostart explizit true ist (Standard: deaktiviert, siehe Auftrag)"
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: "{{ enable_autostart }}"
+  loop:
+    - ihk-pepper.target
+    - ihk-pepper-ros2.service
+    - ihk-pepper-web.service
+
+- name: Warnung protokollieren, falls Autostart aktiv
+  when: enable_autostart
+  ansible.builtin.debug:
+    msg: >-
+      WARNUNG: enable_autostart=true -- IHK-Pepper startet nach jedem
+      Boot automatisch. allow_motion bleibt trotzdem separat
+      abgesichert (aktuell: {{ allow_motion }}).

@@ -1,0 +1,12 @@
+---
+# Kompletter Ablauf fuer einen brandneuen NUC: bootstrap + erstes
+# Deployment in einem Rutsch. Fuer alle spaeteren Updates lieber gezielt
+# deploy.yml/rollback.yml nutzen (siehe docs/deployment.md).
+#
+# Nutzung:
+#   ansible-playbook -i ansible/inventory/production.yml ansible/playbooks/site.yml
+- name: NUC bootstrappen
+  ansible.builtin.import_playbook: bootstrap.yml
+
+- name: Erstes Deployment
+  ansible.builtin.import_playbook: deploy.yml

@@ -1,0 +1,13 @@
+---
+# Eigenstaendiger, rein passiver Healthcheck der AKTUELL aktiven Version
+# (Auftrag Abschnitt 9). Loest niemals eine Roboterbewegung aus.
+#
+# Nutzung:
+#   ansible-playbook -i ansible/inventory/production.yml ansible/playbooks/healthcheck.yml
+- name: IHK-Pepper Healthcheck
+  hosts: pepper_nuc
+  gather_facts: true
+  roles:
+    - role: pepper_healthcheck
+      vars:
+        pepper_healthcheck_fail_on_error: false

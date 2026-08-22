@@ -1,0 +1,9 @@
+---
+# Standalone-Nutzung (healthcheck.yml) prueft die aktuell aktive Version;
+# pepper_deploy uebergibt beim Deployment den frisch gebauten,
+# NOCH NICHT aktivierten Release explizit (siehe activate.yml).
+pepper_healthcheck_release_dir: "{{ pepper_releases_dir }}/current"
+pepper_healthcheck_fail_on_error: false
+pepper_healthcheck_naoqi_timeout_s: 3
+pepper_healthcheck_min_free_space_mb: 1024
+realsense_enabled: false

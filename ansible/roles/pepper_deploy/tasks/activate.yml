@@ -1,0 +1,64 @@
+---
+# ---- 10. Healthcheck OHNE Roboterbewegung ----
+
+- name: Passiven Healthcheck gegen den neuen Release ausfuehren
+  ansible.builtin.include_role:
+    name: pepper_healthcheck
+  vars:
+    pepper_healthcheck_release_dir: "{{ release_dir }}"
+    pepper_healthcheck_fail_on_error: true
+
+# ---- 11. current-Symlink ERST JETZT, nach erfolgreichem Healthcheck, atomar umschalten ----
+# `ansible.builtin.file` mit state=link ersetzt einen bestehenden Symlink
+# atomar (rename(2) auf POSIX) -- kein Zwischenzustand ohne current.
+
+- name: current-Symlink atomar auf den neuen Release umschalten
+  become: true
+  ansible.builtin.file:
+    src: "{{ release_dir }}"
+    dest: "{{ pepper_releases_dir }}/current"
+    state: link
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    force: true
+
+# ---- 12. Nur bereits laufende Dienste kontrolliert neu starten ----
+
+- name: Aktuellen Dienststatus ermitteln
+  ansible.builtin.service_facts:
+
+- name: ihk-pepper-ros2.service neu starten, falls es schon lief
+  become: true
+  ansible.builtin.systemd_service:
+    name: ihk-pepper-ros2.service
+    state: restarted
+  when: >
+    'ihk-pepper-ros2.service' in ansible_facts.services
+    and ansible_facts.services['ihk-pepper-ros2.service'].state == 'running'
+
+- name: ihk-pepper-web.service neu starten, falls es schon lief
+  become: true
+  ansible.builtin.systemd_service:
+    name: ihk-pepper-web.service
+    state: restarted
+  when: >
+    'ihk-pepper-web.service' in ansible_facts.services
+    and ansible_facts.services['ihk-pepper-web.service'].state == 'running'
+
+# ---- 13. Deployment-Version protokollieren ----
+
+- name: Deployment-Version in Log-Datei protokollieren
+  become: true
+  ansible.builtin.lineinfile:
+    path: "{{ pepper_log_dir }}/deployments.log"
+    line: "{{ ansible_date_time.iso8601 }} deployed release_id={{ release_id }} revision={{ deploy_revision }} by={{ ansible_user_id | default('unknown') }}"
+    create: true
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    mode: "0640"
+
+- name: Deployment-Zusammenfassung ausgeben
+  ansible.builtin.debug:
+    msg: >-
+      Deployment erfolgreich: release_id={{ release_id }} (revision={{ deploy_revision }}),
+      current -> {{ release_dir }}

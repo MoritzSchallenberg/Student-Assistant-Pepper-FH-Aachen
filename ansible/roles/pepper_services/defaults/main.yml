@@ -1,0 +1,7 @@
+---
+enable_autostart: false
+allow_motion: false
+enable_navigation: false
+enable_perception: true
+audio_source_kind: pepper_pulseaudio
+ros_domain_id: 0

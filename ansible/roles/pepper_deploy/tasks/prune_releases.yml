@@ -1,0 +1,21 @@
+---
+- name: Vorhandene Releases auflisten
+  ansible.builtin.find:
+    paths: "{{ pepper_releases_dir }}/releases"
+    file_type: directory
+    depth: 1
+  register: pepper_all_releases
+
+- name: Releases nach Alter sortieren, zu loeschende auswaehlen (behalte die letzten {{ deploy_keep_releases }})
+  ansible.builtin.set_fact:
+    pepper_releases_to_prune: >-
+      {{ (pepper_all_releases.files | sort(attribute='mtime', reverse=true))[deploy_keep_releases | int:] }}
+
+- name: Alte Releases entfernen (NIE den aktuell aktiven -- current zeigt nie auf einen dieser Kandidaten, da nur die aeltesten ausgewaehlt werden)
+  become: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: absent
+  loop: "{{ pepper_releases_to_prune }}"
+  loop_control:
+    label: "{{ item.path }}"

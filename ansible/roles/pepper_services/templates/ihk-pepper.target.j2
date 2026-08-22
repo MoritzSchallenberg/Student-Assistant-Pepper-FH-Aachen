@@ -1,0 +1,8 @@
+# {{ ansible_managed }}
+[Unit]
+Description=IHK-Pepper (alle Dienste)
+# WantedBy=multi-user.target NUR wenn enable_autostart -- siehe
+# tasks/main.yml (das Target selbst wird sonst nicht enabled).
+
+[Install]
+WantedBy=multi-user.target

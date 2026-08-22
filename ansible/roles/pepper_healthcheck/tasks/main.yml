@@ -1,0 +1,133 @@
+---
+# pepper_healthcheck: rein PASSIVE Pruefungen (Auftrag Abschnitt 9) --
+# LOEST NIEMALS EINE ROBOTERBEWEGUNG AUS. Jede Pruefung sammelt nur einen
+# Zustand und meldet ihn, ohne selbst etwas zu veraendern.
+
+- name: SSH-Erreichbarkeit (implizit -- diese Aufgabe laeuft bereits per SSH)
+  ansible.builtin.set_fact:
+    pepper_health_ssh_ok: true
+
+- name: GitHub-Erreichbarkeit pruefen (nur informativ, kein Hard-Fail)
+  ansible.builtin.uri:
+    url: https://github.com
+    method: HEAD
+    timeout: 5
+    status_code: [200, 301, 302]
+  register: pepper_health_github
+  failed_when: false
+
+- name: Existenz von /opt/ros/{{ ros_distro }}/setup.bash pruefen
+  ansible.builtin.stat:
+    path: "{{ ros_setup_bash }}"
+  register: pepper_health_ros_setup
+
+- name: Erfolgreichen Workspace-Build pruefen (install/setup.bash im gepruefen Release)
+  ansible.builtin.stat:
+    path: "{{ pepper_healthcheck_release_dir }}/pepper_autonomy_ws/install/setup.bash"
+  register: pepper_health_workspace_built
+
+- name: Pepper-IP konfiguriert?
+  ansible.builtin.set_fact:
+    pepper_health_ip_configured: "{{ (pepper_qi_host | default('')) | length > 0 }}"
+
+- name: NAOqi-Port {{ pepper_qi_port }} erreichbar? (nur pruefen, kein Verbindungsaufbau/keine Bewegung)
+  when: pepper_health_ip_configured
+  ansible.builtin.wait_for:
+    host: "{{ pepper_qi_host }}"
+    port: "{{ pepper_qi_port }}"
+    timeout: "{{ pepper_healthcheck_naoqi_timeout_s }}"
+    state: started
+  register: pepper_health_naoqi_port
+  failed_when: false
+
+- name: ROS2-CLI verfuegbar?
+  ansible.builtin.shell: "source {{ ros_setup_bash }}; ros2 --help"
+  args:
+    executable: /bin/bash
+  register: pepper_health_ros2_cli
+  changed_when: false
+  failed_when: false
+
+- name: Laufende ROS2-Nodes abfragen (nur lesend, 3s Timeout)
+  ansible.builtin.shell: "source {{ ros_setup_bash }}; timeout 3 ros2 node list"
+  args:
+    executable: /bin/bash
+  register: pepper_health_ros2_nodes
+  changed_when: false
+  failed_when: false
+
+- name: RealSense-Kamera erkannt? (nur wenn realsense_enabled)
+  when: realsense_enabled
+  ansible.builtin.command: rs-enumerate-devices --short
+  register: pepper_health_realsense
+  changed_when: false
+  failed_when: false
+
+- name: Audioquelle/Mikrofon erkannt? (pactl-Liste, nur lesend)
+  ansible.builtin.command: pactl list short sources
+  register: pepper_health_audio
+  changed_when: false
+  failed_when: false
+
+- name: Schreibzugriff auf Daten-/Logverzeichnis pruefen
+  ansible.builtin.file:
+    path: "{{ item }}/.healthcheck_write_test"
+    state: touch
+    mode: "0640"
+  loop:
+    - "{{ pepper_data_dir }}"
+    - "{{ pepper_log_dir }}"
+  register: pepper_health_write_test
+  failed_when: false
+
+- name: Schreibtest-Dateien wieder entfernen
+  ansible.builtin.file:
+    path: "{{ item }}/.healthcheck_write_test"
+    state: absent
+  loop:
+    - "{{ pepper_data_dir }}"
+    - "{{ pepper_log_dir }}"
+
+- name: Freien Speicherplatz pruefen
+  ansible.builtin.set_fact:
+    pepper_health_free_space_mb: "{{ (ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int) // (1024*1024) }}"
+
+- name: Zustand der systemd-Dienste abfragen
+  ansible.builtin.service_facts:
+
+- name: Aktuell installierte Commit-ID ermitteln
+  ansible.builtin.command: git -C "{{ pepper_healthcheck_release_dir }}" rev-parse HEAD  # noqa: command-instead-of-module (kein Modul fuer reines rev-parse)
+  register: pepper_health_current_commit
+  changed_when: false
+  failed_when: false
+
+- name: Healthcheck-Zusammenfassung ausgeben
+  ansible.builtin.debug:
+    msg:
+      ssh_ok: "{{ pepper_health_ssh_ok }}"
+      github_reachable: "{{ pepper_health_github.status | default('unbekannt') == 200 }}"
+      ros2_setup_bash_exists: "{{ pepper_health_ros_setup.stat.exists }}"
+      workspace_built: "{{ pepper_health_workspace_built.stat.exists }}"
+      pepper_ip_configured: "{{ pepper_health_ip_configured }}"
+      naoqi_port_reachable: "{{ not (pepper_health_naoqi_port.failed | default(true)) }}"
+      ros2_cli_available: "{{ pepper_health_ros2_cli.rc | default(1) == 0 }}"
+      running_ros2_nodes: "{{ pepper_health_ros2_nodes.stdout_lines | default([]) }}"
+      audio_sources_found: "{{ (pepper_health_audio.stdout_lines | default([])) | length }}"
+      free_space_mb: "{{ pepper_health_free_space_mb }}"
+      current_commit: "{{ pepper_health_current_commit.stdout | default('unbekannt') }}"
+
+- name: Bei kritischen Problemen fehlschlagen (nur wenn pepper_healthcheck_fail_on_error)
+  when: pepper_healthcheck_fail_on_error
+  ansible.builtin.assert:
+    that:
+      - pepper_health_ros_setup.stat.exists
+      - pepper_health_workspace_built.stat.exists
+      - pepper_health_free_space_mb | int > pepper_healthcheck_min_free_space_mb | int
+    fail_msg: >-
+      Healthcheck fehlgeschlagen -- ROS2-Setup vorhanden:
+      {{ pepper_health_ros_setup.stat.exists }}, Workspace gebaut:
+      {{ pepper_health_workspace_built.stat.exists }}, freier Speicher:
+      {{ pepper_health_free_space_mb }}MB. Ist Pepper ausgeschaltet/nicht
+      erreichbar, wird das oben als naoqi_port_reachable=false angezeigt --
+      das ALLEIN fuehrt NICHT zum Abbruch (kein Hard-Fail auf
+      Pepper-Erreichbarkeit, siehe Auftrag Abschnitt 9).

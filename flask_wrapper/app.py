@@ -25,6 +25,9 @@ app.register_blueprint(tablet_bp)
 # ist -- siehe tablet/ros_bridge.py Moduldoku.
 tablet_bridge.start()
 #ros2_node = initialize_ros2_node()
+ros2_node = None  # deaktiviert (example_interfaces fehlt, siehe oben) --
+                  # ohne diese Zeile war der Name unten gar nicht definiert
+                  # (NameError bei jedem Aufruf, gefunden per CI-Linting).
 try:
     adb = adbhelper(_cfg.PHONE_IP, _cfg.ADB_PORT)
 except Exception as e:
@@ -90,10 +93,19 @@ def execute():
 
 @app.route('/latest_message')
 def get_latest_message():
+    # ros2_node bleibt deaktiviert (example_interfaces fehlt, siehe oben) --
+    # ohne diese Absicherung wuerde dieser Demo-Endpunkt mit einem
+    # NameError abstuerzen (gefunden per CI-Linting, siehe
+    # GITHUB_DEPLOYMENT_REPORT.md). Kein Verlust echter Funktionalitaet:
+    # ros2_node war nie aktiviert.
+    if ros2_node is None:
+        return {'error': 'ROS2-Demo-Node nicht aktiv (example_interfaces fehlt)'}, 503
     return {'message': ros2_node.latest_message}
 
 @app.route('/publish_message')
 def publish_message():
+    if ros2_node is None:
+        return {'error': 'ROS2-Demo-Node nicht aktiv (example_interfaces fehlt)'}, 503
     ros2_node.publish_message("Hello World")
     return {}
 
@@ -123,11 +135,15 @@ def say(text):
 
 @app.route('/call_service')
 def call_service(a=1,b=2):
+    if ros2_node is None:
+        return {'error': 'ROS2-Demo-Node nicht aktiv (example_interfaces fehlt)'}, 503
     ros2_node.call_add_two_ints(a,b)
     return {}
 
 @app.route('/add_two_ints', methods=['POST'])
 def add_two_ints():
+    if ros2_node is None:
+        return {'error': 'ROS2-Demo-Node nicht aktiv (example_interfaces fehlt)'}, 503
     data = request.json
     a = data.get('a')
     b = data.get('b')

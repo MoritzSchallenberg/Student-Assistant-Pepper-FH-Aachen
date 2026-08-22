@@ -1,0 +1,20 @@
+# NUR fuer das dedizierte venv_dialog (ihk_pepper_dialog). Braucht
+# numpy>=2 (transitiv ueber scikit-learn/scipy), das mit cv_bridge/den
+# restlichen Paketen (numpy<2) kollidiert -- siehe
+# IMPLEMENTATION_REPORT.md, Abschnitt "Erroren und Fixes" #7/#8.
+#
+# Einrichtung (siehe INSTALL.md/IMPLEMENTATION_REPORT.md fuer die exakte
+# Build-Reihenfolge mit `python3 -m colcon build`):
+#   python3 -m venv --system-site-packages venv_dialog
+#   source venv_dialog/bin/activate
+#   pip install -r requirements-dialog.txt
+#
+# Getestete Versionen (Stand 2026-08-22):
+sentence-transformers==6.0.0
+torch==2.13.0
+torchaudio==2.11.0
+torchvision==0.28.0
+transformers==5.15.1
+scikit-learn==1.9.0
+scipy==1.18.0
+numpy==2.5.2

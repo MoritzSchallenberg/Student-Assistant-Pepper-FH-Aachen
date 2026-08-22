@@ -1,0 +1,14 @@
+# Getestete Versionen (Stand 2026-08-22, Entwicklungsrechner). rclpy/
+# std_msgs/example_interfaces/naoqi_bridge_msgs kommen aus ROS2 Jazzy
+# (rosdep/apt), NICHT aus pip -- siehe ansible/roles/ros2_jazzy und
+# docs/configuration.md.
+#
+# venv-Erstellung: siehe INSTALL.md ("--system-site-packages", damit
+# rclpy im venv erreichbar bleibt).
+Flask==3.1.3
+python-dotenv==1.2.2
+paramiko==5.0.0
+requests==2.31.0
+faster-whisper==1.2.1
+numpy==1.26.4   # WICHTIG: <2 wegen cv_bridge-ABI, siehe STATUS.md
+Werkzeug==3.1.8

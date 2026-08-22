@@ -23,6 +23,10 @@
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
+  <depend>ament_index_python</depend>
+  <depend>python3-yaml</depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
 
   <!-- NICHT installiert in dieser Session, siehe Paketbeschreibung oben.
        Als <exec_depend> statt <depend> eingetragen, damit ein

@@ -1,0 +1,40 @@
+---
+# Aktiviert eine bereits vorhandene, fruehere Release-Version erneut
+# (Auftrag Abschnitt 7) -- kein erneuter Checkout/Build, nur Healthcheck
+# + atomarer Symlink-Umschalt + kontrollierter Dienst-Neustart.
+#
+# Nutzung:
+#   ansible-playbook -i ansible/inventory/production.yml \
+#     ansible/playbooks/rollback.yml -e rollback_revision=<commit-id>
+- name: IHK-Pepper zurueckrollen
+  hosts: pepper_nuc
+  gather_facts: true
+  vars:
+    release_id: "{{ rollback_revision }}"
+    release_dir: "{{ pepper_releases_dir }}/releases/{{ rollback_revision }}"
+    deploy_revision: "{{ rollback_revision }}"
+  tasks:
+    - name: Pruefen ob rollback_revision uebergeben wurde
+      ansible.builtin.assert:
+        that:
+          - rollback_revision is defined
+          - rollback_revision | length > 0
+        fail_msg: "-e rollback_revision=<commit-id> muss angegeben werden."
+
+    - name: Pruefen ob dieser Release lokal vorhanden ist
+      ansible.builtin.stat:
+        path: "{{ release_dir }}"
+      register: pepper_rollback_release_stat
+
+    - name: Fehlermeldung falls Release nicht (mehr) vorhanden
+      ansible.builtin.fail:
+        msg: >-
+          Release {{ rollback_revision }} existiert nicht (mehr) unter
+          {{ release_dir }} -- evtl. schon durch prune_releases entfernt
+          (siehe deploy_keep_releases). Erneut deployen statt rollback.
+      when: not pepper_rollback_release_stat.stat.exists
+
+    - name: Healthcheck + atomarer Umschalt + Dienst-Neustart + Protokollierung
+      ansible.builtin.include_role:
+        name: pepper_deploy
+        tasks_from: activate

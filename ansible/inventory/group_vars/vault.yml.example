@@ -1,0 +1,17 @@
+---
+# Vorlage fuer echte Geheimnisse. NIEMALS unverschluesselt committen.
+#
+# Einrichtung:
+#   cp ansible/inventory/group_vars/vault.yml.example ansible/inventory/group_vars/vault.yml
+#   # Werte unten eintragen, dann verschluesseln:
+#   ansible-vault encrypt ansible/inventory/group_vars/vault.yml
+#
+# Vault-Passwort NIEMALS ins Repo, siehe docs/github-setup.md. Nutzung:
+#   ansible-playbook ... --ask-vault-pass
+#   # oder mit einer Passwort-Datei ausserhalb des Repos:
+#   ansible-playbook ... --vault-password-file ~/.ihk-pepper-vault-pass
+
+vault_pepper_qi_password: "CHANGEME"
+vault_anythingllm_api_token: "CHANGEME"
+vault_phone_ip: ""              # optional, ADB-Telefonwahl-Feature
+vault_github_deploy_key_private: ""   # nur falls NICHT separat als Datei verwaltet, siehe docs/github-setup.md

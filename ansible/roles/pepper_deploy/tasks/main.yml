@@ -1,0 +1,41 @@
+---
+# pepper_deploy: versioniertes, ruecksetzbares Deployment (Auftrag
+# Abschnitt 7, 14-Schritte-Ablauf). Schaltet den `current`-Symlink NUR
+# nach erfolgreichem Build+Test+Healthcheck um -- ein fehlgeschlagenes
+# Deployment laesst die zuvor aktive Version unveraendert (kein
+# expliziter Rollback-Code noetig, da current bis zum letzten Schritt
+# unangetastet bleibt).
+
+- name: 1. Betriebssystem pruefen
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['distribution'] == 'Ubuntu'
+      - ansible_facts['distribution_version'] is version('24.04', '>=')
+    fail_msg: >-
+      Dieser NUC laeuft nicht auf Ubuntu 24.04+
+      ({{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}) --
+      Deployment abgebrochen, bestehende Version bleibt aktiv.
+
+- name: 2. Freien Speicherplatz pruefen
+  ansible.builtin.set_fact:
+    pepper_free_space_mb: "{{ (ansible_facts['mounts'] | selectattr('mount', 'equalto', '/') | map(attribute='size_available') | first | int) // (1024*1024) }}"
+
+- name: 2b. Speicherplatz-Anforderung durchsetzen
+  ansible.builtin.assert:
+    that:
+      - pepper_free_space_mb | int >= pepper_min_free_space_mb | int
+    fail_msg: >-
+      Nur {{ pepper_free_space_mb }}MB frei, {{ pepper_min_free_space_mb }}MB
+      benoetigt -- Deployment abgebrochen, bestehende Version bleibt aktiv.
+
+- name: 3-5. Release auschecken (Branch/Tag/Commit -> release_id, Quellcode holen)
+  ansible.builtin.include_tasks: checkout.yml
+
+- name: 6-9. Abhaengigkeiten installieren, ROS2-Workspace bauen, Tests ausfuehren
+  ansible.builtin.include_tasks: build.yml
+
+- name: 10-14. Healthcheck, atomarer Umschalt, Dienst-Neustart, Protokollierung
+  ansible.builtin.include_tasks: activate.yml
+
+- name: Alte Releases aufraeumen (nur die letzten {{ deploy_keep_releases }} behalten)
+  ansible.builtin.include_tasks: prune_releases.yml

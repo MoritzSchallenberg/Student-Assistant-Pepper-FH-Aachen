@@ -1,0 +1,132 @@
+---
+- name: release_dir festlegen
+  ansible.builtin.set_fact:
+    release_dir: "{{ pepper_releases_dir }}/releases/{{ release_id }}"
+
+- name: Shared-Verzeichnis fuer die schwere venv_dialog anlegen (unabhaengig vom Release, siehe README)
+  become: true
+  ansible.builtin.file:
+    path: "{{ pepper_releases_dir }}/shared/venv_dialog"
+    state: directory
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    mode: "0750"
+
+# ---- 6. Abhaengigkeiten installieren/aktualisieren ----
+
+- name: Python-Requirements installieren (flask_wrapper)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ release_dir }}/flask_wrapper/requirements.txt"
+    extra_args: "--user"
+
+- name: Python-Requirements installieren (vision_ws)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ release_dir }}/vision_ws/requirements.txt"
+    extra_args: "--user"
+
+- name: Python-Requirements installieren (pepper_autonomy_ws, ausser ihk_pepper_dialog)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ release_dir }}/pepper_autonomy_ws/requirements.txt"
+    extra_args: "--user"
+
+- name: venv_dialog anlegen, falls noch nicht vorhanden (teuer, deshalb in shared/, siehe checkout.yml-Kommentar)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.command: >
+    python3 -m venv --system-site-packages {{ pepper_releases_dir }}/shared/venv_dialog
+  args:
+    creates: "{{ pepper_releases_dir }}/shared/venv_dialog/bin/activate"
+
+- name: sentence-transformers u.a. in venv_dialog installieren/aktualisieren
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.pip:
+    requirements: "{{ release_dir }}/pepper_autonomy_ws/requirements-dialog.txt"
+    virtualenv: "{{ pepper_releases_dir }}/shared/venv_dialog"
+    virtualenv_command: python3 -m venv --system-site-packages
+
+# ---- 7. ROS-Abhaengigkeiten mit rosdep pruefen ----
+
+- name: rosdep install fuer den Workspace ausfuehren
+  become: true
+  ansible.builtin.command: >
+    rosdep install --from-paths {{ release_dir }}/pepper_autonomy_ws/src
+    --ignore-src --rosdistro {{ ros_distro }} -y
+  register: pepper_rosdep_result
+  changed_when: "'All required rosdeps installed successfully' not in pepper_rosdep_result.stdout"
+  environment:
+    ROS_DISTRO: "{{ ros_distro }}"
+
+# ---- 8. ROS2-Workspace mit colcon bauen ----
+# pepper_model_export (RViz/Desktop-Tools) wird auf dem NUC bewusst NICHT
+# gebaut -- ros2_jazzy-Rolle installiert absichtlich nur ros-base
+# (kein RViz), siehe dortige Rollen-Doku ("nicht benoetigte Pakete nicht
+# pauschal installieren").
+
+- name: pepper_autonomy_ws bauen (ausser ihk_pepper_dialog)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.shell: >
+    set -e;
+    source {{ ros_setup_bash }};
+    colcon build --symlink-install --packages-skip ihk_pepper_dialog
+  args:
+    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    executable: /bin/bash
+  register: pepper_colcon_build_main
+  changed_when: true
+
+- name: ihk_pepper_dialog im venv_dialog bauen (braucht python3 -m colcon, siehe IMPLEMENTATION_REPORT.md)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.shell: >
+    set -e;
+    source {{ ros_setup_bash }};
+    source install/setup.bash;
+    source {{ pepper_releases_dir }}/shared/venv_dialog/bin/activate;
+    python3 -m colcon build --symlink-install --packages-select ihk_pepper_dialog
+  args:
+    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    executable: /bin/bash
+  register: pepper_colcon_build_dialog
+  changed_when: true
+
+# ---- 8. Python-/Konfigurationstests ausfuehren ----
+
+- name: pytest-Suite ausfuehren (ihk_pepper_tests)
+  when: pepper_run_tests_on_deploy
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.shell: >
+    set -e;
+    source {{ ros_setup_bash }};
+    source install/setup.bash;
+    python3 -m pytest src/ihk_pepper_tests/test/ -q
+  args:
+    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    executable: /bin/bash
+  register: pepper_pytest_result
+  changed_when: false
+
+# ---- 9. Berechtigungen pruefen ----
+
+- name: Besitzrechte des kompletten Release-Verzeichnisses sicherstellen
+  become: true
+  ansible.builtin.file:
+    path: "{{ release_dir }}"
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    recurse: true
+    state: directory
+
+- name: Sicherstellen dass die Anwendung NICHT als root laufen wuerde (Auftrag 3.2/8)
+  ansible.builtin.assert:
+    that:
+      - pepper_system_user != 'root'
+    fail_msg: "pepper_system_user darf niemals 'root' sein (Auftrag Abschnitt 8)."

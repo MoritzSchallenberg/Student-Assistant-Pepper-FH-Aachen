@@ -1,0 +1,19 @@
+---
+# Vorlage fuer die echte Inventory. Kopieren nach production.yml
+# (bleibt per .gitignore aussen vor, siehe docs/nuc-bootstrap.md):
+#   cp ansible/inventory/production.example.yml ansible/inventory/production.yml
+# Danach <NUC-IP-ODER-HOSTNAME> und <SSH-BENUTZER-MIT-SUDO> ersetzen.
+all:
+  children:
+    pepper_nuc:
+      hosts:
+        nuc:
+          ansible_host: "<NUC-IP-ODER-HOSTNAME>"
+          ansible_user: "<SSH-BENUTZER-MIT-SUDO>"
+          # Empfohlen: Key-basiertes SSH-Login statt Passwort, siehe
+          # docs/nuc-bootstrap.md. NIEMALS ansible_ssh_pass hier eintragen
+          # -- Passwoerter gehoeren in vault.yml (verschluesselt) oder
+          # bleiben ganz ausserhalb des Repos.
+          ansible_python_interpreter: /usr/bin/python3
+          # Site-spezifisch, siehe ansible/inventory/group_vars/all.yml:
+          pepper_qi_host: "<PEPPER-IP-IM-LAN>"

@@ -1,0 +1,14 @@
+---
+# Bereitet einen frischen/noch nicht eingerichteten Ubuntu-24.04-NUC vor
+# (Auftrag Abschnitt 4). Idempotent -- mehrfacher Lauf aendert nach dem
+# ersten erfolgreichen Durchlauf nichts mehr.
+#
+# Nutzung:
+#   ansible-playbook -i ansible/inventory/production.yml ansible/playbooks/bootstrap.yml
+- name: NUC fuer IHK-Pepper vorbereiten
+  hosts: pepper_nuc
+  gather_facts: true
+  roles:
+    - base
+    - ros2_jazzy
+    - pepper_dependencies

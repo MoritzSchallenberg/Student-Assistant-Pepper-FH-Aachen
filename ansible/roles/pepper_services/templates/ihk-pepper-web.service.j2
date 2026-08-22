@@ -1,0 +1,26 @@
+# {{ ansible_managed }}
+[Unit]
+Description=IHK-Pepper Web-/Tablet-Oberflaeche (flask_wrapper)
+After=network-online.target
+Wants=network-online.target
+PartOf=ihk-pepper.target
+
+[Service]
+Type=simple
+User={{ pepper_system_user }}
+Group={{ pepper_system_group }}
+EnvironmentFile={{ pepper_config_dir }}/env
+EnvironmentFile={{ pepper_config_dir }}/env_secrets
+WorkingDirectory={{ pepper_releases_dir }}/current
+ExecStart=/usr/local/bin/ihk-pepper-start-web.sh
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ pepper_data_dir }} {{ pepper_log_dir }} /home/{{ pepper_system_user }}
+
+[Install]
+WantedBy=ihk-pepper.target

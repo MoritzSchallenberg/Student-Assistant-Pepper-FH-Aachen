@@ -1,0 +1,53 @@
+---
+# base: Grundausstattung eines frischen Ubuntu-24.04-NUC (Auftrag
+# Abschnitt 4). Nur Aufgaben mit tatsaechlichem Root-Bedarf nutzen
+# `become` (Auftrag: "become nur wo tatsaechlich noetig").
+
+- name: System-Pakete aktualisieren (Paketliste, kein dist-upgrade)
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+    cache_valid_time: 3600
+
+- name: Grundpakete installieren (Git, Python, Build-Tools)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ base_apt_packages }}"
+    state: present
+
+- name: Gruppe fuer den Pepper-Laufzeitbenutzer anlegen
+  become: true
+  ansible.builtin.group:
+    name: "{{ pepper_system_group }}"
+    state: present
+
+- name: Unprivilegierten Laufzeitbenutzer anlegen
+  become: true
+  ansible.builtin.user:
+    name: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    groups: "{{ pepper_extra_groups }}"
+    append: true
+    shell: /bin/bash
+    system: true
+    create_home: true
+    comment: "IHK-Pepper Laufzeitbenutzer (unprivilegiert, siehe Auftrag Abschnitt 4)"
+
+- name: Projekt-/Konfigurations-/Daten-/Log-Verzeichnisse anlegen
+  become: true
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner | default(pepper_system_user) }}"
+    group: "{{ item.group | default(pepper_system_group) }}"
+    mode: "{{ item.mode | default('0750') }}"
+  loop:
+    - path: "{{ pepper_config_dir }}"
+    - path: "{{ pepper_data_dir }}"
+    - path: "{{ pepper_log_dir }}"
+    - path: "{{ pepper_releases_dir }}"
+    - path: "{{ pepper_releases_dir }}/releases"
+    - path: "{{ pepper_releases_dir }}/shared"
+    - path: "{{ pepper_data_dir }}/faq_cache"
+    - path: "{{ pepper_data_dir }}/media"
+    - path: "{{ pepper_data_dir }}/maps"

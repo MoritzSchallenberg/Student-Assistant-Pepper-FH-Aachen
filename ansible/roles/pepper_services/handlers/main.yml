@@ -1,0 +1,22 @@
+---
+- name: systemd neu laden
+  become: true
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+
+- name: ihk-pepper Dienste neu starten
+  become: true
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+  loop:
+    - ihk-pepper-ros2.service
+    - ihk-pepper-web.service
+  when: >
+    (ansible_facts.services['ihk-pepper-ros2.service'].state | default('') == 'running')
+    or (ansible_facts.services['ihk-pepper-web.service'].state | default('') == 'running')
+  # Nur neu starten, wenn schon aktiv (Auftrag Abschnitt 7/8) -- service_facts
+  # wird in pepper_deploy/activate.yml bereits aufgerufen; falls dieser
+  # Handler eigenstaendig (z.B. nur bootstrap.yml) laeuft, ohne dass
+  # service_facts vorher lief, ist ansible_facts.services leer und die
+  # Bedingung damit sicher false (kein ungewollter Erststart).

@@ -1,0 +1,32 @@
+# {{ ansible_managed }}
+[Unit]
+Description=IHK-Pepper ROS2-Bringup (Dialog/Wahrnehmung/Interaktion/Praesentation)
+After=network-online.target
+Wants=network-online.target
+PartOf=ihk-pepper.target
+
+[Service]
+Type=simple
+User={{ pepper_system_user }}
+Group={{ pepper_system_group }}
+EnvironmentFile={{ pepper_config_dir }}/env
+EnvironmentFile={{ pepper_config_dir }}/env_secrets
+WorkingDirectory={{ pepper_releases_dir }}/current
+ExecStart=/usr/local/bin/ihk-pepper-start-ros2.sh
+Restart=on-failure
+RestartSec=5
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# Haertung: kein root, keine Schreibrechte ausserhalb der eigenen
+# Daten-/Log-Verzeichnisse noetig. NICHT auf echter Hardware getestet
+# (kein NUC verfuegbar) -- ROS2 schreibt standardmaessig Logs nach
+# ~/.ros, daher auch das Home-Verzeichnis freigegeben. Falls der Dienst
+# aus einem unerwarteten Schreibzugriff heraus fehlschlaegt, zuerst hier
+# nachsehen (journalctl zeigt "Read-only file system"-Fehler klar an).
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths={{ pepper_data_dir }} {{ pepper_log_dir }} /home/{{ pepper_system_user }}
+
+[Install]
+WantedBy=ihk-pepper.target

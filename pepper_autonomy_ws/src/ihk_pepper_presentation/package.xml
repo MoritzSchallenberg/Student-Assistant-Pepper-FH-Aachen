@@ -11,6 +11,8 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
+  <depend>ament_index_python</depend>
+  <depend>python3-yaml</depend>
 
   <test_depend>python3-pytest</test_depend>
 

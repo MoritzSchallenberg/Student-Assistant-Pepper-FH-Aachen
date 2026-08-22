@@ -1,0 +1,22 @@
+---
+realsense_enabled: false
+
+# System-Pakete, die kein rosdep-Key/package.xml-Eintrag abdeckt (Auftrag
+# Abschnitt 4: "benoetigte Audio-, Kamera- und RealSense-Abhaengigkeiten").
+# Bewusst schlank -- siehe Auftrag: "nicht benoetigte Pakete nicht
+# pauschal installieren". Der vorhandene PulseAudio-Workaround (siehe
+# STATUS.md) wird HIER NICHT ersetzt, nur die dafuer noetigen
+# Systempakete/Rechte sichergestellt.
+pepper_audio_packages:
+  - pulseaudio
+  - pulseaudio-utils
+  - alsa-utils
+  - ffmpeg            # liefert ffprobe, fuer Video-Laengen in ihk_pepper_presentation
+  - portaudio19-dev   # Build-Abhaengigkeit fuer die (optionale) sounddevice-Mikrofonquelle
+
+pepper_camera_packages:
+  - v4l-utils
+
+pepper_python_system_packages:
+  - python3-yaml
+  - python3-paramiko

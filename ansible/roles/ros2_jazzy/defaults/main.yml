@@ -1,0 +1,16 @@
+---
+ros_distro: jazzy
+# ros-base statt desktop: der NUC braucht kein RViz/GUI, nur die
+# Laufzeitbibliotheken (Auftrag: "nicht benoetigte Pakete nicht
+# pauschal installieren"). RViz/Debugging findet auf dem
+# Entwicklungsrechner statt.
+ros2_jazzy_apt_packages:
+  - "ros-{{ ros_distro }}-ros-base"
+  - "ros-{{ ros_distro }}-cv-bridge"
+  - "ros-{{ ros_distro }}-sensor-msgs"
+  - "ros-{{ ros_distro }}-geometry-msgs"
+  - "ros-{{ ros_distro }}-nav2-msgs"
+  - "ros-{{ ros_distro }}-action-msgs"
+  - "python3-rosdep"
+  - "python3-colcon-common-extensions"
+  - "python3-argcomplete"

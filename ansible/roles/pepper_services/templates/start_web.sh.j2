@@ -1,0 +1,20 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Startskript fuer den Web-/Tablet-Dienst (flask_wrapper). Sourced ROS2 +
+# Workspace-Overlay, damit die Tablet-UI-ROS2-Bruecke
+# (flask_wrapper/tablet/ros_bridge.py) rclpy findet, siehe
+# IMPLEMENTATION_REPORT.md.
+set -euo pipefail
+
+CURRENT_LINK="{{ pepper_releases_dir }}/current"
+
+if [ ! -e "$CURRENT_LINK" ]; then
+  echo "FEHLER: $CURRENT_LINK existiert nicht -- kein Release deployed." >&2
+  exit 1
+fi
+
+source "{{ ros_setup_bash }}"
+source "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash"
+
+cd "$CURRENT_LINK/flask_wrapper"
+exec python3 app.py

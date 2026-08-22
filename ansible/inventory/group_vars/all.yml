@@ -1,0 +1,54 @@
+---
+# Nicht-geheime Laufzeitkonfiguration (Auftrag Abschnitt 5). Echte
+# Zugangsdaten kommen NIE hier rein -- siehe vault.yml.example.
+# Diese Datei bleibt versioniert (siehe .gitignore-Ausnahme).
+
+# ---- System / Benutzer ----
+pepper_system_user: pepper
+pepper_system_group: pepper
+pepper_extra_groups:
+  - audio
+  - video
+  - plugdev     # USB-Geraete (Mikrofon-Dongles, RealSense)
+  - dialout     # serielle Geraete
+
+pepper_config_dir: /etc/ihk-pepper
+pepper_data_dir: /var/lib/ihk-pepper
+pepper_log_dir: /var/log/ihk-pepper
+pepper_releases_dir: /opt/ihk-pepper
+
+# ---- ROS2 ----
+ros_distro: jazzy
+ros_domain_id: 0
+ros_setup_bash: "/opt/ros/{{ ros_distro }}/setup.bash"
+
+# ---- Pepper / NAOqi ----
+# pepper_qi_host bewusst OHNE Default -- site-spezifisch, gehoert in die
+# echte (gitignorede) production.yml oder host_vars, nicht in diese
+# versionierte Datei (Repo ist oeffentlich, siehe GITHUB_DEPLOYMENT_REPORT.md).
+pepper_qi_host: "{{ undef(hint='pepper_qi_host muss in production.yml/host_vars gesetzt werden') }}"
+pepper_qi_port: 9503                  # NAOqi-2.9-Quirk, siehe STATUS.md
+pepper_qi_user: nao
+
+# ---- AnythingLLM ----
+anythingllm_api_base_url: "http://localhost:3001/api/v1"
+anythingllm_workspace: ""
+
+# ---- Audio ----
+audio_source_kind: pepper_pulseaudio   # pepper_pulseaudio | microphone | file
+whisper_model: small
+whisper_language: de
+
+# ---- Kamera / RealSense ----
+camera_image_topic: "/camera/front/image_raw"
+realsense_enabled: false
+realsense_device_serial: ""
+
+# ---- Deployment ----
+deploy_revision: main
+deploy_keep_releases: 5
+
+# ---- SICHERE STANDARDWERTE (Auftrag Abschnitt 5/12 -- NICHT aendern,
+#      ausser bewusst und mit Aufsicht) ----
+allow_motion: false
+enable_autostart: false

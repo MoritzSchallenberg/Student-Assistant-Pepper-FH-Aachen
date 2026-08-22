@@ -1,0 +1,62 @@
+---
+# pepper_dependencies: System-Pakete fuer Audio/Kamera/RealSense, die
+# nicht ueber rosdep/package.xml aufgeloest werden (das passiert
+# release-spezifisch in pepper_deploy, da es die eingecheckten
+# package.xml/requirements*.txt braucht -- siehe dortige tasks/main.yml).
+
+- name: Audio-Systempakete installieren (bestehender PulseAudio-Workaround bleibt unveraendert, siehe STATUS.md)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ pepper_audio_packages }}"
+    state: present
+
+- name: Kamera-/V4L-Systempakete installieren
+  become: true
+  ansible.builtin.apt:
+    name: "{{ pepper_camera_packages }}"
+    state: present
+
+- name: Python-Systempakete installieren (yaml/paramiko ueber apt statt pip, siehe requirements*.txt-Kommentare)
+  become: true
+  ansible.builtin.apt:
+    name: "{{ pepper_python_system_packages }}"
+    state: present
+
+- name: Laufzeitbenutzer zur pulse-access-Gruppe hinzufuegen (falls vorhanden -- je nach PulseAudio-Setup noetig)
+  become: true
+  ansible.builtin.user:
+    name: "{{ pepper_system_user }}"
+    groups: pulse-access
+    append: true
+  failed_when: false   # Gruppe existiert nicht auf jedem Setup, kein Hard-Fail
+
+- name: RealSense-APT-Repository einrichten (nur wenn realsense_enabled)
+  when: realsense_enabled
+  block:
+    - name: RealSense-GPG-Schluessel herunterladen
+      become: true
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/IntelRealSense/librealsense/master/config/librealsense.pubkey
+        dest: /usr/share/keyrings/librealsense-archive-keyring.gpg
+        mode: "0644"
+
+    - name: RealSense-APT-Quelle eintragen
+      ansible.builtin.apt_repository:
+        repo: >-
+          deb [signed-by=/usr/share/keyrings/librealsense-archive-keyring.gpg]
+          https://librealsense.intel.com/Debian/apt-repo {{ ansible_distribution_release }} main
+        filename: librealsense
+        state: present
+
+    - name: APT-Cache aktualisieren
+      ansible.builtin.apt:
+        update_cache: true
+
+    - name: RealSense-Pakete installieren
+      ansible.builtin.apt:
+        name:
+          - librealsense2-utils
+          - librealsense2-dev
+        state: present
+  # NICHT getestet in dieser Session (keine RealSense-Hardware verfuegbar,
+  # siehe IMPLEMENTATION_REPORT.md) -- Struktur vorbereitet.

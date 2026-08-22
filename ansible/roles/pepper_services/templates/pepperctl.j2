@@ -1,0 +1,146 @@
+#!/bin/bash
+# {{ ansible_managed }}
+# Bedienwerkzeug fuer das IHK-Pepper-System (Auftrag Abschnitt 8).
+# Alle Argumente werden per "$@"-Array weitergereicht -- NIE per String-
+# Verkettung/eval, damit kein unsicherer Shell-Befehl aus Nutzereingaben
+# entstehen kann (Auftrag 3.4).
+set -euo pipefail
+
+ROS_SETUP="{{ ros_setup_bash }}"
+CURRENT_LINK="{{ pepper_releases_dir }}/current"
+LOG_DIR="{{ pepper_log_dir }}"
+CONFIG_DIR="{{ pepper_config_dir }}"
+SERVICES=(ihk-pepper-ros2.service ihk-pepper-web.service)
+
+usage() {
+  cat <<'EOF'
+Nutzung: pepperctl <befehl> [argumente]
+
+Befehle:
+  start                Dienste starten (systemctl start)
+  stop                 Dienste stoppen (systemctl stop)
+  restart              Dienste neu starten
+  status               Dienststatus anzeigen
+  logs [-f] [N]         Journal anzeigen (Default: letzte 100 Zeilen)
+  doctor               Passive Diagnose (kein Bewegungsrisiko)
+  version              Aktuell deployte Version anzeigen
+  ros topic ...        "ros2 topic ..." mit geladener Umgebung
+  ros node ...          "ros2 node ..." mit geladener Umgebung
+  ros service ...       "ros2 service ..." mit geladener Umgebung
+  ros action ...        "ros2 action ..." mit geladener Umgebung
+EOF
+}
+
+load_ros_env() {
+  if [ ! -f "$ROS_SETUP" ]; then
+    echo "FEHLER: $ROS_SETUP nicht gefunden -- ist ROS2 {{ ros_distro }} installiert? (siehe docs/nuc-bootstrap.md)" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1090
+  source "$ROS_SETUP"
+  if [ -e "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash" ]; then
+    # shellcheck disable=SC1091
+    source "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash"
+  else
+    echo "WARNUNG: kein gebauter Workspace unter $CURRENT_LINK gefunden." >&2
+  fi
+}
+
+cmd_start() { sudo systemctl start "${SERVICES[@]}"; }
+cmd_stop() { sudo systemctl stop "${SERVICES[@]}"; }
+cmd_restart() { sudo systemctl restart "${SERVICES[@]}"; }
+cmd_status() { systemctl status "${SERVICES[@]}" --no-pager || true; }
+
+cmd_logs() {
+  local follow_flag=()
+  local lines="100"
+  for arg in "$@"; do
+    case "$arg" in
+      -f) follow_flag=(-f) ;;
+      ''|*[!0-9]*) : ;;   # kein reiner Zahlenwert -> ignorieren
+      *) lines="$arg" ;;
+    esac
+  done
+  journalctl "${follow_flag[@]}" -n "$lines" \
+    -u ihk-pepper-ros2.service -u ihk-pepper-web.service --no-pager
+}
+
+cmd_version() {
+  if [ -e "$CURRENT_LINK" ]; then
+    echo "current -> $(readlink -f "$CURRENT_LINK")"
+  else
+    echo "Kein Release deployed (current-Symlink fehlt)."
+  fi
+  if [ -f "$LOG_DIR/deployments.log" ]; then
+    echo "--- letzte Deployments ---"
+    tail -n 5 "$LOG_DIR/deployments.log"
+  fi
+}
+
+cmd_doctor() {
+  echo "== pepperctl doctor: passive Diagnose (loest keine Bewegung aus) =="
+
+  echo -n "ROS2-Setup ($ROS_SETUP): "
+  [ -f "$ROS_SETUP" ] && echo "OK" || echo "FEHLT"
+
+  echo -n "Workspace gebaut ($CURRENT_LINK/pepper_autonomy_ws/install): "
+  [ -e "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash" ] && echo "OK" || echo "FEHLT"
+
+  echo -n "Konfiguration ($CONFIG_DIR/env): "
+  [ -f "$CONFIG_DIR/env" ] && echo "OK" || echo "FEHLT"
+
+  if [ -f "$CONFIG_DIR/env" ]; then
+    # shellcheck disable=SC1091
+    source "$CONFIG_DIR/env"
+    echo -n "NAOqi ${PEPPER_QI_HOST:-?}:${PEPPER_QI_PORT:-?} erreichbar: "
+    if timeout 3 bash -c "echo > /dev/tcp/${PEPPER_QI_HOST}/${PEPPER_QI_PORT}" 2>/dev/null; then
+      echo "JA"
+    else
+      echo "NEIN (Pepper aus/nicht verbunden? kein Blocker fuer das System selbst)"
+    fi
+    echo "allow_motion=${ALLOW_MOTION:-unbekannt}  enable_navigation=${ENABLE_NAVIGATION:-unbekannt}"
+  fi
+
+  echo -n "Freier Speicherplatz auf /: "
+  df -h / | awk 'NR==2 {print $4}'
+
+  echo "Dienststatus:"
+  systemctl is-active "${SERVICES[@]}" 2>/dev/null | paste -d' ' <(printf '%s\n' "${SERVICES[@]}") - || true
+}
+
+cmd_ros() {
+  if [ "$#" -eq 0 ]; then
+    echo "Nutzung: pepperctl ros <topic|node|service|action> ..." >&2
+    exit 1
+  fi
+  load_ros_env
+  # "$@" bleibt ein Array -- keine String-Interpolation, kein eval.
+  exec ros2 "$@"
+}
+
+main() {
+  if [ "$#" -eq 0 ]; then
+    usage
+    exit 1
+  fi
+  local command="$1"
+  shift
+  case "$command" in
+    start) cmd_start ;;
+    stop) cmd_stop ;;
+    restart) cmd_restart ;;
+    status) cmd_status ;;
+    logs) cmd_logs "$@" ;;
+    doctor) cmd_doctor ;;
+    version) cmd_version ;;
+    ros) cmd_ros "$@" ;;
+    -h|--help|help) usage ;;
+    *)
+      echo "Unbekannter Befehl: $command" >&2
+      usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

@@ -1,0 +1,13 @@
+---
+# Versioniertes Deployment (Auftrag Abschnitt 7). Schaltet current NUR
+# nach erfolgreichem Build+Test+Healthcheck um.
+#
+# Nutzung:
+#   ansible-playbook -i ansible/inventory/production.yml \
+#     ansible/playbooks/deploy.yml -e deploy_revision=<branch-tag-oder-commit>
+- name: IHK-Pepper deployen
+  hosts: pepper_nuc
+  gather_facts: true
+  roles:
+    - pepper_deploy
+    - pepper_services

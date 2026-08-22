@@ -1,0 +1,68 @@
+---
+# ros2_jazzy: ROS2-Jazzy-APT-Repo einrichten + Basispakete installieren +
+# rosdep initialisieren (Auftrag Abschnitt 4). Folgt dem offiziellen
+# ROS2-Installationsverfahren (docs.ros.org), nur in Ansible-Aufgaben
+# uebersetzt statt als Shell-Copy-Paste.
+
+- name: Pruefen ob ROS2 {{ ros_distro }} bereits installiert ist
+  ansible.builtin.stat:
+    path: "/opt/ros/{{ ros_distro }}/setup.bash"
+  register: ros2_setup_bash
+
+- name: Universe-Repository aktivieren (Voraussetzung fuer ROS2-Abhaengigkeiten)
+  become: true
+  ansible.builtin.apt_repository:
+    repo: "deb http://archive.ubuntu.com/ubuntu {{ ansible_distribution_release }} universe"
+    state: present
+  when: not ros2_setup_bash.stat.exists
+
+- name: ROS2-GPG-Schluessel herunterladen
+  become: true
+  ansible.builtin.get_url:
+    url: https://raw.githubusercontent.com/ros/rosdistro/master/ros.key
+    dest: /usr/share/keyrings/ros-archive-keyring.gpg
+    mode: "0644"
+  when: not ros2_setup_bash.stat.exists
+
+- name: ROS2-APT-Quelle eintragen
+  become: true
+  ansible.builtin.apt_repository:
+    repo: >-
+      deb [arch={{ 'amd64' if ansible_architecture == 'x86_64' else ansible_architecture }}
+      signed-by=/usr/share/keyrings/ros-archive-keyring.gpg]
+      http://packages.ros.org/ros2/ubuntu {{ ansible_distribution_release }} main
+    filename: ros2
+    state: present
+  when: not ros2_setup_bash.stat.exists
+
+- name: APT-Cache nach neuer Quelle aktualisieren
+  become: true
+  ansible.builtin.apt:
+    update_cache: true
+  when: not ros2_setup_bash.stat.exists
+
+- name: ROS2-{{ ros_distro }}-Basispakete installieren
+  become: true
+  ansible.builtin.apt:
+    name: "{{ ros2_jazzy_apt_packages }}"
+    state: present
+
+- name: rosdep-Verzeichnis pruefen (bereits initialisiert?)
+  ansible.builtin.stat:
+    path: /etc/ros/rosdep/sources.list.d/20-default.list
+  register: rosdep_sources
+
+- name: rosdep initialisieren
+  become: true
+  ansible.builtin.command: rosdep init
+  when: not rosdep_sources.stat.exists
+  changed_when: not rosdep_sources.stat.exists
+
+- name: rosdep-Datenbank aktualisieren (als Laufzeitbenutzer, kein root noetig)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.command: rosdep update
+  register: rosdep_update_result
+  changed_when: "'up to date' not in rosdep_update_result.stdout | default('')"
+  environment:
+    HOME: "/home/{{ pepper_system_user }}"
