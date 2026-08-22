@@ -77,7 +77,9 @@ Testabdeckung: [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
 | `vision_ws/` | Kamera, YOLO-Pose-Erkennung/Nachahmung |
 | `ros2_ws/` | `naoqi_driver2` -- ROS2-Anbindung an Pepper (Fremdcode) |
 | `pepper_model_export/` | Offline-Simulation (URDF/RViz, kein Pepper nötig) |
-| `pepper_autonomy_ws/` | Dialog-/Interaktions-/Navigationssystem (10 ROS2-Pakete) |
+| `pepper_autonomy_ws/` | Dialog-/Interaktions-/Navigationssystem (11 ROS2-Pakete) |
+| `ansible/` | Bootstrap/Deployment/Rollback/Healthcheck für einen Pepper-NUC |
+| `docs/` | Deployment-Dokumentation (GitHub-Setup bis Troubleshooting) |
 | `large_files/` | Große/generierte Dateien, per Symlink eingebunden (siehe `.gitignore`) |
 
 ## Dokumentation
@@ -91,6 +93,22 @@ Testabdeckung: [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
   Statusbericht zum Dialog-/Interaktions-/Navigationssystem: was
   fertig+getestet ist, was nur vorbereitet ist, bekannte Bugs,
   Sicherheitshinweise, Next Steps
+- [`GITHUB_DEPLOYMENT_REPORT.md`](GITHUB_DEPLOYMENT_REPORT.md) --
+  ehrlicher Statusbericht zu GitHub-Repo/Ansible-Deployment/NUC-Betrieb
+
+## Deployment auf einen Pepper-NUC
+
+Das Projekt lässt sich reproduzierbar per Ansible auf einen dauerhaft
+mit Pepper verbundenen Intel-NUC ausrollen (versioniert, rücksetzbar,
+ohne automatische Bewegung):
+
+```bash
+ansible-playbook -i ansible/inventory/production.yml ansible/playbooks/deploy.yml
+```
+
+Vollständiger Ablauf (Repo anlegen → NUC bootstrappen → deployen →
+per SSH/`pepperctl` bedienen → Rollback): siehe [`docs/`](docs/),
+Startpunkt [`docs/github-setup.md`](docs/github-setup.md).
 
 ## Sicherheit
 
