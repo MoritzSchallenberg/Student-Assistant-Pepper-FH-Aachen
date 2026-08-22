@@ -179,7 +179,7 @@ HEAD: `43951660c4516b434dad842606bb5de5f7fa5bb4`
 | `colcon build` (4 geänderte Pakete neu gebaut) | ✅ erfolgreich |
 | `python3 -m pytest ihk_pepper_tests` | ✅ 54/54 grün |
 | `flask_wrapper/app.py` Live-Start + `curl` gegen die reparierten Routen | ✅ liefert jetzt 503 statt Absturz |
-| **Ansible-Playbooks gegen einen echten NUC** | ❌ NICHT getestet (kein NUC verfügbar) |
+| **Ansible-Playbooks gegen einen echten NUC** | ⚠️ Erster Versuch durch den Nutzer deckte 2 echte Bugs auf (`ansible.cfg`-Ladepfad, SSH-Identität für Push), beide dokumentiert/gefixt (siehe Abschnitt 13) -- vollständiger End-to-End-Lauf danach noch nicht erneut durchgeführt |
 | **GitHub Actions Workflow selbst** | ❌ NICHT auf GitHub ausgeführt (kein Push in dieser Session, siehe Abschnitt 8) |
 | **Deploy-Key/GitHub-Checkout-Pfad** | ❌ NICHT getestet (kein SSH-Schlüssel für das Ziel-Repo vorhanden) |
 | **systemd-Units/`pepperctl`** | ❌ NICHT auf echtem systemd getestet (nur als Templates/Syntax geprüft) |
@@ -215,9 +215,12 @@ HEAD: `43951660c4516b434dad842606bb5de5f7fa5bb4`
 ## 9. Erster vollständiger Deployment-Befehl
 
 ```bash
-# Nach Schritten 1-5 in Abschnitt 8:
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/site.yml --ask-vault-pass
+# Nach Schritten 1-5 in Abschnitt 8. WICHTIG: aus ansible/ ausfuehren,
+# sonst wird ansible.cfg nicht geladen (siehe Abschnitt 12/13 unten --
+# per Live-Test auf dem echten NUC gefunden).
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/site.yml --ask-vault-pass
 ```
 
 ## 10. SSH-Befehle für Start, Status, Logs, ROS2
@@ -239,18 +242,67 @@ pepperctl ros action list
 ## 11. Rollback-Befehl
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/rollback.yml \
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/rollback.yml \
   -e rollback_revision=<commit-id> --ask-vault-pass
 ```
 
+## 13. Update nach erstem Live-Versuch (2026-08-22, echter NUC des Nutzers)
+
+Der Nutzer hat die oben genannten Befehle tatsächlich auf einem echten
+NUC (`canvastino-NUC7i5BNK`) ausprobiert, was zwei reale Probleme
+aufgedeckt hat -- beide sind jetzt behoben/dokumentiert:
+
+1. **`ansible.cfg` wurde nicht geladen, wenn Befehle aus dem
+   Pepper-Wurzelverzeichnis statt aus `ansible/` gestartet wurden**
+   (`[ERROR]: The role 'base' was not found in:
+   .../ansible/playbooks/roles:...`) -- Ansible sucht `ansible.cfg`
+   relativ zum aktuellen Arbeitsverzeichnis, nicht relativ zum
+   Playbook-Pfad. Root Cause: alle Befehlsbeispiele in `README.md`/
+   `docs/*.md`/diesem Bericht gingen fälschlich davon aus, dass die
+   Pfade `ansible/inventory/...`/`ansible/playbooks/...` von
+   *außerhalb* von `ansible/` funktionieren. **Fix**: alle Beispiele
+   korrigiert auf `cd ansible` + relative Pfade (`inventory/...`,
+   `playbooks/...`), passend zu `ansible.cfg`s eigenen relativen
+   Einstellungen (`roles_path = roles`, `inventory =
+   inventory/production.yml`). Per erneutem `ansible-config dump` und
+   `--list-tasks` lokal nachgewiesen, dass es danach korrekt lädt.
+2. **`git push` schlug mit `Permission ... denied to
+   FieldMarkerSVBFHAC` fehl** -- der Nutzer hat auf diesem Rechner
+   mehrere SSH-Keys für verschiedene GitHub-Projekte, und `~/.ssh/config`
+   bindet den generischen `Host github.com`-Eintrag an den Key eines
+   ANDEREN Projekts (`id_ed25519_fieldmarker_github`). Für dieses
+   Projekt fehlt ein eigener `Host`-Alias (nach demselben Muster wie
+   die bereits vorhandenen `github-carologistics`/
+   `github-learning-arabic-tool`-Einträge). **Kein Fix meinerseits
+   vorgenommen** (das ist eine reine Kontoberechtigungsfrage, die der
+   Nutzer selbst lösen muss -- siehe Konversation für die konkrete
+   Anleitung: neuer SSH-Key auf dem MoritzSchallenberg-Account
+   hinterlegen + eigener `Host`-Alias in `~/.ssh/config` +
+   `git remote set-url` auf diesen Alias).
+3. `git remote add origin ...` meldete beim zweiten Versuch "existiert
+   bereits" -- unkritisch, der Remote zeigt bereits korrekt auf
+   `git@github.com:MoritzSchallenberg/Student-Assistant-Pepper-FH-Aachen.git`,
+   kein weiteres Handeln nötig.
+4. `ansible-vault encrypt` einmal mit "Passwords do not match"
+   fehlgeschlagen -- reiner Tippfehler des Nutzers beim zweimaligen
+   Eintippen, kein struktureller Fehler.
+
+**Damit korrigiert sich Abschnitt 12 unten**: Es GAB inzwischen einen
+echten Testlauf gegen einen echten NUC -- er deckte die beiden oben
+genannten Probleme auf, kam aber noch nicht bis zum eigentlichen
+`bootstrap`/bricht vor der Rollenausführung ab (Punkt 1) bzw. vor dem
+Push (Punkt 2). Der komplette Ansible-Lauf (Bootstrap + Deploy gegen
+den echten NUC) ist damit weiterhin nicht vollständig durchgelaufen.
+
 ## 12. Bekannte Einschränkungen
 
-- **Nichts in `ansible/` wurde gegen echte Hardware getestet** -- kein
-  NUC, kein Deploy-Key, keine GitHub-Push-Berechtigung in dieser
-  Session. Jede Aussage "getestet" in Abschnitt 7 bezieht sich auf
-  lokale Syntax-/Struktur-/Lint-Prüfungen, nicht auf einen echten Lauf
-  gegen Zielhardware.
+- **Der komplette Ansible-Lauf (Bootstrap+Deploy) ist noch nicht
+  vollständig gegen den echten NUC durchgelaufen** -- ein erster
+  Versuch deckte die zwei in Abschnitt 13 beschriebenen Probleme auf,
+  die jetzt behoben/dokumentiert sind, aber noch nicht erneut
+  vollständig End-to-End nachgetestet wurden.
 - **GitHub Actions CI wurde nie auf GitHub ausgeführt** -- nur lokal
   Schritt für Schritt nachgebildet (siehe Abschnitt 7).
 - **`pepperctl start/stop/restart` brauchen normales `sudo`** (kein

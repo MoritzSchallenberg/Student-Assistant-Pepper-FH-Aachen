@@ -44,8 +44,9 @@ Für eine ausführlichere, über Ansible laufende Diagnose (u.a. RealSense/
 Mikrofon-Erkennung, GitHub-Erreichbarkeit):
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/healthcheck.yml --ask-vault-pass
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/healthcheck.yml --ask-vault-pass
 ```
 
 ## Version anzeigen

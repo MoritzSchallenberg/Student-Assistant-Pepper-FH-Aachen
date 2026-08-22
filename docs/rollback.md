@@ -16,8 +16,9 @@ cat /var/log/ihk-pepper/deployments.log
 ## Zurückrollen
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/rollback.yml \
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/rollback.yml \
   -e rollback_revision=<commit-id> \
   --ask-vault-pass
 ```

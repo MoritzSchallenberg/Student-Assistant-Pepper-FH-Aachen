@@ -4,6 +4,13 @@ Bereitet einen frischen Ubuntu-24.04-NUC für IHK-Pepper vor (Auftrag
 Abschnitt 4). Idempotent -- mehrfaches Ausführen ändert nach dem ersten
 erfolgreichen Lauf nichts mehr (`changed=0`).
 
+**Wichtig**: Alle `ansible`/`ansible-playbook`/`ansible-vault`-Befehle
+unten werden aus dem `ansible/`-Verzeichnis heraus ausgeführt (`cd
+ansible` zuerst) -- sonst wird `ansible.cfg` nicht automatisch geladen
+und Rollen/Inventory werden nicht gefunden (Fehler `The role 'base' was
+not found in: .../ansible/playbooks/roles:...`, siehe
+`docs/troubleshooting.md`).
+
 ## Voraussetzungen
 
 - NUC mit frisch installiertem Ubuntu 24.04 (Server oder Desktop)
@@ -11,13 +18,15 @@ erfolgreichen Lauf nichts mehr (`changed=0`).
 - Ansible auf dem Entwicklungsrechner installiert:
   ```bash
   pip3 install --user ansible
-  ansible-galaxy collection install -r ansible/requirements.yml
+  cd ansible
+  ansible-galaxy collection install -r requirements.yml
   ```
 
 ## 1. Inventory anlegen
 
 ```bash
-cp ansible/inventory/production.example.yml ansible/inventory/production.yml
+cd ansible   # falls noch nicht dort
+cp inventory/production.example.yml inventory/production.yml
 ```
 
 `ansible/inventory/production.yml` bearbeiten:
@@ -40,25 +49,31 @@ Standort-spezifische, aber nicht geheime Werte.
 ## 2. Geheimnisse anlegen
 
 ```bash
-cp ansible/inventory/group_vars/vault.yml.example ansible/inventory/group_vars/vault.yml
+cd ansible   # falls noch nicht dort
+cp inventory/group_vars/vault.yml.example inventory/group_vars/vault.yml
 # echte Werte eintragen, dann:
-ansible-vault encrypt ansible/inventory/group_vars/vault.yml
+ansible-vault encrypt inventory/group_vars/vault.yml
 ```
 
 Vault-Passwort sicher aufbewahren (Passwort-Manager, NICHT im Repo,
-NICHT im Klartext auf dem NUC).
+NICHT im Klartext auf dem NUC). Beim Verschlüsseln fragt
+`ansible-vault` das Passwort zweimal ab (Eingabe + Bestätigung) -- bei
+"Passwords do not match" einfach den Befehl erneut ausführen und
+beide Male exakt dasselbe eintippen.
 
 ## 3. Erreichbarkeit prüfen
 
 ```bash
-ansible pepper_nuc -i ansible/inventory/production.yml -m ping --ask-vault-pass
+cd ansible   # falls noch nicht dort
+ansible pepper_nuc -i inventory/production.yml -m ping --ask-vault-pass
 ```
 
 ## 4. Bootstrap ausführen
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/bootstrap.yml --ask-vault-pass
+cd ansible   # falls noch nicht dort
+ansible-playbook -i inventory/production.yml \
+  playbooks/bootstrap.yml --ask-vault-pass
 ```
 
 Das Playbook installiert (siehe `ansible/roles/base`, `ros2_jazzy`,
@@ -81,8 +96,9 @@ Das Playbook installiert (siehe `ansible/roles/base`, `ros2_jazzy`,
 ## 5. Zweiter Lauf (Idempotenz-Nachweis)
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/bootstrap.yml --ask-vault-pass
+cd ansible   # falls noch nicht dort
+ansible-playbook -i inventory/production.yml \
+  playbooks/bootstrap.yml --ask-vault-pass
 ```
 
 Erwartung: `changed=0` (oder nahe null -- z.B. `apt update` meldet

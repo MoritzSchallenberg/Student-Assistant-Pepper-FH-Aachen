@@ -103,8 +103,14 @@ mit Pepper verbundenen Intel-NUC ausrollen (versioniert, rücksetzbar,
 ohne automatische Bewegung):
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml ansible/playbooks/deploy.yml
+cd ansible
+ansible-playbook -i inventory/production.yml playbooks/deploy.yml
 ```
+
+**Wichtig**: Ansible-Befehle müssen aus dem `ansible/`-Verzeichnis
+gestartet werden, sonst wird `ansible.cfg` nicht geladen und die
+Rollen sind nicht auffindbar (siehe `GITHUB_DEPLOYMENT_REPORT.md`,
+Abschnitt "Bekannte Einschränkungen").
 
 Vollständiger Ablauf (Repo anlegen → NUC bootstrappen → deployen →
 per SSH/`pepperctl` bedienen → Rollback): siehe [`docs/`](docs/),

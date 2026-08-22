@@ -24,9 +24,13 @@ bei Erfolg um:
 
 ## Deployen
 
+**Wichtig**: aus dem `ansible/`-Verzeichnis ausführen (siehe
+`docs/troubleshooting.md`, sonst wird `ansible.cfg` nicht geladen).
+
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/deploy.yml \
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/deploy.yml \
   -e deploy_revision=main \
   --ask-vault-pass
 ```
@@ -34,8 +38,9 @@ ansible-playbook -i ansible/inventory/production.yml \
 Ein bestimmter Commit oder Tag:
 
 ```bash
-ansible-playbook -i ansible/inventory/production.yml \
-  ansible/playbooks/deploy.yml \
+cd ansible
+ansible-playbook -i inventory/production.yml \
+  playbooks/deploy.yml \
   -e deploy_revision=a1b2c3d4 \
   --ask-vault-pass
 ```
