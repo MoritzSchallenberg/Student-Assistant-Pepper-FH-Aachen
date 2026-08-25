@@ -445,6 +445,48 @@ Fehlschlag:
     Inhalt blieb unverändert. Alle Dokumentations-/`.gitignore`-Verweise
     auf den alten Pfad korrigiert.
 
+**Update (fünfter Live-Versuch, Deployment vollständig erfolgreich)**:
+Ansible lief danach komplett fehlerfrei durch (`site.yml` inkl. aller
+`pepper_services`-Schritte). Beim anschließenden direkten SSH-Login auf
+den nun per LAN-Kabel mit Pepper verbundenen Ziel-NUC wurden noch drei
+weitere reale Probleme beim tatsächlichen *Starten* der Dienste
+gefunden (Ansible selbst lief fehlerfrei, das Deployment testet den
+Dienststart aber nicht):
+
+18. **`/opt/ihk-pepper` (0750, `pepper:pepper`) war für den SSH-
+    Bedienbenutzer unlesbar** -- `pepperctl version` meldete
+    fälschlich "kein Release deployed". Verzeichnis-Modi für
+    `/etc/ihk-pepper` und `/opt/ihk-pepper` (+ Unterordner) auf `0755`
+    gelockert; echte Geheimnisse bleiben über die Datei-Berechtigung
+    `env_secrets` (0600) geschützt.
+19. **`StartLimitIntervalSec`/`StartLimitBurst` standen im
+    `[Service]`- statt `[Unit]`-Segment** der systemd-Units -- wurde
+    von systemd stillschweigend ignoriert ("Unknown key name"). In
+    beide Unit-Templates korrigiert.
+20. **`set -u` (nounset) in allen 3 Skript-Templates
+    (`start_ros2.sh.j2`, `start_web.sh.j2`, `pepperctl.j2`) ist
+    inkompatibel mit `/opt/ros/jazzy/setup.bash`**: ROS2s eigenes
+    Setup-Skript referenziert intern Variablen wie
+    `AMENT_TRACE_SETUP_FILES` ohne Default-Fallback -- unter `set -u`
+    bricht das Sourcen sofort ab. `ihk-pepper-ros2.service` scheiterte
+    dadurch nach 14ms. Lokal empirisch bestätigt (identischer Fehler
+    unter `set -euo pipefail`, kein Fehler unter `set -eo pipefail`).
+    Fix: `-u` aus allen 3 Skripten entfernt.
+21. **`ProtectSystem=strict` ohne `PrivateTmp=true` lässt gar kein
+    beschreibbares Temp-Verzeichnis übrig** -- `ros2 launch` scheiterte
+    mit `[Errno 2] No usable temporary directory found in [/tmp,
+    /var/tmp, /usr/tmp, <WorkingDirectory>]`. `ihk-pepper-web.service`
+    lief zufällig bereits ohne dieses Flag (Flask brauchte bisher kein
+    `/tmp`). `PrivateTmp=true` in beiden Unit-Templates ergänzt (eigenes,
+    isoliertes Temp-Verzeichnis pro Dienst -- sauberer als das Host-`/tmp`
+    in `ReadWritePaths` aufzunehmen).
+
+Nach Fix 18-21: `ihk-pepper-web.service` lief bereits vor diesen Fixes
+erfolgreich (`active (running)`, Flask erreichbar). `ihk-pepper-ros2.service`
+war zum Zeitpunkt dieses Updates noch nicht erneut getestet (Fixes 20+21
+wurden unmittelbar nacheinander gefunden, ein finaler erfolgreicher
+Start des ROS2-Bringups auf dem echten NUC steht noch aus).
+
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
 tatsächlichen Absturz) und alle lokal validiert (`ansible-lint`,
