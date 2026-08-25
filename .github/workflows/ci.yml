@@ -144,7 +144,7 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           rosdep install --from-paths pepper_autonomy_ws/src --ignore-src -y \
-            --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor"
+            --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor ament_cmake ament_python"
 
       - name: Workspace bauen (ausser ihk_pepper_dialog und ihk_pepper_behavior_tree)
         run: |

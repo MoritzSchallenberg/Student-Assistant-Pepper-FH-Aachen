@@ -63,6 +63,13 @@
   ansible.builtin.command: >
     rosdep install --from-paths {{ release_dir }}/pepper_autonomy_ws/src
     --ignore-src --rosdistro {{ ros_distro }} -y
+    --skip-keys "ament_cmake ament_python"
+  # ament_cmake/ament_python sind reine Buildtool-Marker in package.xml
+  # (jedes unserer 11 Pakete hat einen davon) -- kein echtes apt-Paket
+  # noetig, die eigentliche Tooling kommt schon aus ros-base +
+  # python3-colcon-common-extensions (ros2_jazzy-Rolle). rosdeps
+  # Standard-Datenbank kennt diese Keys auf manchen Systemen trotzdem
+  # nicht ("Cannot locate rosdep definition"), per Live-Test gefunden.
   register: pepper_rosdep_result
   changed_when: "'All required rosdeps installed successfully' not in pepper_rosdep_result.stdout"
   environment:
