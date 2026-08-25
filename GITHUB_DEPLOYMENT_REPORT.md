@@ -481,11 +481,32 @@ Dienststart aber nicht):
     isoliertes Temp-Verzeichnis pro Dienst -- sauberer als das Host-`/tmp`
     in `ReadWritePaths` aufzunehmen).
 
-Nach Fix 18-21: `ihk-pepper-web.service` lief bereits vor diesen Fixes
-erfolgreich (`active (running)`, Flask erreichbar). `ihk-pepper-ros2.service`
-war zum Zeitpunkt dieses Updates noch nicht erneut getestet (Fixes 20+21
-wurden unmittelbar nacheinander gefunden, ein finaler erfolgreicher
-Start des ROS2-Bringups auf dem echten NUC steht noch aus).
+**Update**: Nach Fix 18-21 lief `ihk-pepper-ros2.service` tatsaechlich
+erfolgreich an -- alle 5 Nodes des Bringups (`bridge_node`, `audio_node`,
+`dialog_manager_node` im `venv_dialog`, `supervisor_node`,
+`presentation_manager_node`) waren als Prozesse sichtbar, Dienst lief
+mehrere Minuten stabil (`active (running)`). Einziges verbleibendes
+Problem:
+
+22. **`audio_node` importierte `flask_wrapper/config` unbedingt**, auch
+    wenn `pepper_host`/`pepper_password` bereits korrekt per ROS2-
+    Launch-Parameter gesetzt waren (`_build_source()` fuehrte
+    `import config.config` als erste Anweisung im
+    `pepper_pulseaudio`-Zweig aus, unabhaengig davon ob der
+    Fallback-Wert ueberhaupt gebraucht wurde). Da `flask_wrapper` beim
+    systemd-Start nicht im Python-Pfad liegt (nur
+    `dialog_manager_node.py` fuegt sich das explizit hinzu), schlug der
+    Import bei jedem Aufruf fehl -- `audio_node` schleifte dadurch alle
+    ~3s mit `No module named 'config'` in einer Endlosschleife (durch
+    den bestehenden Auto-Reconnect-Mechanismus abgefangen, kein
+    Absturz des gesamten Dienstes, aber kein funktionierendes Audio).
+    **Fix**: Import nur noch ausgefuehrt, wenn Host/Passwort tatsaechlich
+    leer sind. Lokal verifiziert (Parameter gesetzt + `flask_wrapper`
+    bewusst aus `sys.path` entfernt -- Fallback-Import wird korrekt
+    uebersprungen).
+
+`ihk-pepper-web.service` lief bereits vor diesen Fixes erfolgreich
+(`active (running)`, Flask erreichbar unter `http://<nuc-ip>:5000`).
 
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
