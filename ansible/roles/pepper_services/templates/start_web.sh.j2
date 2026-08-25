@@ -4,7 +4,10 @@
 # Workspace-Overlay, damit die Tablet-UI-ROS2-Bruecke
 # (flask_wrapper/tablet/ros_bridge.py) rclpy findet, siehe
 # IMPLEMENTATION_REPORT.md.
-set -euo pipefail
+#
+# WICHTIG: kein "-u" (nounset) -- siehe start_ros2.sh.j2-Kommentar,
+# gleiches Problem mit /opt/ros/jazzy/setup.bash.
+set -eo pipefail
 
 CURRENT_LINK="{{ pepper_releases_dir }}/current"
 

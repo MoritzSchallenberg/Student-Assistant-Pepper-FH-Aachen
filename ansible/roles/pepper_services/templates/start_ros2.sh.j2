@@ -4,7 +4,14 @@
 # systemd kann `source` nicht wie eine interaktive Shell verarbeiten,
 # daher dieses Skript mit `exec` am Ende (ersetzt den Skript-Prozess
 # durch ros2, damit systemd das richtige PID fuer Restart/Stop kennt).
-set -euo pipefail
+#
+# WICHTIG: kein "-u" (nounset)! /opt/ros/jazzy/setup.bash referenziert
+# intern Variablen wie AMENT_TRACE_SETUP_FILES ohne Default-Fallback --
+# unter "set -u" bricht das Sourcen sofort mit "ist nicht gesetzt" ab,
+# noch bevor irgendetwas Sinnvolles laeuft. Bekannter, haeufiger
+# ROS2-Stolperstein beim Kombinieren mit strikten Bash-Optionen. Per
+# Live-Test gefunden, siehe GITHUB_DEPLOYMENT_REPORT.md.
+set -eo pipefail
 
 CURRENT_LINK="{{ pepper_releases_dir }}/current"
 

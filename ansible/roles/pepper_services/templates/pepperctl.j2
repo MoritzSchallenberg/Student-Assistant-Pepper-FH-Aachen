@@ -4,7 +4,13 @@
 # Alle Argumente werden per "$@"-Array weitergereicht -- NIE per String-
 # Verkettung/eval, damit kein unsicherer Shell-Befehl aus Nutzereingaben
 # entstehen kann (Auftrag 3.4).
-set -euo pipefail
+#
+# WICHTIG: kein "-u" (nounset) -- load_ros_env() sourced
+# /opt/ros/jazzy/setup.bash, das interne Variablen wie
+# AMENT_TRACE_SETUP_FILES ohne Default referenziert und unter "set -u"
+# sofort abbricht. Betrifft "pepperctl ros ...". Per Live-Test gefunden,
+# siehe GITHUB_DEPLOYMENT_REPORT.md.
+set -eo pipefail
 
 ROS_SETUP="{{ ros_setup_bash }}"
 CURRENT_LINK="{{ pepper_releases_dir }}/current"
