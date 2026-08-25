@@ -19,21 +19,26 @@
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
     requirements: "{{ release_dir }}/flask_wrapper/requirements.txt"
-    extra_args: "--user"
+    extra_args: "--user --break-system-packages"
+    # --break-system-packages: Ubuntu 24.04 blockiert pip-Installationen
+    # gegen das System-Python per PEP 668. Gleiches Muster wurde bereits
+    # in frueheren Sessions manuell verwendet (siehe INSTALL.md), hier
+    # beim Uebertragen ins Ansible-Playbook versehentlich vergessen --
+    # per Live-Test gefunden.
 
 - name: Python-Requirements installieren (vision_ws)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
     requirements: "{{ release_dir }}/vision_ws/requirements.txt"
-    extra_args: "--user"
+    extra_args: "--user --break-system-packages"
 
 - name: Python-Requirements installieren (pepper_autonomy_ws, ausser ihk_pepper_dialog)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
     requirements: "{{ release_dir }}/pepper_autonomy_ws/requirements.txt"
-    extra_args: "--user"
+    extra_args: "--user --break-system-packages"
 
 - name: venv_dialog anlegen, falls noch nicht vorhanden (teuer, deshalb in shared/, siehe checkout.yml-Kommentar)
   become: true

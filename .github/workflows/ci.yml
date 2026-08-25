@@ -134,7 +134,11 @@ jobs:
 
       - name: Python-Abhaengigkeiten installieren (numpy<2-Zweig, OHNE ihk_pepper_dialog)
         run: |
-          pip3 install --user "numpy<2" -r pepper_autonomy_ws/requirements.txt pytest
+          # --break-system-packages: Ubuntu-24.04-Runner hat PEP-668-Schutz
+          # (System-Python, kein setup-python-venv in diesem Job) -- gleicher
+          # Fund wie beim Ansible-Live-Test gegen den echten NUC, siehe
+          # GITHUB_DEPLOYMENT_REPORT.md.
+          pip3 install --user --break-system-packages "numpy<2" -r pepper_autonomy_ws/requirements.txt pytest
 
       - name: rosdep install fuer den Workspace
         run: |

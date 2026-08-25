@@ -1,5 +1,6 @@
 ---
 - name: Vorhandene Releases auflisten
+  become: true
   ansible.builtin.find:
     paths: "{{ pepper_releases_dir }}/releases"
     file_type: directory

@@ -20,3 +20,7 @@ pepper_camera_packages:
 pepper_python_system_packages:
   - python3-yaml
   - python3-paramiko
+  - python3-pytest   # noetig fuer den Testlauf in pepper_deploy (Schritt 8),
+                      # explizit statt sich auf rosdeps test_depend-Handling
+                      # zu verlassen -- per Live-Test gefunden, dass es
+                      # sonst fehlt
