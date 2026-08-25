@@ -58,11 +58,23 @@
   when: not rosdep_sources.stat.exists
   changed_when: not rosdep_sources.stat.exists
 
-- name: rosdep-Datenbank aktualisieren (als Laufzeitbenutzer, kein root noetig)
+- name: rosdep-Datenbank fuer root aktualisieren (rosdep install in pepper_deploy laeuft als root, braucht dessen eigene Cache)
+  become: true
+  ansible.builtin.command: rosdep update
+  register: rosdep_update_result_root
+  changed_when: "'up to date' not in rosdep_update_result_root.stdout | default('')"
+  # WICHTIG: urspruenglich lief dies nur als pepper_system_user ("kein
+  # root noetig" fuer 'rosdep update' selbst stimmt zwar, aber die
+  # Cache-Datei liegt pro Benutzer unter ~/.ros/rosdep/ -- 'rosdep
+  # install' in pepper_deploy/build.yml laeuft als root (braucht das
+  # fuer apt-get), fand also roots eigene, nie initialisierte Cache
+  # nicht. Per Live-Test gefunden, siehe GITHUB_DEPLOYMENT_REPORT.md.
+
+- name: rosdep-Datenbank fuer den Laufzeitbenutzer aktualisieren (falls rosdep je als pepper laeuft)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.command: rosdep update
-  register: rosdep_update_result
-  changed_when: "'up to date' not in rosdep_update_result.stdout | default('')"
+  register: rosdep_update_result_pepper
+  changed_when: "'up to date' not in rosdep_update_result_pepper.stdout | default('')"
   environment:
     HOME: "/home/{{ pepper_system_user }}"
