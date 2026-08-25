@@ -32,7 +32,7 @@ cd ansible
 ansible-playbook -i inventory/production.yml \
   playbooks/deploy.yml \
   -e deploy_revision=main \
-  --ask-vault-pass
+  --ask-vault-pass --ask-become-pass
 ```
 
 Ein bestimmter Commit oder Tag:
@@ -42,7 +42,7 @@ cd ansible
 ansible-playbook -i inventory/production.yml \
   playbooks/deploy.yml \
   -e deploy_revision=a1b2c3d4 \
-  --ask-vault-pass
+  --ask-vault-pass --ask-become-pass
 ```
 
 ## Was dabei passiert (14 Schritte, siehe `ansible/roles/pepper_deploy/tasks/`)

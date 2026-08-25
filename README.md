@@ -104,7 +104,8 @@ ohne automatische Bewegung):
 
 ```bash
 cd ansible
-ansible-playbook -i inventory/production.yml playbooks/deploy.yml
+ansible-playbook -i inventory/production.yml playbooks/deploy.yml \
+  --ask-vault-pass --ask-become-pass
 ```
 
 **Wichtig**: Ansible-Befehle müssen aus dem `ansible/`-Verzeichnis

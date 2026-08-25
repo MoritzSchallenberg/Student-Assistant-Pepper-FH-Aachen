@@ -70,10 +70,14 @@ ansible pepper_nuc -i inventory/production.yml -m ping --ask-vault-pass
 
 ## 4. Bootstrap ausführen
 
+`--ask-become-pass` fragt einmal das `sudo`-Passwort des NUC-Benutzers
+ab (kein passwortloses `sudo` eingerichtet, ist so gewollt -- siehe
+`docs/troubleshooting.md`):
+
 ```bash
 cd ansible   # falls noch nicht dort
 ansible-playbook -i inventory/production.yml \
-  playbooks/bootstrap.yml --ask-vault-pass
+  playbooks/bootstrap.yml --ask-vault-pass --ask-become-pass
 ```
 
 Das Playbook installiert (siehe `ansible/roles/base`, `ros2_jazzy`,
@@ -98,7 +102,7 @@ Das Playbook installiert (siehe `ansible/roles/base`, `ros2_jazzy`,
 ```bash
 cd ansible   # falls noch nicht dort
 ansible-playbook -i inventory/production.yml \
-  playbooks/bootstrap.yml --ask-vault-pass
+  playbooks/bootstrap.yml --ask-vault-pass --ask-become-pass
 ```
 
 Erwartung: `changed=0` (oder nahe null -- z.B. `apt update` meldet

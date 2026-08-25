@@ -20,7 +20,7 @@ cd ansible
 ansible-playbook -i inventory/production.yml \
   playbooks/rollback.yml \
   -e rollback_revision=<commit-id> \
-  --ask-vault-pass
+  --ask-vault-pass --ask-become-pass
 ```
 
 `<commit-id>` muss ein Verzeichnisname unter

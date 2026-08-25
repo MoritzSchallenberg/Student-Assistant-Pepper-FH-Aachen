@@ -220,7 +220,7 @@ HEAD: `43951660c4516b434dad842606bb5de5f7fa5bb4`
 # per Live-Test auf dem echten NUC gefunden).
 cd ansible
 ansible-playbook -i inventory/production.yml \
-  playbooks/site.yml --ask-vault-pass
+  playbooks/site.yml --ask-vault-pass --ask-become-pass
 ```
 
 ## 10. SSH-Befehle für Start, Status, Logs, ROS2
@@ -245,7 +245,7 @@ pepperctl ros action list
 cd ansible
 ansible-playbook -i inventory/production.yml \
   playbooks/rollback.yml \
-  -e rollback_revision=<commit-id> --ask-vault-pass
+  -e rollback_revision=<commit-id> --ask-vault-pass --ask-become-pass
 ```
 
 ## 13. Update nach erstem Live-Versuch (2026-08-22, echter NUC des Nutzers)
