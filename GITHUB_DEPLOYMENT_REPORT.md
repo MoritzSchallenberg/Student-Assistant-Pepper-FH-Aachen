@@ -384,6 +384,19 @@ unentdeckten Bugs:
     zufällig durch die Installationsreihenfolge in dieselben
     `--user`-Site-Packages. Jetzt eigenständig korrekt.
 
+**Update (dritter Live-Versuch)**: Nach den Fixes zu 8-12 lief der
+komplette Bootstrap-Teil fehlerfrei durch, und das Deploy kam deutlich
+weiter (durch alle Requirements-Installationen inkl. `venv_dialog`)
+bis zu:
+
+13. **`rosdep install` (läuft als `root`) fand keine initialisierte
+    rosdep-Cache**: `rosdep update` in `ros2_jazzy/tasks/main.yml`
+    lief bisher nur als `pepper_system_user` -- die Cache liegt aber
+    pro Benutzer unter `~/.ros/rosdep/`, und `rosdep install` in
+    `pepper_deploy/build.yml` läuft als `root` (braucht das für
+    `apt-get`). Root hatte also nie eine eigene Cache. Fix: `rosdep
+    update` läuft jetzt zusätzlich als `root`.
+
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
 tatsächlichen Absturz) und alle lokal validiert (`ansible-lint`,
