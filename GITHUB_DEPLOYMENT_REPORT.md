@@ -396,6 +396,28 @@ bis zu:
     `pepper_deploy/build.yml` läuft als `root` (braucht das für
     `apt-get`). Root hatte also nie eine eigene Cache. Fix: `rosdep
     update` läuft jetzt zusätzlich als `root`.
+14. **`rosdep` kannte die Keys `ament_cmake`/`ament_python` nicht**
+    ("Cannot locate rosdep definition") für alle 9 `ament_python`-Pakete
+    -- reine Buildtool-Marker, kein echtes apt-Paket nötig (Tooling
+    kommt aus `ros-base`+`colcon`). Per `--skip-keys` ausgeschlossen,
+    auch im CI-Workflow (hätte dort denselben Fehler produziert).
+15. **`colcon build --packages-skip ihk_pepper_dialog` ließ
+    `ihk_pepper_bringup` in derselben Ausführung mitbauen**, obwohl
+    dessen `exec_depend` auf `ihk_pepper_dialog` erst im nächsten
+    Schritt (venv) erfüllt wird -- `colcon` verlangt beim Bauen eines
+    Pakets, dass die `install/`-Artefakte ALLER Abhängigkeiten bereits
+    vorhanden sind, auch bei nur übersprungenen (nicht fehlenden)
+    Abhängigkeiten. Fehler: `Failed to find ...
+    install/ihk_pepper_dialog/.../package.sh`. Fix: Build in 3 statt 2
+    Schritten (alles außer dialog+bringup+behavior_tree → dialog im
+    venv → bringup zuletzt). Lokal von Grund auf (`rm -rf build install
+    log`) nachgestellt und den kompletten 3-Schritte-Build verifiziert.
+16. **`ihk_pepper_behavior_tree` (braucht `behaviortree_cpp`, auf
+    keinem bisher genutzten System installiert) fehlte im
+    `--packages-skip` des Ansible-Playbooks** (im CI-Workflow war es
+    korrekt drin) -- sein Fehlschlag riss beim lokalen Nachstellen
+    andere, unabhängige Pakete mit in den Abbruch (`Aborted` statt nur
+    `Failed`). Jetzt in beiden Stellen konsistent ausgeschlossen.
 
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
