@@ -20,6 +20,11 @@ RestartSec=5
 
 NoNewPrivileges=true
 ProtectSystem=strict
+# Siehe ihk-pepper-ros2.service.j2-Kommentar: ohne PrivateTmp=true hat
+# der Dienst kein beschreibbares Temp-Verzeichnis unter ProtectSystem=strict.
+# Dieser Dienst lief zufaellig auch ohne dieses Flag schon durch (Flask
+# brauchte bisher kein /tmp), trotzdem konsistent ergaenzt.
+PrivateTmp=true
 ReadWritePaths={{ pepper_data_dir }} {{ pepper_log_dir }} /home/{{ pepper_system_user }}
 
 [Install]

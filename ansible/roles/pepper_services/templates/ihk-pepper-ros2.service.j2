@@ -21,13 +21,19 @@ Restart=on-failure
 RestartSec=5
 
 # Haertung: kein root, keine Schreibrechte ausserhalb der eigenen
-# Daten-/Log-Verzeichnisse noetig. NICHT auf echter Hardware getestet
-# (kein NUC verfuegbar) -- ROS2 schreibt standardmaessig Logs nach
-# ~/.ros, daher auch das Home-Verzeichnis freigegeben. Falls der Dienst
-# aus einem unerwarteten Schreibzugriff heraus fehlschlaegt, zuerst hier
-# nachsehen (journalctl zeigt "Read-only file system"-Fehler klar an).
+# Daten-/Log-Verzeichnisse noetig. ROS2 schreibt standardmaessig Logs
+# nach ~/.ros, daher auch das Home-Verzeichnis freigegeben. Falls der
+# Dienst aus einem unerwarteten Schreibzugriff heraus fehlschlaegt,
+# zuerst hier nachsehen (journalctl zeigt "Read-only file system"-Fehler
+# klar an).
 NoNewPrivileges=true
 ProtectSystem=strict
+# PrivateTmp=true ist noetig, sonst hat der Dienst UEBERHAUPT kein
+# beschreibbares Temp-Verzeichnis (ProtectSystem=strict macht auch
+# /tmp/-var/tmp read-only, wenn nicht separat behandelt) -- Python/ros2
+# launch scheiterte deshalb mit "No usable temporary directory found",
+# per Live-Test auf dem echten NUC gefunden.
+PrivateTmp=true
 ReadWritePaths={{ pepper_data_dir }} {{ pepper_log_dir }} /home/{{ pepper_system_user }}
 
 [Install]
