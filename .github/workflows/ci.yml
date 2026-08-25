@@ -146,11 +146,18 @@ jobs:
           rosdep install --from-paths pepper_autonomy_ws/src --ignore-src -y \
             --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor ament_cmake ament_python"
 
-      - name: Workspace bauen (ausser ihk_pepper_dialog und ihk_pepper_behavior_tree)
+      - name: Workspace bauen (ausser ihk_pepper_dialog, ihk_pepper_behavior_tree, ihk_pepper_bringup)
         run: |
           source /opt/ros/jazzy/setup.bash
           cd pepper_autonomy_ws
-          colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_behavior_tree
+          # ihk_pepper_bringup haengt (exec_depend) von ihk_pepper_dialog ab --
+          # colcon verlangt dessen install-Artefakte auch bei --packages-skip
+          # in derselben Ausfuehrung. Da dialog in CI nie gebaut wird (siehe
+          # unten), muss bringup hier ebenfalls ausgelassen werden, sonst
+          # schlaegt der Build mit "Failed to find .../package.sh" fehl
+          # (per Live-Test auf dem Ziel-NUC gefunden, siehe
+          # GITHUB_DEPLOYMENT_REPORT.md).
+          colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_behavior_tree ihk_pepper_bringup
         # ihk_pepper_dialog: braucht das dedizierte venv_dialog (numpy>=2,
         # sentence-transformers) -- in CI aus Zeit-/Ressourcengruenden
         # ausgelassen (haengt vom selben schweren Torch-Download ab, der

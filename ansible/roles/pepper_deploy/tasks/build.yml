@@ -81,13 +81,30 @@
 # (kein RViz), siehe dortige Rollen-Doku ("nicht benoetigte Pakete nicht
 # pauschal installieren").
 
-- name: pepper_autonomy_ws bauen (ausser ihk_pepper_dialog)
+# WICHTIG: ihk_pepper_bringup haengt (exec_depend) von ihk_pepper_dialog
+# ab. colcon verlangt beim Bauen eines Pakets, dass die install/-Artefakte
+# ALLER seiner Abhaengigkeiten bereits vorhanden sind -- auch wenn diese
+# Abhaengigkeit per --packages-skip in DERSELBEN Ausfuehrung uebersprungen
+# wird. Deshalb in 3 Schritten statt 2: zuerst alles AUSSER dialog UND
+# bringup, dann dialog (venv), dann bringup zuletzt. Per Live-Test
+# gefunden ("Failed to find ... install/ihk_pepper_dialog/.../package.sh"),
+# siehe GITHUB_DEPLOYMENT_REPORT.md.
+#
+# ihk_pepper_behavior_tree wird IMMER uebersprungen (nicht nur hier,
+# auch in ci.yml): braucht behaviortree_cpp, das auf keinem der bisher
+# genutzten Systeme installiert ist (siehe
+# ihk_pepper_behavior_tree/README.md). Ein fehlgeschlagenes Paket kann
+# in colcon andere, unabhaengige, noch nicht gestartete Pakete mit in
+# den Abbruch reissen ("Aborted" statt "Failed") -- lokal nachgestellt
+# und bestaetigt, siehe GITHUB_DEPLOYMENT_REPORT.md.
+
+- name: pepper_autonomy_ws bauen (ausser ihk_pepper_dialog, ihk_pepper_bringup, ihk_pepper_behavior_tree)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.shell: >
     set -e;
     source {{ ros_setup_bash }};
-    colcon build --symlink-install --packages-skip ihk_pepper_dialog
+    colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_bringup ihk_pepper_behavior_tree
   args:
     chdir: "{{ release_dir }}/pepper_autonomy_ws"
     executable: /bin/bash
@@ -107,6 +124,19 @@
     chdir: "{{ release_dir }}/pepper_autonomy_ws"
     executable: /bin/bash
   register: pepper_colcon_build_dialog
+
+- name: ihk_pepper_bringup bauen (jetzt, da ihk_pepper_dialog fertig ist)
+  become: true
+  become_user: "{{ pepper_system_user }}"
+  ansible.builtin.shell: >
+    set -e;
+    source {{ ros_setup_bash }};
+    source install/setup.bash;
+    colcon build --symlink-install --packages-select ihk_pepper_bringup
+  args:
+    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    executable: /bin/bash
+  register: pepper_colcon_build_bringup
   changed_when: true
 
 # ---- 8. Python-/Konfigurationstests ausfuehren ----
