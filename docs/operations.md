@@ -72,7 +72,7 @@ String-Verkettung, siehe `pepperctl`-Quelltext).
 
 ## Autostart aktivieren (optional, standardmäßig AUS)
 
-In `ansible/inventory/group_vars/all.yml` bzw. `production.yml`:
+In `ansible/inventory/group_vars/all/vars.yml` bzw. `production.yml`:
 
 ```yaml
 enable_autostart: true

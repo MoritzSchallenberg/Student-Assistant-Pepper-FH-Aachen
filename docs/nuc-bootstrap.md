@@ -50,10 +50,16 @@ Standort-spezifische, aber nicht geheime Werte.
 
 ```bash
 cd ansible   # falls noch nicht dort
-cp inventory/group_vars/vault.yml.example inventory/group_vars/vault.yml
+cp inventory/group_vars/all/vault.yml.example inventory/group_vars/all/vault.yml
 # echte Werte eintragen, dann:
-ansible-vault encrypt inventory/group_vars/vault.yml
+ansible-vault encrypt inventory/group_vars/all/vault.yml
 ```
+
+**Wichtig**: Die Datei muss unter `group_vars/all/vault.yml` liegen
+(im Unterordner `all/`), nicht direkt als `group_vars/vault.yml` --
+Ansible interpretiert den Dateinamen als Gruppennamen, eine flache
+`group_vars/vault.yml` würde nie geladen (echter Fund, siehe
+`GITHUB_DEPLOYMENT_REPORT.md`).
 
 Vault-Passwort sicher aufbewahren (Passwort-Manager, NICHT im Repo,
 NICHT im Klartext auf dem NUC). Beim Verschlüsseln fragt

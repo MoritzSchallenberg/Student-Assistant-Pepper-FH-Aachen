@@ -63,10 +63,14 @@ models/
 secrets/
 
 # Ansible: nur Vorlagen (*.example.yml) und die nicht-geheimen
-# group_vars/all.yml bleiben versioniert. Die echte Inventory und die
-# entschluesselte Vault-Datei nie.
+# group_vars/all/vars.yml bleiben versioniert. Die echte Inventory und
+# die Vault-Datei nie (auch wenn Vault selbst verschluesselt ist --
+# bewusst lokal gehalten statt versioniert, siehe docs/configuration.md).
+# HINWEIS: group_vars/vault.yml (flache Datei statt group_vars/all/vault.yml)
+# wird von Ansible gar nicht geladen -- das war ein echter, per Live-Test
+# gefundener Bug, siehe GITHUB_DEPLOYMENT_REPORT.md.
 ansible/inventory/production.yml
-ansible/inventory/group_vars/vault.yml
+ansible/inventory/group_vars/all/vault.yml
 ansible/vault-password*
 *.retry
 

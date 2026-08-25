@@ -2,7 +2,7 @@
 
 ## Nicht-geheime Werte
 
-`ansible/inventory/group_vars/all.yml` (versioniert, sichere
+`ansible/inventory/group_vars/all/vars.yml` (versioniert, sichere
 Standardwerte) -- überschreibbar pro Host in
 `ansible/inventory/production.yml`:
 
@@ -29,8 +29,11 @@ siehe Abschnitt "Sicherheitskritische Werte" unten.
 
 ## Geheimnisse (Ansible Vault)
 
-`ansible/inventory/group_vars/vault.yml` (verschlüsselt, **nicht**
-versioniert -- Vorlage: `vault.yml.example`):
+`ansible/inventory/group_vars/all/vault.yml` (verschlüsselt, **nicht**
+versioniert -- Vorlage: `vault.yml.example`). **Muss** im Unterordner
+`all/` liegen, nicht als flache Datei `group_vars/vault.yml` -- sonst
+wird sie von Ansible nie geladen (Dateiname = Gruppenname-Konvention,
+siehe `docs/nuc-bootstrap.md`):
 
 | Variable | Bedeutung |
 |---|---|

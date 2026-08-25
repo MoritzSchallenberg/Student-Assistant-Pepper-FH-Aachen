@@ -86,7 +86,7 @@ ssh-keyscan -H github.com >> ~/.ssh/known_hosts
 
 ### Konfiguration
 
-In `ansible/inventory/production.yml` (bzw. `group_vars/all.yml`):
+In `ansible/inventory/production.yml` (bzw. `group_vars/all/vars.yml`):
 
 ```yaml
 pepper_repo_url: "git@github.com:<DEIN-GITHUB-NUTZER>/<DEIN-REPO-NAME>.git"

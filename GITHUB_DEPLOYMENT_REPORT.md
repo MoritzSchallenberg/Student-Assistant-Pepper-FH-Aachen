@@ -28,7 +28,7 @@ Entwicklungsrechner --git push--> GitHub-Repo --Ansible/SSH--> Pepper-NUC --ROS2
   Struktur-/Secret-/Großdatei-Scan) und ein echter (Teil-)ROS2-Build +
   `pytest`.
 - **Sichere Konfigurationstrennung**: nicht-geheime Werte in
-  `ansible/inventory/group_vars/all.yml` (versioniert), Geheimnisse in
+  `ansible/inventory/group_vars/all/vars.yml` (versioniert), Geheimnisse in
   `vault.yml` (verschlüsselt, nicht versioniert), Laufzeitkonfiguration
   auf dem NUC unter `/etc/ihk-pepper/`, Laufzeitdaten unter
   `/var/lib/ihk-pepper/`.
@@ -128,7 +128,7 @@ Entwicklungsrechner --git push--> GitHub-Repo --Ansible/SSH--> Pepper-NUC --ROS2
 | Pepper-SSH-Passwort (aktuell) | Klartext in `STATUS.md`/`CAPABILITIES.md` | Redigiert; echter Wert nur in `.env`/Ansible Vault |
 | Pepper-SSH-Passwort (alt, `Pepper1224!`) | Klartext in `flask_wrapper`-Git-Historie | Als kompromittiert markiert (Rotation ohnehin empfohlen, betraf vermutlich längst gewechseltes Passwort einer früheren Projektphase) |
 | AnythingLLM-API-Token | Klartext in `flask_wrapper`-Git-Historie UND zuvor schon in `config.py` | Als kompromittiert markiert, Rotation empfohlen |
-| Pepper-IP (`pepper_qi_host`) | z.T. hartkodiert in Doku-Beispielen | Pflichtvariable ohne Default (`ansible.builtin.undef`) in `group_vars/all.yml`, echter Wert nur in `production.yml` (gitignored) |
+| Pepper-IP (`pepper_qi_host`) | z.T. hartkodiert in Doku-Beispielen | Pflichtvariable ohne Default (`ansible.builtin.undef`) in `group_vars/all/vars.yml`, echter Wert nur in `production.yml` (gitignored) |
 | `allow_motion`/`enable_autostart` | n/a (existierten vorher nicht) | Zentrale, versionierte Sicherheits-Defaults (`false`), propagiert bis zum `SafetyGate` |
 
 ## 5. System-/ROS2-Abhängigkeiten (definiert für den NUC, nicht live installiert)
@@ -199,7 +199,7 @@ HEAD: `43951660c4516b434dad842606bb5de5f7fa5bb4`
    `docs/github-setup.md`).
 4. **`ansible/inventory/production.yml` aus der Vorlage erstellen**
    und mit echter NUC-IP/Pepper-IP füllen.
-5. **`ansible/inventory/group_vars/vault.yml` anlegen und
+5. **`ansible/inventory/group_vars/all/vault.yml` anlegen und
    verschlüsseln** (echtes Pepper-Passwort, AnythingLLM-Token).
 6. **NUC beschaffen/bereitstellen** -- existiert in dieser Session
    nicht, daher ist der komplette Ansible-Teil ungetestete, aber in
@@ -418,6 +418,32 @@ bis zu:
     korrekt drin) -- sein Fehlschlag riss beim lokalen Nachstellen
     andere, unabhängige Pakete mit in den Abbruch (`Aborted` statt nur
     `Failed`). Jetzt in beiden Stellen konsistent ausgeschlossen.
+
+**Update (vierter Live-Versuch)**: Nach den Fixes zu 13-16 liefen
+**Bootstrap UND das komplette Deploy bis auf den allerletzten Schritt**
+fehlerfrei durch -- inklusive aller 3 Colcon-Build-Schritte, `pytest`
+(54/54 grün auf dem echten NUC), Healthcheck (`naoqi_port_reachable:
+true` -- Pepper war zu diesem Zeitpunkt tatsächlich erreichbar!),
+atomarem Symlink-Umschalt und Deployment-Protokollierung. Einziger
+Fehlschlag:
+
+17. **`ansible/inventory/group_vars/vault.yml` (flache Datei) wird von
+    Ansible NIE geladen**: Ansible interpretiert bei `group_vars/`
+    automatisch den Dateinamen als Gruppennamen -- "vault" existiert
+    aber nicht als Gruppe im Inventory (nur `all`/`pepper_nuc`).
+    Dadurch war `vault_pepper_qi_password` immer `undefined`, egal was
+    der Nutzer in die (korrekt verschlüsselte) Datei eintrug. Empirisch
+    lokal nachgestellt und bestätigt (`ansible-inventory --list`
+    zeigte vor dem Fix keinerlei Versuch, die Datei zu entschlüsseln;
+    danach `[ERROR]: Attempting to decrypt but no vault secrets
+    found` -- der korrekte, erwartete Fehler ohne Passwort). **Fix**:
+    Datei nach `group_vars/all/vault.yml` verschoben (Ansibles
+    offizielles Muster für "eine Gruppe, mehrere Vars-Dateien"), ebenso
+    `group_vars/all.yml` nach `group_vars/all/vars.yml`. Der Nutzer
+    musste dadurch NICHT seine bereits eingetragenen echten Werte neu
+    eingeben -- nur die Datei wurde verschoben, ihr verschlüsselter
+    Inhalt blieb unverändert. Alle Dokumentations-/`.gitignore`-Verweise
+    auf den alten Pfad korrigiert.
 
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
