@@ -97,10 +97,22 @@ class AudioNode(Node):
             dev = self.get_parameter("microphone_device").value
             return create_source("microphone", device=None if dev < 0 else dev)
         if kind == "pepper_pulseaudio":
-            import config.config as _cfg  # flask_wrapper config, siehe pepper_client.py-Kommentar
-            host = self.get_parameter("pepper_host").value or _cfg.QI_HOST
-            user = self.get_parameter("pepper_user").value or _cfg.QI_USER
-            password = self.get_parameter("pepper_password").value or _cfg.QI_PW
+            host = self.get_parameter("pepper_host").value
+            user = self.get_parameter("pepper_user").value
+            password = self.get_parameter("pepper_password").value
+            if not host or not password:
+                # Fallback NUR wenn die Launch-Parameter fehlen (z.B. bei
+                # direktem "ros2 run" ohne Launch-Datei/systemd-Umgebung) --
+                # braucht flask_wrapper im Python-Pfad (PEPPER_FLASK_WRAPPER_PATH),
+                # was beim regulaeren systemd-Start NICHT der Fall ist. Vorher
+                # lief dieser Import unbedingt und liess den Node bei jedem
+                # regulaeren Start mit "No module named 'config'" abstuerzen,
+                # obwohl Host/Passwort schon per Launch-Parameter da waren --
+                # per Live-Test auf dem echten NUC gefunden.
+                import config.config as _cfg
+                host = host or _cfg.QI_HOST
+                user = user or _cfg.QI_USER
+                password = password or _cfg.QI_PW
             return create_source("pepper_pulseaudio", host=host, user=user, password=password)
         raise ValueError(f"Unbekannte source_kind: {kind}")
 
