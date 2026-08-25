@@ -4,6 +4,8 @@ Description=IHK-Pepper Web-/Tablet-Oberflaeche (flask_wrapper)
 After=network-online.target
 Wants=network-online.target
 PartOf=ihk-pepper.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -15,8 +17,6 @@ WorkingDirectory={{ pepper_releases_dir }}/current
 ExecStart=/usr/local/bin/ihk-pepper-start-web.sh
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 NoNewPrivileges=true
 ProtectSystem=strict

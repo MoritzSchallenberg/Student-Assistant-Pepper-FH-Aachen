@@ -4,6 +4,10 @@ Description=IHK-Pepper ROS2-Bringup (Dialog/Wahrnehmung/Interaktion/Praesentatio
 After=network-online.target
 Wants=network-online.target
 PartOf=ihk-pepper.target
+# Gehoeren ins [Unit]-Segment, nicht [Service] -- systemd ignoriert sie
+# sonst stillschweigend ("Unknown key name", per Live-Test gefunden).
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -15,8 +19,6 @@ WorkingDirectory={{ pepper_releases_dir }}/current
 ExecStart=/usr/local/bin/ihk-pepper-start-ros2.sh
 Restart=on-failure
 RestartSec=5
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # Haertung: kein root, keine Schreibrechte ausserhalb der eigenen
 # Daten-/Log-Verzeichnisse noetig. NICHT auf echter Hardware getestet

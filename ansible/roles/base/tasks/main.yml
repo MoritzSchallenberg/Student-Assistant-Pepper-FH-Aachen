@@ -42,12 +42,23 @@
     group: "{{ item.group | default(pepper_system_group) }}"
     mode: "{{ item.mode | default('0750') }}"
   loop:
+    # 0755 statt 0750: diese Verzeichnisse enthalten nur Code/nicht-geheime
+    # Konfiguration, muessen aber fuer einen normalen SSH-Bediener (der
+    # nicht in der Gruppe "pepper" ist) per `pepperctl` lesbar/durchsuchbar
+    # sein -- echte Geheimnisse bleiben trotzdem per Datei-Mode 0600
+    # geschuetzt (env_secrets, siehe pepper_services-Rolle). Gefunden per
+    # Live-Test: `pepperctl version` meldete faelschlich "kein Release
+    # deployed", weil /opt/ihk-pepper fuer den SSH-Nutzer unlesbar war.
     - path: "{{ pepper_config_dir }}"
+      mode: "0755"
     - path: "{{ pepper_data_dir }}"
     - path: "{{ pepper_log_dir }}"
     - path: "{{ pepper_releases_dir }}"
+      mode: "0755"
     - path: "{{ pepper_releases_dir }}/releases"
+      mode: "0755"
     - path: "{{ pepper_releases_dir }}/shared"
+      mode: "0755"
     - path: "{{ pepper_data_dir }}/faq_cache"
     - path: "{{ pepper_data_dir }}/media"
     - path: "{{ pepper_data_dir }}/maps"
