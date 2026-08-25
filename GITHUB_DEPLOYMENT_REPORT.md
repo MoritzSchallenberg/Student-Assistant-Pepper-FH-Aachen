@@ -340,13 +340,63 @@ letzte bekannte Blocker war der `stdout_callback`-Absturz direkt nach
 dem Start (Punkt 7), der jetzt behoben ist, aber noch nicht erneut
 gegen den echten NUC verifiziert wurde.
 
+## 14. Weitere Live-Funde (Bootstrap erfolgreich, Deploy zweimal gescheitert)
+
+Nach Abschnitt 13: `bootstrap.yml` lief anschließend **komplett
+fehlerfrei durch** (24/25 ok, 1 changed durch `rosdep update`) --
+erster kompletter Erfolg. Ein zweiter Bootstrap-Lauf direkt danach
+zeigte fast durchgehend `ok`/`skipping` (nur 1 `changed`), was die
+geforderte Idempotenz bestätigt.
+
+`deploy.yml` scheiterte danach zweimal an echten, bis dahin
+unentdeckten Bugs:
+
+8. **Zugriff auf `/home/pepper/.ssh/...` ohne `become`**: Der
+   Deploy-Key-Check und mehrere `pepper_healthcheck`-Prüfungen griffen
+   auf Pfade unter `/opt/ihk-pepper`, `/var/lib/ihk-pepper`,
+   `/var/log/ihk-pepper` (alle `pepper:pepper`, Modus 0750) zu, ohne
+   `become` zu setzen -- der SSH-Verbindungsbenutzer (`pw-hallo`) kann
+   dort nicht hineinlesen. Behoben in `pepper_deploy/checkout.yml`,
+   `pepper_healthcheck/tasks/main.yml`, und vorsorglich auch in
+   `prune_releases.yml` (dort noch nicht live erreicht, aber dieselbe
+   Fehlerklasse).
+9. **`ansible.posix.synchronize` stürzt ab**: `'Connection' object has
+   no attribute '_new_stdin'` -- Versionsinkompatibilität zwischen der
+   `ansible.posix`-Collection und dem neueren `ansible-core` auf dem
+   Zielsystem (gleiche Fehlerklasse wie Punkt 7). Komplett ersetzt
+   durch `ansible.builtin`-Bordmittel (lokal `tar` -> `copy` ->
+   `unarchive`). `ansible/requirements.yml` auf `collections: []`
+   geleert, da weder `ansible.posix` noch `community.general` danach
+   noch gebraucht werden.
+10. **`pip install --user` scheitert mit PEP-668
+    `externally-managed-environment`**: Ubuntu 24.04 blockiert
+    System-Python-Installationen per pip standardmäßig.
+    `--break-system-packages` fehlte in 3 `ansible.builtin.pip`-Tasks
+    UND im GitHub-Actions-Workflow selbst (`ros2-build-test`-Job nutzt
+    kein `setup-python`, sondern das System-Python des Runners --
+    dort wäre derselbe Fehler beim ersten echten CI-Lauf aufgetreten,
+    jetzt vorsorglich mitgefixt).
+11. **`python3-pytest` wurde nirgends installiert** -- der Testlauf-
+    Schritt hätte auf einem NUC ohne zufällig vorinstalliertes pytest
+    scheitern müssen. Jetzt explizit in `pepper_dependencies` ergänzt.
+12. **`ultralytics` fehlte in `pepper_autonomy_ws/requirements.txt`**
+    (nur `vision_ws/requirements.txt` hatte es) -- funktionierte nur
+    zufällig durch die Installationsreihenfolge in dieselben
+    `--user`-Site-Packages. Jetzt eigenständig korrekt.
+
+Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
+Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
+tatsächlichen Absturz) und alle lokal validiert (`ansible-lint`,
+`--syntax-check`, YAML-Parse), aber **noch nicht erneut gegen den
+echten NUC end-to-end verifiziert**.
+
 ## 12. Bekannte Einschränkungen
 
 - **Der komplette Ansible-Lauf (Bootstrap+Deploy) ist noch nicht
-  vollständig gegen den echten NUC durchgelaufen** -- ein erster
-  Versuch deckte die zwei in Abschnitt 13 beschriebenen Probleme auf,
-  die jetzt behoben/dokumentiert sind, aber noch nicht erneut
-  vollständig End-to-End nachgetestet wurden.
+  vollständig gegen den echten NUC durchgelaufen** -- Bootstrap ist
+  zweimal erfolgreich/idempotent bestätigt, Deploy scheiterte bisher
+  zweimal (Abschnitt 14), beide Ursachen behoben, aber ein
+  durchgehend erfolgreicher `deploy`-Lauf steht noch aus.
 - **GitHub Actions CI wurde nie auf GitHub ausgeführt** -- nur lokal
   Schritt für Schritt nachgebildet (siehe Abschnitt 7).
 - **`pepperctl start/stop/restart` brauchen normales `sudo`** (kein
