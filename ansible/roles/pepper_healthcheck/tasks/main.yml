@@ -22,6 +22,7 @@
   register: pepper_health_ros_setup
 
 - name: Erfolgreichen Workspace-Build pruefen (install/setup.bash im gepruefen Release)
+  become: true   # /opt/ihk-pepper/... gehoert pepper:pepper (0750), pw-hallo o.ae. kann sonst nicht traversieren
   ansible.builtin.stat:
     path: "{{ pepper_healthcheck_release_dir }}/pepper_autonomy_ws/install/setup.bash"
   register: pepper_health_workspace_built
@@ -70,6 +71,7 @@
   failed_when: false
 
 - name: Schreibzugriff auf Daten-/Logverzeichnis pruefen
+  become: true   # /var/lib|log/ihk-pepper gehoert pepper:pepper (0750)
   ansible.builtin.file:
     path: "{{ item }}/.healthcheck_write_test"
     state: touch
@@ -81,6 +83,7 @@
   failed_when: false
 
 - name: Schreibtest-Dateien wieder entfernen
+  become: true
   ansible.builtin.file:
     path: "{{ item }}/.healthcheck_write_test"
     state: absent
@@ -96,6 +99,7 @@
   ansible.builtin.service_facts:
 
 - name: Aktuell installierte Commit-ID ermitteln
+  become: true
   ansible.builtin.command: git -C "{{ pepper_healthcheck_release_dir }}" rev-parse HEAD  # noqa: command-instead-of-module (kein Modul fuer reines rev-parse)
   register: pepper_health_current_commit
   changed_when: false

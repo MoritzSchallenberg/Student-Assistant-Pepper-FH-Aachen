@@ -5,6 +5,7 @@ pepper_repo_url: ""     # z.B. git@github.com:<user>/<repo>.git -- siehe docs/gi
 pepper_source_method: git_deploy_key   # git_deploy_key | rsync_from_control_node
 pepper_deploy_key_path: "/home/{{ pepper_system_user }}/.ssh/id_ed25519_github_deploy"
 pepper_control_node_src_path: ""       # nur fuer pepper_source_method: rsync_from_control_node
+pepper_rsync_tmp_dir: "/home/{{ ansible_user }}/.ihk_pepper_rsync_staging"
 
 pepper_min_free_space_mb: 2048
 pepper_run_tests_on_deploy: true

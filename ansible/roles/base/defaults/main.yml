@@ -22,3 +22,4 @@ base_apt_packages:
   - gnupg
   - lsb-release
   - software-properties-common
+  - rsync   # noetig fuer pepper_source_method: rsync_from_control_node
