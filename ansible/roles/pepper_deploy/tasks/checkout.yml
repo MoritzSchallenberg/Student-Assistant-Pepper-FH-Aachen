@@ -66,26 +66,59 @@
     path: "{{ pepper_rsync_tmp_dir }}"
     state: absent
 
-- name: Quellcode vom Entwicklungsrechner uebertragen (Alternative ohne GitHub-Zugriff vom NUC)
+# ansible.posix.synchronize ist auf manchen Systemen mit neuerem
+# ansible-core inkompatibel ("'Connection' object has no attribute
+# '_new_stdin'", per Live-Test gefunden -- siehe
+# GITHUB_DEPLOYMENT_REPORT.md). Ausweichloesung ohne Zusatz-Collection:
+# lokal ein tar erstellen, per copy uebertragen, remote entpacken.
+- name: Quellcode-Archiv auf dem Kontrollrechner erstellen
   when: pepper_source_method == 'rsync_from_control_node'
-  # BEWUSST ohne become: ansible.posix.synchronize kombiniert mit
-  # become/become_user unzuverlaessig (das lokale rsync verbindet sich
-  # per SSH als ansible_user, nicht als become_user). Deshalb erst in
-  # ein Verzeichnis kopieren, das dem SSH-Verbindungsbenutzer selbst
-  # gehoert -- der Umzug nach pepper_releases_dir/.staging (das
-  # pepper:pepper gehoert) passiert im naechsten Task als root.
-  ansible.posix.synchronize:
-    src: "{{ pepper_control_node_src_path }}/"
-    dest: "{{ pepper_rsync_tmp_dir }}/"
-    rsync_opts:
-      - "--exclude=.git"
-      - "--exclude=build"
-      - "--exclude=install"
-      - "--exclude=log"
-      - "--exclude=large_files"
-      - "--exclude=venv"
-      - "--exclude=venv_dialog"
-      - "--exclude=__pycache__"
+  delegate_to: localhost
+  become: false
+  ansible.builtin.command: >
+    tar -czf /tmp/ihk_pepper_release.tar.gz
+    --exclude=.git --exclude=build --exclude=install --exclude=log
+    --exclude=large_files --exclude=venv --exclude=venv_dialog
+    --exclude=__pycache__
+    -C {{ pepper_control_node_src_path }} .
+  # noqa: command-instead-of-module (kein Modul mit verlaesslichem,
+  # rekursivem Exclude-Verhalten wie tar --exclude)
+  changed_when: true
+
+- name: Quellcode-Archiv zum NUC uebertragen (in das Home des Verbindungsbenutzers, kein become noetig)
+  when: pepper_source_method == 'rsync_from_control_node'
+  ansible.builtin.copy:
+    src: /tmp/ihk_pepper_release.tar.gz
+    dest: "{{ pepper_rsync_tmp_dir }}.tar.gz"
+    mode: "0600"
+
+- name: Quellcode-Archiv-Zielverzeichnis anlegen
+  when: pepper_source_method == 'rsync_from_control_node'
+  ansible.builtin.file:
+    path: "{{ pepper_rsync_tmp_dir }}"
+    state: directory
+    mode: "0700"
+
+- name: Quellcode-Archiv entpacken
+  when: pepper_source_method == 'rsync_from_control_node'
+  ansible.builtin.unarchive:
+    src: "{{ pepper_rsync_tmp_dir }}.tar.gz"
+    dest: "{{ pepper_rsync_tmp_dir }}"
+    remote_src: true
+
+- name: Uebertragenes Archiv (remote) aufraeumen
+  when: pepper_source_method == 'rsync_from_control_node'
+  ansible.builtin.file:
+    path: "{{ pepper_rsync_tmp_dir }}.tar.gz"
+    state: absent
+
+- name: Archiv auf dem Kontrollrechner aufraeumen
+  when: pepper_source_method == 'rsync_from_control_node'
+  delegate_to: localhost
+  become: false
+  ansible.builtin.file:
+    path: /tmp/ihk_pepper_release.tar.gz
+    state: absent
 
 - name: Rsync-Zwischenziel nach pepper_releases_dir/.staging verschieben
   when: pepper_source_method == 'rsync_from_control_node'

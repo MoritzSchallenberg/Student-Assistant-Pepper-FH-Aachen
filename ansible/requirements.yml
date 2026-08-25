@@ -1,7 +1,13 @@
 ---
 # Installation: ansible-galaxy collection install -r ansible/requirements.yml
-collections:
-  - name: ansible.posix
-    version: ">=1.5.0"
-  - name: community.general
-    version: ">=8.0.0"
+#
+# Bewusst leer: `ansible.posix` (synchronize) und `community.general`
+# (yaml-Callback) wurden urspruenglich hier deklariert, aber beide
+# verursachten auf dem Zielsystem des Nutzers echte Abstuerze durch
+# Versionsinkompatibilitaeten mit einem neueren ansible-core (siehe
+# GITHUB_DEPLOYMENT_REPORT.md). Beide Faelle wurden durch
+# ansible.builtin-Alternativen ersetzt, keine Zusatz-Collection mehr
+# noetig. Falls spaeter doch eine Collection gebraucht wird: hier
+# eintragen und VORHER lokal testen (ansible-lint + echter Testlauf),
+# nicht blind vertrauen.
+collections: []
