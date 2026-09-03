@@ -25,6 +25,10 @@ class SafetyInputs:
     charging_cable_connected: bool = True  # sicherer Default: "angeschlossen" bis Gegenteil bekannt
     data_age_s: float = 0.0
     max_data_age_s: float = 2.0
+    # Entwicklungsauftrag 1, Abschnitt 10: Rechen-NUC-Eingang. Sicherer
+    # Default True (wie charging_cable_connected) -- blockiert erst, wenn
+    # ein echtes/Mock-Signal explizit False meldet.
+    compute_power_valid: bool = True
 
 
 class SafetyGate:
@@ -66,6 +70,8 @@ class SafetyGate:
             reasons.append("charging_cable_connected")
         if inputs.data_age_s > inputs.max_data_age_s:
             reasons.append("stale_sensor_data")
+        if not inputs.compute_power_valid:
+            reasons.append("compute_power_invalid")
         if not self.motion_capable:
             reasons.append("motion_capable_flag_not_set")
 
@@ -81,6 +87,7 @@ class SafetyGate:
             "person_depth_valid": inputs.person_depth_valid,
             "charging_cable_connected": inputs.charging_cable_connected,
             "bumper_active": inputs.bumper_active,
+            "compute_power_valid": inputs.compute_power_valid,
             "emergency_stop": inputs.bumper_active or inputs.hardware_fault,
             "reason": ",".join(reasons) if reasons else "ok",
         }

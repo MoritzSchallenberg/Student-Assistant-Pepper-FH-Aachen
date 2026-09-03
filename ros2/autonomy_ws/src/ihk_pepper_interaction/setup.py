@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "supervisor_node = ihk_pepper_interaction.supervisor_node:main",
+            "compute_health_mock_node = ihk_pepper_interaction.compute_health_mock_node:main",
         ],
     },
 )

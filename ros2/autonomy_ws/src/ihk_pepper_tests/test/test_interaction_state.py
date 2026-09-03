@@ -45,3 +45,28 @@ def test_clear_safety_event_returns_to_idle():
     sm.trigger_safety_event()
     sm.clear_safety_event()
     assert sm.state == InteractionState.IDLE
+
+
+def test_request_external_state_accepts_conversation_ready():
+    sm = InteractionStateMachine()
+    assert sm.request_external_state("CONVERSATION_READY") is True
+    assert sm.state == InteractionState.CONVERSATION_READY
+
+
+def test_request_external_state_rejects_unknown_name():
+    sm = InteractionStateMachine()
+    assert sm.request_external_state("NOT_A_REAL_STATE") is False
+    assert sm.state == InteractionState.IDLE
+
+
+def test_request_external_state_rejects_safety_states_by_name():
+    sm = InteractionStateMachine()
+    assert sm.request_external_state("SAFE_STOP") is False
+    assert sm.state == InteractionState.IDLE
+
+
+def test_request_external_state_rejected_while_in_safe_stop():
+    sm = InteractionStateMachine()
+    sm.trigger_safety_event()
+    assert sm.request_external_state("CONVERSATION_READY") is False
+    assert sm.state == InteractionState.SAFE_STOP

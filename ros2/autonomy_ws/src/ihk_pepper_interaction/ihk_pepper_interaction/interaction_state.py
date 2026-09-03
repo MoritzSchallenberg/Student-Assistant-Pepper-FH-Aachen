@@ -15,6 +15,9 @@ class InteractionState(IntEnum):
     NAVIGATING = 4
     ERROR = 5
     SAFE_STOP = 6
+    # Entwicklungsauftrag 1, Abschnitt 6: Zielzustand des neuen
+    # Begruessen-und-Annaehern-Teilbaums (SetInteractionState-BT-Knoten).
+    CONVERSATION_READY = 7
 
 
 class InteractionStateMachine:
@@ -101,3 +104,22 @@ class InteractionStateMachine:
         automatischer Ausstieg aus SAFE_STOP/ERROR."""
         if self.state in (InteractionState.SAFE_STOP, InteractionState.ERROR):
             self._transition(InteractionState.IDLE)
+
+    def request_external_state(self, name: str) -> bool:
+        """Fuer den SetInteractionState-BT-Knoten (Entwicklungsauftrag 1,
+        Abschnitt 6) -- ein Behavior-Tree-Knoten darf NIE direkt in/aus
+        ERROR oder SAFE_STOP wechseln (dafuer gibt es die dedizierten,
+        absichtlichen Methoden oben) und darf einen aktiven Sicherheits-
+        zustand nicht per Namen ueberschreiben. Gibt True bei
+        akzeptiertem Wechsel zurueck, sonst False (der Aufrufer -- der
+        SetInteractionState-Service in supervisor_node.py -- meldet dann
+        success=False mit Begruendung, statt still zu scheitern)."""
+        if name not in InteractionState.__members__:
+            return False
+        target = InteractionState[name]
+        if target in (InteractionState.ERROR, InteractionState.SAFE_STOP):
+            return False
+        if self.state in (InteractionState.ERROR, InteractionState.SAFE_STOP):
+            return False
+        self._transition(target)
+        return True

@@ -47,6 +47,17 @@ def test_person_approach_requires_motion_and_own_request():
     assert result["allow_person_approach"] is False
 
 
+def test_compute_power_invalid_blocks_motion():
+    gate = SafetyGate(motion_capable=True)
+    gate.request_motion_permission(True, True)
+    result = gate.evaluate(SafetyInputs(
+        localization_valid=True, obstacle_data_valid=True, person_depth_valid=True,
+        charging_cable_connected=False, data_age_s=0.0, compute_power_valid=False,
+    ))
+    assert result["allow_motion"] is False
+    assert "compute_power_invalid" in result["reason"]
+
+
 def test_stale_data_blocks_motion():
     gate = SafetyGate(motion_capable=True)
     gate.request_motion_permission(True, True)

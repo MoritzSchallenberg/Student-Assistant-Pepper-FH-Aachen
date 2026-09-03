@@ -23,7 +23,7 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, UInt8, String
 
 from ihk_pepper_interfaces.msg import PersonTrackArray, SafetyState, DialogueState
-from ihk_pepper_interfaces.srv import SetMotionPermission, SetSystemMode
+from ihk_pepper_interfaces.srv import SetMotionPermission, SetSystemMode, SetInteractionState
 
 from .safety_gate import SafetyGate, SafetyInputs
 from .interaction_state import InteractionStateMachine, InteractionState
@@ -62,6 +62,12 @@ class SupervisorNode(Node):
                                   self._on_person_tracks, 10)
         self.create_subscription(DialogueState, "/dialogue_state", self._on_dialogue_state, 10)
         self.create_subscription(Bool, "/pepper_bridge/bumper", self._on_bumper, 10)
+        # Entwicklungsauftrag 1, Abschnitt 10: Rechen-NUC-Eingang. Sicherer
+        # Default True (wie charging_cable_connected), bis ein echter Mock/
+        # eine echte Telemetrie etwas anderes meldet -- kein Blocker fuer
+        # Systeme, die (noch) keinen NUC-Health-Publisher haben.
+        self.create_subscription(Bool, "/compute_power_valid", self._on_compute_power_valid, 10)
+        self._compute_power_valid = True
 
         self.safety_pub = self.create_publisher(SafetyState, "safety_state", 10)
         self.create_timer(0.5, self._publish_safety_state)
@@ -81,6 +87,9 @@ class SupervisorNode(Node):
         )
         self.system_mode_srv = self.create_service(
             SetSystemMode, "set_system_mode", self._handle_set_system_mode
+        )
+        self.interaction_state_srv = self.create_service(
+            SetInteractionState, "set_interaction_state", self._handle_set_interaction_state
         )
 
         self._bumper_active = False
@@ -104,6 +113,9 @@ class SupervisorNode(Node):
         if msg.data:
             self.state_machine.trigger_safety_event()
 
+    def _on_compute_power_valid(self, msg: Bool):
+        self._compute_power_valid = msg.data
+
     def _build_safety_inputs(self) -> SafetyInputs:
         now = time.time()
         data_age = (now - self._last_tracks_t) if self._last_tracks_t else 999.0
@@ -119,6 +131,7 @@ class SupervisorNode(Node):
             charging_cable_connected=True,  # sicherer Default, siehe SafetyInputs-Doku
             data_age_s=data_age,
             max_data_age_s=self.get_parameter("max_data_age_s").value,
+            compute_power_valid=self._compute_power_valid,
         )
 
     def _publish_safety_state(self):
@@ -136,6 +149,7 @@ class SupervisorNode(Node):
         msg.bumper_active = result["bumper_active"]
         msg.emergency_stop = result["emergency_stop"]
         msg.reason = result["reason"]
+        msg.compute_power_valid = result["compute_power_valid"]
         self.safety_pub.publish(msg)
 
     def _publish_interaction_state(self):
@@ -162,6 +176,19 @@ class SupervisorNode(Node):
         self._current_mode = request.mode
         response.success = True
         response.message = "OK"
+        return response
+
+    def _handle_set_interaction_state(self, request, response):
+        """Fuer den SetInteractionState-BT-Knoten (Entwicklungsauftrag 1,
+        Abschnitt 6). Der Supervisor bleibt die einzige Quelle der
+        Wahrheit -- request_external_state() lehnt Wechsel in/aus
+        ERROR/SAFE_STOP ab, siehe interaction_state.py."""
+        accepted = self.state_machine.request_external_state(request.state_name)
+        response.success = accepted
+        response.message = "OK" if accepted else (
+            f"Zustandswechsel zu '{request.state_name}' abgelehnt (unbekannter Name, "
+            f"Sicherheitszustand betroffen, oder aktuell in ERROR/SAFE_STOP)"
+        )
         return response
 
 
