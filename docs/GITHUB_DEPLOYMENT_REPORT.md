@@ -508,6 +508,48 @@ Problem:
 `ihk-pepper-web.service` lief bereits vor diesen Fixes erfolgreich
 (`active (running)`, Flask erreichbar unter `http://<nuc-ip>:5000`).
 
+23. **Repo-Struktur nach Funktion sortiert (2026-09-03), auf Wunsch des
+    Nutzers, keine Funktionalitätsänderung.** Die Root-Ebene war über
+    viele Sessions organisch gewachsen und wirkte auf GitHub
+    unaufgeräumt (vier funktional unterschiedliche Hauptordner flach
+    nebeneinander, fünf Report-Dateien direkt neben README/LICENSE).
+    Neue Struktur:
+
+    | Alt | Neu |
+    |---|---|
+    | `flask_wrapper/` | `apps/web/` |
+    | `pepper_autonomy_ws/` | `ros2/autonomy_ws/` |
+    | `pepper_model_export/` | `ros2/robot_model/` |
+    | `vision_ws/` | `vision/` |
+    | `setup_pepper_dhcp.sh` | `scripts/setup_pepper_dhcp.sh` |
+    | `pepper_mapping.rviz` | `ros2/robot_model/pepper_mapping.rviz` |
+    | `CAPABILITIES.md`, `GITHUB_DEPLOYMENT_REPORT.md`, `IMPLEMENTATION_REPORT.md`, `INSTALL.md`, `STATUS.md` | jeweils nach `docs/` |
+
+    Alle Ansible-Rollen, systemd-Templates, die CI-Pipeline und die Doku
+    wurden synchron mit denselben Pfaden aktualisiert (`git mv` erhält
+    die Git-Historie, danach alle literalen Pfad-Referenzen gefixt).
+    Zwei Nebenfunde beim mechanischen Ersetzen:
+    - Ein Python-Bezeichner wurde durch das Ersetzen zerstückelt
+      (`_load_flask_wrapper_config` → `_load_apps/web_config`, ungültige
+      Syntax) -- gefunden durch `py_compile`, korrigiert zu
+      `_load_web_app_config()`.
+    - Die zwei toten `venv`-Symlinks (`apps/web/venv`, `vision/venv`,
+      zeigen auf `large_files/venvs/...`) waren durch `git mv` erneut
+      versehentlich mitgetrackt worden -- Ursache: `.gitignore`s
+      `venv/`-Regel (mit Trailing-Slash) matcht laut Git **nie** einen
+      Symlink, nur echte Verzeichnisse, weshalb sie schon vorher nie
+      wirklich ausgeschlossen waren. Fix: Trailing-Slash entfernt
+      (`venv` statt `venv/`), Symlinks erneut aus dem Tracking entfernt.
+
+    Verifiziert: `py_compile` über alle `.py` sauber, alle 5 Playbooks
+    `--syntax-check` OK, `ansible-lint` weiterhin `production`-Profil (0
+    Findings), `yamllint` sauber, lokaler 3-Schritt-`colcon`-Build unter
+    `ros2/autonomy_ws` erfolgreich, 54/54 `pytest` grün.
+    **NICHT verifiziert**: ein Redeploy gegen den echten Ziel-NUC nach
+    diesem Umbau -- die Pfadänderungen sind rein mechanisch und lokal
+    durchgeprüft, aber der reale `ansible-playbook deploy.yml`-Lauf mit
+    den neuen Pfaden steht noch aus.
+
 Punkte 8-12 wurden **vorsorglich während einer längeren Abwesenheit des
 Nutzers** gefunden (Punkte 11-12 durch Code-Review, nicht durch einen
 tatsächlichen Absturz) und alle lokal validiert (`ansible-lint`,
