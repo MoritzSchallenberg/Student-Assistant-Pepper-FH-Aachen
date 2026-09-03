@@ -45,3 +45,15 @@ am Ende geschrieben), damit jeder Zwischenstand nachvollziehbar ist.
 
 - **AP1 abgeschlossen**: Branch erstellt, Baseline-Build+Tests oben
   dokumentiert.
+- **AP8 abgeschlossen**: neues Paket `ihk_pepper_llm_contracts`
+  (`knowledge_planner.py`, `gesture_planner.py`, `response_plan.py` +
+  `ResponsePlanValidator`), `docs/LLM_PIPELINE_DESIGN.md`. 14 neue Tests
+  in `test_llm_contracts.py`, alle grün. Kein LLM-Aufruf, kein Executor.
+- **AP9 abgeschlossen**: neues Paket `ihk_pepper_person_memory`
+  (`identity_registry.py`, `vector_memory.py`, `mood_signal.py`),
+  `docs/PERSON_MEMORY_DESIGN.md`. 9 neue Tests in `test_person_memory.py`,
+  alle grün. Keine echte Datenbank, keine Gesichtserkennung.
+- Build nach AP8/AP9: `colcon build --symlink-install --packages-select
+  ihk_pepper_llm_contracts ihk_pepper_person_memory ihk_pepper_tests`
+  grün (nur bekannte setuptools-Deprecation-Warnungen, keine neuen).
+  Gesamtsuite jetzt **77/77** (54 Baseline + 23 neu).

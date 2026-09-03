@@ -22,6 +22,8 @@
   <exec_depend>ihk_pepper_perception</exec_depend>
   <exec_depend>ihk_pepper_audio</exec_depend>
   <exec_depend>ihk_pepper_bridge</exec_depend>
+  <exec_depend>ihk_pepper_llm_contracts</exec_depend>
+  <exec_depend>ihk_pepper_person_memory</exec_depend>
 
   <export>
     <build_type>ament_python</build_type>
