@@ -1,9 +1,9 @@
 #!/bin/bash
 # {{ ansible_managed }}
-# Startskript fuer den Web-/Tablet-Dienst (flask_wrapper). Sourced ROS2 +
+# Startskript fuer den Web-/Tablet-Dienst (apps/web). Sourced ROS2 +
 # Workspace-Overlay, damit die Tablet-UI-ROS2-Bruecke
-# (flask_wrapper/tablet/ros_bridge.py) rclpy findet, siehe
-# IMPLEMENTATION_REPORT.md.
+# (apps/web/tablet/ros_bridge.py) rclpy findet, siehe
+# docs/IMPLEMENTATION_REPORT.md.
 #
 # WICHTIG: kein "-u" (nounset) -- siehe start_ros2.sh.j2-Kommentar,
 # gleiches Problem mit /opt/ros/jazzy/setup.bash.
@@ -17,7 +17,7 @@ if [ ! -e "$CURRENT_LINK" ]; then
 fi
 
 source "{{ ros_setup_bash }}"
-source "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash"
+source "$CURRENT_LINK/ros2/autonomy_ws/install/setup.bash"
 
-cd "$CURRENT_LINK/flask_wrapper"
+cd "$CURRENT_LINK/apps/web"
 exec python3 app.py

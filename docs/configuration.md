@@ -78,17 +78,17 @@ Große/ladbare Artefakte werden **nicht** versioniert (siehe
 
 Kleine Konfigurations-/Themendateien (Tagesthema-YAML, Gesten-YAML,
 Zonen-YAML) **sind** versioniert (siehe
-`pepper_autonomy_ws/src/ihk_pepper_presentation/content/daily_topics/`
+`ros2/autonomy_ws/src/ihk_pepper_presentation/content/daily_topics/`
 u.ä.).
 
 ## Python-Abhängigkeiten
 
 | Komponente | Datei | Besonderheit |
 |---|---|---|
-| `flask_wrapper` | `flask_wrapper/requirements.txt` | `numpy<2` (cv_bridge-Kompatibilität) |
-| `vision_ws` | `vision_ws/requirements.txt` | dito |
-| `pepper_autonomy_ws` (außer `ihk_pepper_dialog`) | `pepper_autonomy_ws/requirements.txt` | dito |
-| `ihk_pepper_dialog` | `pepper_autonomy_ws/requirements-dialog.txt` | **eigenes venv** `venv_dialog` (braucht `numpy>=2` für `sentence-transformers`) |
+| `apps/web` | `apps/web/requirements.txt` | `numpy<2` (cv_bridge-Kompatibilität) |
+| `vision` | `vision/requirements.txt` | dito |
+| `ros2/autonomy_ws` (außer `ihk_pepper_dialog`) | `ros2/autonomy_ws/requirements.txt` | dito |
+| `ihk_pepper_dialog` | `ros2/autonomy_ws/requirements-dialog.txt` | **eigenes venv** `venv_dialog` (braucht `numpy>=2` für `sentence-transformers`) |
 
 Siehe `IMPLEMENTATION_REPORT.md` für die genaue Erklärung des
 numpy-Konflikts.

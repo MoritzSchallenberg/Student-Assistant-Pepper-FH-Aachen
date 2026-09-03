@@ -24,7 +24,7 @@
 - name: Erfolgreichen Workspace-Build pruefen (install/setup.bash im gepruefen Release)
   become: true   # /opt/ihk-pepper/... gehoert pepper:pepper (0750), pw-hallo o.ae. kann sonst nicht traversieren
   ansible.builtin.stat:
-    path: "{{ pepper_healthcheck_release_dir }}/pepper_autonomy_ws/install/setup.bash"
+    path: "{{ pepper_healthcheck_release_dir }}/ros2/autonomy_ws/install/setup.bash"
   register: pepper_health_workspace_built
 
 - name: Pepper-IP konfiguriert?

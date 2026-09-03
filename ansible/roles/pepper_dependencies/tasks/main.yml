@@ -4,7 +4,7 @@
 # release-spezifisch in pepper_deploy, da es die eingecheckten
 # package.xml/requirements*.txt braucht -- siehe dortige tasks/main.yml).
 
-- name: Audio-Systempakete installieren (bestehender PulseAudio-Workaround bleibt unveraendert, siehe STATUS.md)
+- name: Audio-Systempakete installieren (bestehender PulseAudio-Workaround bleibt unveraendert, siehe docs/STATUS.md)
   become: true
   ansible.builtin.apt:
     name: "{{ pepper_audio_packages }}"
@@ -59,4 +59,4 @@
           - librealsense2-dev
         state: present
   # NICHT getestet in dieser Session (keine RealSense-Hardware verfuegbar,
-  # siehe IMPLEMENTATION_REPORT.md) -- Struktur vorbereitet.
+  # siehe docs/IMPLEMENTATION_REPORT.md) -- Struktur vorbereitet.

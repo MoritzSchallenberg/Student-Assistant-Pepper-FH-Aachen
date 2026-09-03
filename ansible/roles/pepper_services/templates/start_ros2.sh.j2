@@ -10,7 +10,7 @@
 # unter "set -u" bricht das Sourcen sofort mit "ist nicht gesetzt" ab,
 # noch bevor irgendetwas Sinnvolles laeuft. Bekannter, haeufiger
 # ROS2-Stolperstein beim Kombinieren mit strikten Bash-Optionen. Per
-# Live-Test gefunden, siehe GITHUB_DEPLOYMENT_REPORT.md.
+# Live-Test gefunden, siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 set -eo pipefail
 
 CURRENT_LINK="{{ pepper_releases_dir }}/current"
@@ -21,7 +21,7 @@ if [ ! -e "$CURRENT_LINK" ]; then
 fi
 
 source "{{ ros_setup_bash }}"
-source "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash"
+source "$CURRENT_LINK/ros2/autonomy_ws/install/setup.bash"
 
 # Sicherer Abbruch bei fehlender Pepper-Verbindung (Auftrag Abschnitt 8):
 # nur eine Warnung, kein Hard-Exit -- der Bringup soll trotzdem starten

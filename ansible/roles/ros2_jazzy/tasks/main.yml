@@ -68,7 +68,7 @@
   # Cache-Datei liegt pro Benutzer unter ~/.ros/rosdep/ -- 'rosdep
   # install' in pepper_deploy/build.yml laeuft als root (braucht das
   # fuer apt-get), fand also roots eigene, nie initialisierte Cache
-  # nicht. Per Live-Test gefunden, siehe GITHUB_DEPLOYMENT_REPORT.md.
+  # nicht. Per Live-Test gefunden, siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 
 - name: rosdep-Datenbank fuer den Laufzeitbenutzer aktualisieren (falls rosdep je als pepper laeuft)
   become: true

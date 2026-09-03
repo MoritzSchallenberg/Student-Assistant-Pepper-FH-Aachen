@@ -14,30 +14,30 @@
 
 # ---- 6. Abhaengigkeiten installieren/aktualisieren ----
 
-- name: Python-Requirements installieren (flask_wrapper)
+- name: Python-Requirements installieren (apps/web)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
-    requirements: "{{ release_dir }}/flask_wrapper/requirements.txt"
+    requirements: "{{ release_dir }}/apps/web/requirements.txt"
     extra_args: "--user --break-system-packages"
     # --break-system-packages: Ubuntu 24.04 blockiert pip-Installationen
     # gegen das System-Python per PEP 668. Gleiches Muster wurde bereits
-    # in frueheren Sessions manuell verwendet (siehe INSTALL.md), hier
+    # in frueheren Sessions manuell verwendet (siehe docs/INSTALL.md), hier
     # beim Uebertragen ins Ansible-Playbook versehentlich vergessen --
     # per Live-Test gefunden.
 
-- name: Python-Requirements installieren (vision_ws)
+- name: Python-Requirements installieren (vision)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
-    requirements: "{{ release_dir }}/vision_ws/requirements.txt"
+    requirements: "{{ release_dir }}/vision/requirements.txt"
     extra_args: "--user --break-system-packages"
 
-- name: Python-Requirements installieren (pepper_autonomy_ws, ausser ihk_pepper_dialog)
+- name: Python-Requirements installieren (ros2/autonomy_ws, ausser ihk_pepper_dialog)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
-    requirements: "{{ release_dir }}/pepper_autonomy_ws/requirements.txt"
+    requirements: "{{ release_dir }}/ros2/autonomy_ws/requirements.txt"
     extra_args: "--user --break-system-packages"
 
 - name: venv_dialog anlegen, falls noch nicht vorhanden (teuer, deshalb in shared/, siehe checkout.yml-Kommentar)
@@ -52,7 +52,7 @@
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.pip:
-    requirements: "{{ release_dir }}/pepper_autonomy_ws/requirements-dialog.txt"
+    requirements: "{{ release_dir }}/ros2/autonomy_ws/requirements-dialog.txt"
     virtualenv: "{{ pepper_releases_dir }}/shared/venv_dialog"
     virtualenv_command: python3 -m venv --system-site-packages
 
@@ -61,7 +61,7 @@
 - name: rosdep install fuer den Workspace ausfuehren
   become: true
   ansible.builtin.command: >
-    rosdep install --from-paths {{ release_dir }}/pepper_autonomy_ws/src
+    rosdep install --from-paths {{ release_dir }}/ros2/autonomy_ws/src
     --ignore-src --rosdistro {{ ros_distro }} -y
     --skip-keys "ament_cmake ament_python"
   # ament_cmake/ament_python sind reine Buildtool-Marker in package.xml
@@ -76,7 +76,7 @@
     ROS_DISTRO: "{{ ros_distro }}"
 
 # ---- 8. ROS2-Workspace mit colcon bauen ----
-# pepper_model_export (RViz/Desktop-Tools) wird auf dem NUC bewusst NICHT
+# ros2/robot_model (RViz/Desktop-Tools) wird auf dem NUC bewusst NICHT
 # gebaut -- ros2_jazzy-Rolle installiert absichtlich nur ros-base
 # (kein RViz), siehe dortige Rollen-Doku ("nicht benoetigte Pakete nicht
 # pauschal installieren").
@@ -88,7 +88,7 @@
 # wird. Deshalb in 3 Schritten statt 2: zuerst alles AUSSER dialog UND
 # bringup, dann dialog (venv), dann bringup zuletzt. Per Live-Test
 # gefunden ("Failed to find ... install/ihk_pepper_dialog/.../package.sh"),
-# siehe GITHUB_DEPLOYMENT_REPORT.md.
+# siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 #
 # ihk_pepper_behavior_tree wird IMMER uebersprungen (nicht nur hier,
 # auch in ci.yml): braucht behaviortree_cpp, das auf keinem der bisher
@@ -96,9 +96,9 @@
 # ihk_pepper_behavior_tree/README.md). Ein fehlgeschlagenes Paket kann
 # in colcon andere, unabhaengige, noch nicht gestartete Pakete mit in
 # den Abbruch reissen ("Aborted" statt "Failed") -- lokal nachgestellt
-# und bestaetigt, siehe GITHUB_DEPLOYMENT_REPORT.md.
+# und bestaetigt, siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 
-- name: pepper_autonomy_ws bauen (ausser ihk_pepper_dialog, ihk_pepper_bringup, ihk_pepper_behavior_tree)
+- name: ros2/autonomy_ws bauen (ausser ihk_pepper_dialog, ihk_pepper_bringup, ihk_pepper_behavior_tree)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.shell: >
@@ -106,12 +106,12 @@
     source {{ ros_setup_bash }};
     colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_bringup ihk_pepper_behavior_tree
   args:
-    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    chdir: "{{ release_dir }}/ros2/autonomy_ws"
     executable: /bin/bash
   register: pepper_colcon_build_main
   changed_when: true
 
-- name: ihk_pepper_dialog im venv_dialog bauen (braucht python3 -m colcon, siehe IMPLEMENTATION_REPORT.md)
+- name: ihk_pepper_dialog im venv_dialog bauen (braucht python3 -m colcon, siehe docs/IMPLEMENTATION_REPORT.md)
   become: true
   become_user: "{{ pepper_system_user }}"
   ansible.builtin.shell: >
@@ -121,7 +121,7 @@
     source {{ pepper_releases_dir }}/shared/venv_dialog/bin/activate;
     python3 -m colcon build --symlink-install --packages-select ihk_pepper_dialog
   args:
-    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    chdir: "{{ release_dir }}/ros2/autonomy_ws"
     executable: /bin/bash
   register: pepper_colcon_build_dialog
 
@@ -134,7 +134,7 @@
     source install/setup.bash;
     colcon build --symlink-install --packages-select ihk_pepper_bringup
   args:
-    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    chdir: "{{ release_dir }}/ros2/autonomy_ws"
     executable: /bin/bash
   register: pepper_colcon_build_bringup
   changed_when: true
@@ -151,7 +151,7 @@
     source install/setup.bash;
     python3 -m pytest src/ihk_pepper_tests/test/ -q
   args:
-    chdir: "{{ release_dir }}/pepper_autonomy_ws"
+    chdir: "{{ release_dir }}/ros2/autonomy_ws"
     executable: /bin/bash
   register: pepper_pytest_result
   changed_when: false

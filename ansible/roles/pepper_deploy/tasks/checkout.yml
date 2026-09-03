@@ -69,7 +69,7 @@
 # ansible.posix.synchronize ist auf manchen Systemen mit neuerem
 # ansible-core inkompatibel ("'Connection' object has no attribute
 # '_new_stdin'", per Live-Test gefunden -- siehe
-# GITHUB_DEPLOYMENT_REPORT.md). Ausweichloesung ohne Zusatz-Collection:
+# docs/GITHUB_DEPLOYMENT_REPORT.md). Ausweichloesung ohne Zusatz-Collection:
 # lokal ein tar erstellen, per copy uebertragen, remote entpacken.
 - name: Quellcode-Archiv auf dem Kontrollrechner erstellen
   when: pepper_source_method == 'rsync_from_control_node'

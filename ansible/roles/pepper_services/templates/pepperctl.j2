@@ -9,7 +9,7 @@
 # /opt/ros/jazzy/setup.bash, das interne Variablen wie
 # AMENT_TRACE_SETUP_FILES ohne Default referenziert und unter "set -u"
 # sofort abbricht. Betrifft "pepperctl ros ...". Per Live-Test gefunden,
-# siehe GITHUB_DEPLOYMENT_REPORT.md.
+# siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 set -eo pipefail
 
 ROS_SETUP="{{ ros_setup_bash }}"
@@ -44,9 +44,9 @@ load_ros_env() {
   fi
   # shellcheck disable=SC1090
   source "$ROS_SETUP"
-  if [ -e "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash" ]; then
+  if [ -e "$CURRENT_LINK/ros2/autonomy_ws/install/setup.bash" ]; then
     # shellcheck disable=SC1091
-    source "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash"
+    source "$CURRENT_LINK/ros2/autonomy_ws/install/setup.bash"
   else
     echo "WARNUNG: kein gebauter Workspace unter $CURRENT_LINK gefunden." >&2
   fi
@@ -89,8 +89,8 @@ cmd_doctor() {
   echo -n "ROS2-Setup ($ROS_SETUP): "
   [ -f "$ROS_SETUP" ] && echo "OK" || echo "FEHLT"
 
-  echo -n "Workspace gebaut ($CURRENT_LINK/pepper_autonomy_ws/install): "
-  [ -e "$CURRENT_LINK/pepper_autonomy_ws/install/setup.bash" ] && echo "OK" || echo "FEHLT"
+  echo -n "Workspace gebaut ($CURRENT_LINK/ros2/autonomy_ws/install): "
+  [ -e "$CURRENT_LINK/ros2/autonomy_ws/install/setup.bash" ] && echo "OK" || echo "FEHLT"
 
   echo -n "Konfiguration ($CONFIG_DIR/env): "
   [ -f "$CONFIG_DIR/env" ] && echo "OK" || echo "FEHLT"

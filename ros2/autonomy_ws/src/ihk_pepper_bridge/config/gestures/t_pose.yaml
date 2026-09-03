@@ -1,0 +1,16 @@
+name: t_pose
+description: >
+  Beide Arme seitlich ausstrecken (T-Pose). HAELT NUR CA. 10 SEKUNDEN,
+  danach faellt die Pose von selbst zurueck (getestet, siehe docs/STATUS.md/
+  docs/CAPABILITIES.md) -- als kurze Geste nutzen, nicht zum Dauerhalten.
+metadata:
+  imported_from: "apps/web/pepper/qicli.py raise_arms_sideways()"
+disable_breathing: ["Arms"]
+restore_after: true
+steps:
+  - {joint: LShoulderPitch, angle: 0.0, duration: 2.5}
+  - {joint: RShoulderPitch, angle: 0.0, duration: 2.5}
+  - {joint: LElbowRoll, angle: 0.0, duration: 2.5}
+  - {joint: RElbowRoll, angle: 0.0, duration: 2.5}
+  - {joint: LShoulderRoll, angle: 1.3, duration: 2.5}
+  - {joint: RShoulderRoll, angle: -1.3, duration: 2.5}

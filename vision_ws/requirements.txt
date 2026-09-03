@@ -1,6 +1,0 @@
-# Getestete Versionen (Stand 2026-08-22). cv_bridge/rclpy/sensor_msgs
-# kommen aus ROS2 Jazzy (rosdep/apt), nicht aus pip.
-#
-# venv-Erstellung: siehe INSTALL.md ("--system-site-packages").
-ultralytics==8.4.120
-numpy==1.26.4   # WICHTIG: <2, sonst Segfault durch ABI-Konflikt mit cv_bridge (siehe STATUS.md)

@@ -37,19 +37,19 @@ jobs:
           fail=0
           while IFS= read -r -d '' f; do
             python3 -m py_compile "$f" || fail=1
-          done < <(find flask_wrapper vision_ws pepper_autonomy_ws/src -name "*.py" -print0)
+          done < <(find apps/web vision ros2/autonomy_ws/src -name "*.py" -print0)
           exit $fail
 
       - name: Python-Linting (flake8, nur echte Fehler -- Stil bewusst locker)
         run: |
           flake8 --select=E9,F63,F7,F82 --show-source \
-            flask_wrapper vision_ws pepper_autonomy_ws/src
+            apps/web vision ros2/autonomy_ws/src
 
       - name: YAML-Pruefung
         run: |
           set -e
           yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}}}" ansible/
-          find pepper_autonomy_ws/src -path "*/config/*.yaml" -print0 | \
+          find ros2/autonomy_ws/src -path "*/config/*.yaml" -print0 | \
             xargs -0 -r yamllint -d "{extends: relaxed, rules: {line-length: {max: 200}}}"
 
       - name: Ansible Syntax-Check (alle Playbooks)
@@ -67,7 +67,7 @@ jobs:
       - name: ROS2-Paketstruktur pruefen (package.xml + setup.py/CMakeLists vorhanden)
         run: |
           set -e
-          for pkg_dir in pepper_autonomy_ws/src/*/; do
+          for pkg_dir in ros2/autonomy_ws/src/*/; do
             pkg="${pkg_dir%/}"
             if [ ! -f "$pkg/package.xml" ]; then
               echo "FEHLER: $pkg hat keine package.xml"; exit 1
@@ -83,7 +83,7 @@ jobs:
         run: |
           set -e
           if git grep -nIE "(password|passwd|api[_-]?key|api[_-]?token|secret)\s*[:=]\s*['\"][^'\"]{4,}['\"]" \
-              -- ':!*.example*' ':!docs/*' ':!*.md' ':!ansible/inventory/group_vars/vault.yml.example'; then
+              -- ':!*.example*' ':!docs/*' ':!*.md' ':!ansible/inventory/group_vars/all/vault.yml.example'; then
             echo "FEHLER: moeglicher Klartext-Zugangsdatensatz gefunden (siehe oben)."; exit 1
           fi
           if git grep -nIE "BEGIN (RSA|OPENSSH|EC|DSA|PRIVATE) KEY"; then
@@ -137,32 +137,32 @@ jobs:
           # --break-system-packages: Ubuntu-24.04-Runner hat PEP-668-Schutz
           # (System-Python, kein setup-python-venv in diesem Job) -- gleicher
           # Fund wie beim Ansible-Live-Test gegen den echten NUC, siehe
-          # GITHUB_DEPLOYMENT_REPORT.md.
-          pip3 install --user --break-system-packages "numpy<2" -r pepper_autonomy_ws/requirements.txt pytest
+          # docs/GITHUB_DEPLOYMENT_REPORT.md.
+          pip3 install --user --break-system-packages "numpy<2" -r ros2/autonomy_ws/requirements.txt pytest
 
       - name: rosdep install fuer den Workspace
         run: |
           source /opt/ros/jazzy/setup.bash
-          rosdep install --from-paths pepper_autonomy_ws/src --ignore-src -y \
+          rosdep install --from-paths ros2/autonomy_ws/src --ignore-src -y \
             --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor ament_cmake ament_python"
 
       - name: Workspace bauen (ausser ihk_pepper_dialog, ihk_pepper_behavior_tree, ihk_pepper_bringup)
         run: |
           source /opt/ros/jazzy/setup.bash
-          cd pepper_autonomy_ws
+          cd ros2/autonomy_ws
           # ihk_pepper_bringup haengt (exec_depend) von ihk_pepper_dialog ab --
           # colcon verlangt dessen install-Artefakte auch bei --packages-skip
           # in derselben Ausfuehrung. Da dialog in CI nie gebaut wird (siehe
           # unten), muss bringup hier ebenfalls ausgelassen werden, sonst
           # schlaegt der Build mit "Failed to find .../package.sh" fehl
           # (per Live-Test auf dem Ziel-NUC gefunden, siehe
-          # GITHUB_DEPLOYMENT_REPORT.md).
+          # docs/GITHUB_DEPLOYMENT_REPORT.md).
           colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_behavior_tree ihk_pepper_bringup
         # ihk_pepper_dialog: braucht das dedizierte venv_dialog (numpy>=2,
         # sentence-transformers) -- in CI aus Zeit-/Ressourcengruenden
         # ausgelassen (haengt vom selben schweren Torch-Download ab, der
         # auch lokal mehrere Minuten dauert). ihk_pepper_behavior_tree:
-        # braucht behaviortree_cpp, siehe IMPLEMENTATION_REPORT.md/
+        # braucht behaviortree_cpp, siehe docs/IMPLEMENTATION_REPORT.md/
         # ihk_pepper_behavior_tree/README.md -- NICHT installierbar ohne
         # den eigenen ROS2-Jazzy-Kanal hinaus, hier bewusst ausgelassen
         # statt den Build kuenstlich gruen zu faerben.
@@ -170,5 +170,5 @@ jobs:
       - name: pytest-Suite ausfuehren
         run: |
           source /opt/ros/jazzy/setup.bash
-          source pepper_autonomy_ws/install/setup.bash
-          python3 -m pytest pepper_autonomy_ws/src/ihk_pepper_tests/test/ -v
+          source ros2/autonomy_ws/install/setup.bash
+          python3 -m pytest ros2/autonomy_ws/src/ihk_pepper_tests/test/ -v

@@ -8,42 +8,42 @@ vorbereitete (nicht standardmäßig aktive) Nav2-Navigation.
 
 **Aktueller Stand**: Grundfunktionen (Sprechen, Hören, Sehen, Bewegen)
 sind live gegen den echten Roboter getestet. Das darauf aufbauende
-Dialog-/Interaktions-/Navigationssystem (`pepper_autonomy_ws/`) wurde
+Dialog-/Interaktions-/Navigationssystem (`ros2/autonomy_ws/`) wurde
 offline entwickelt und getestet (Pepper war während dieser Entwicklung
 nicht angeschlossen) -- der ehrliche, vollständige Status steht in
-[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+[`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md).
 
 ## Schnellstart
 
 ```bash
-# 1) Abhängigkeiten installieren, siehe INSTALL.md für Details
+# 1) Abhängigkeiten installieren, siehe docs/INSTALL.md für Details
 # 2) Credentials setzen (nie ins Repo committen):
-cp flask_wrapper/.env.example flask_wrapper/.env
+cp apps/web/.env.example apps/web/.env
 # .env mit echten Werten füllen
 
 # 3) Kern-Dialogsystem starten:
-set -a && source flask_wrapper/.env && set +a
+set -a && source apps/web/.env && set +a
 source /opt/ros/jazzy/setup.bash
-source pepper_autonomy_ws/install/setup.bash
+source ros2/autonomy_ws/install/setup.bash
 ros2 launch ihk_pepper_bringup dialog_only.launch.py
 
 # 4) Tablet-/Admin-Oberfläche (eigenes Terminal):
-cd flask_wrapper && ./run.sh
+cd apps/web && ./run.sh
 # -> http://<PC-IP>:5000/         Admin-Panel (manuelle Steuerung)
 # -> http://<PC-IP>:5000/tablet/  Tablet-Oberfläche (für Peppers Tablet)
 ```
 
 Vollständige, geprüfte Install-/Startbefehle: siehe
-[`INSTALL.md`](INSTALL.md) und [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+[`docs/INSTALL.md`](docs/INSTALL.md) und [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md).
 
 ## Architektur (Kurzüberblick)
 
 ```
-Pepper (NAOqi) --SSH/qicli--> flask_wrapper/pepper/qicli.py
+Pepper (NAOqi) --SSH/qicli--> apps/web/pepper/qicli.py
                                         |
                     +-------------------+-------------------+
                     |                                       |
-         flask_wrapper/app.py                  ihk_pepper_bridge (ROS2)
+         apps/web/app.py                  ihk_pepper_bridge (ROS2)
          (manuelle Steuerung,                   (Say/PlayGesture-Actions,
           Tablet-UI-Backend)                     SystemHealth-Topic)
                                                         |
@@ -65,35 +65,36 @@ Pepper (NAOqi) --SSH/qicli--> flask_wrapper/pepper/qicli.py
                                                     Nav2 selbst nicht standardmäßig aktiv)
 ```
 
-Alle Pakete unter `pepper_autonomy_ws/src/`, Gesamtstart über
+Alle Pakete unter `ros2/autonomy_ws/src/`, Gesamtstart über
 `ihk_pepper_bringup`. Details, Topic-/Service-/Action-Liste und
-Testabdeckung: [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md).
+Testabdeckung: [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md).
 
 ## Verzeichnisse
 
 | Verzeichnis | Inhalt |
 |---|---|
-| `flask_wrapper/` | Sprechen, LLM-Anbindung, Hören (Whisper), Tablet-/Admin-Weboberfläche |
-| `vision_ws/` | Kamera, YOLO-Pose-Erkennung/Nachahmung |
+| `apps/web/` | Sprechen, LLM-Anbindung, Hören (Whisper), Tablet-/Admin-Weboberfläche |
+| `vision/` | Kamera, YOLO-Pose-Erkennung/Nachahmung |
 | `ros2_ws/` | `naoqi_driver2` -- ROS2-Anbindung an Pepper (Fremdcode) |
-| `pepper_model_export/` | Offline-Simulation (URDF/RViz, kein Pepper nötig) |
-| `pepper_autonomy_ws/` | Dialog-/Interaktions-/Navigationssystem (11 ROS2-Pakete) |
+| `ros2/robot_model/` | Offline-Simulation (URDF/RViz, kein Pepper nötig) |
+| `ros2/autonomy_ws/` | Dialog-/Interaktions-/Navigationssystem (11 ROS2-Pakete) |
 | `ansible/` | Bootstrap/Deployment/Rollback/Healthcheck für einen Pepper-NUC |
+| `scripts/` | Einmalige Host-Setup-Skripte (z.B. Netzwerk-Konfiguration) |
 | `docs/` | Deployment-Dokumentation (GitHub-Setup bis Troubleshooting) |
 | `large_files/` | Große/generierte Dateien, per Symlink eingebunden (siehe `.gitignore`) |
 
 ## Dokumentation
 
-- [`INSTALL.md`](INSTALL.md) -- Installation/Setup, Schritt für Schritt
-- [`STATUS.md`](STATUS.md) -- Vollständiger Projektstand, Netzwerk-Setup,
+- [`docs/INSTALL.md`](docs/INSTALL.md) -- Installation/Setup, Schritt für Schritt
+- [`docs/STATUS.md`](docs/STATUS.md) -- Vollständiger Projektstand, Netzwerk-Setup,
   Sensor-Bewertung, Architektur-Entscheidungen, gelöste Probleme
-- [`CAPABILITIES.md`](CAPABILITIES.md) -- Was Pepper alles kann, mit
+- [`docs/CAPABILITIES.md`](docs/CAPABILITIES.md) -- Was Pepper alles kann, mit
   Beispiel-Code und Teststatus je Fähigkeit
-- [`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md) -- Ehrlicher
+- [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md) -- Ehrlicher
   Statusbericht zum Dialog-/Interaktions-/Navigationssystem: was
   fertig+getestet ist, was nur vorbereitet ist, bekannte Bugs,
   Sicherheitshinweise, Next Steps
-- [`GITHUB_DEPLOYMENT_REPORT.md`](GITHUB_DEPLOYMENT_REPORT.md) --
+- [`docs/GITHUB_DEPLOYMENT_REPORT.md`](docs/GITHUB_DEPLOYMENT_REPORT.md) --
   ehrlicher Statusbericht zu GitHub-Repo/Ansible-Deployment/NUC-Betrieb
 
 ## Deployment auf einen Pepper-NUC
@@ -110,7 +111,7 @@ ansible-playbook -i inventory/production.yml playbooks/deploy.yml \
 
 **Wichtig**: Ansible-Befehle müssen aus dem `ansible/`-Verzeichnis
 gestartet werden, sonst wird `ansible.cfg` nicht geladen und die
-Rollen sind nicht auffindbar (siehe `GITHUB_DEPLOYMENT_REPORT.md`,
+Rollen sind nicht auffindbar (siehe `docs/GITHUB_DEPLOYMENT_REPORT.md`,
 Abschnitt "Bekannte Einschränkungen").
 
 Vollständiger Ablauf (Repo anlegen → NUC bootstrappen → deployen →
@@ -123,6 +124,6 @@ Autonome Bewegung (Fahren, Personen anfahren/begleiten/verfolgen) ist
 **standardmäßig deaktiviert** (`motion_capable:=false`) und erfordert
 sowohl einen expliziten Launch-Parameter als auch gültige Lokalisierungs-/
 Hindernis-/Tiefendaten zur Laufzeit -- siehe
-[`IMPLEMENTATION_REPORT.md`](IMPLEMENTATION_REPORT.md), Abschnitt
+[`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md), Abschnitt
 "Sicherheitsrelevante Hinweise". Keine unbeaufsichtigten Fahrtests am
 echten Roboter.

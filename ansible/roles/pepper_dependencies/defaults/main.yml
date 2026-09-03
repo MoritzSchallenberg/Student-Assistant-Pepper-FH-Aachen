@@ -5,7 +5,7 @@ realsense_enabled: false
 # Abschnitt 4: "benoetigte Audio-, Kamera- und RealSense-Abhaengigkeiten").
 # Bewusst schlank -- siehe Auftrag: "nicht benoetigte Pakete nicht
 # pauschal installieren". Der vorhandene PulseAudio-Workaround (siehe
-# STATUS.md) wird HIER NICHT ersetzt, nur die dafuer noetigen
+# docs/STATUS.md) wird HIER NICHT ersetzt, nur die dafuer noetigen
 # Systempakete/Rechte sichergestellt.
 pepper_audio_packages:
   - pulseaudio

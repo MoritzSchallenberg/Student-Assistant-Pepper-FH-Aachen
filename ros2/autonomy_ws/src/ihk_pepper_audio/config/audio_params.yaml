@@ -1,0 +1,17 @@
+audio_node:
+  ros__parameters:
+    source_kind: "pepper_pulseaudio"  # file | microphone | pepper_pulseaudio
+    source_file_path: ""
+    microphone_device: -1
+    pepper_host: ""       # leer = aus apps/web/.env (PEPPER_QI_HOST)
+    pepper_user: "nao"
+    pepper_password: ""   # leer = aus apps/web/.env
+    vad_threshold: 0.5
+    preroll_s: 0.3
+    min_speech_s: 0.3
+    silence_end_s: 0.7
+    max_utterance_s: 15.0
+    whisper_model: "small"
+    whisper_language: "de"
+    wakeword_model_path: ""  # leer = Wakeword-Gate deaktiviert
+    reconnect_delay_s: 3.0

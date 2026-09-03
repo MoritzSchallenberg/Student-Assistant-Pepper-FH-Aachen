@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ihk_pepper_tests</name>
+  <version>0.1.0</version>
+  <description>
+    Formale pytest-Suite fuer die reine Logik der ihk_pepper_*-Pakete
+    (kein Pepper/keine ROS2-Nodes noetig). Deckt NUR das ab, was ohne
+    Hardware pruefbar ist -- siehe docs/IMPLEMENTATION_REPORT.md fuer die
+    vollstaendige Liste manuell/live getesteter, aber nicht automatisierter
+    Ablaeufe (ROS2-Action-Server-Interaktionen, SSH/qicli, echte Audio-
+    Hardware).
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <test_depend>python3-pytest</test_depend>
+  <exec_depend>ihk_pepper_interaction</exec_depend>
+  <exec_depend>ihk_pepper_presentation</exec_depend>
+  <exec_depend>ihk_pepper_navigation</exec_depend>
+  <exec_depend>ihk_pepper_perception</exec_depend>
+  <exec_depend>ihk_pepper_audio</exec_depend>
+  <exec_depend>ihk_pepper_bridge</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

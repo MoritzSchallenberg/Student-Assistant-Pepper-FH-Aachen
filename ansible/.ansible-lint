@@ -6,7 +6,7 @@
 # hier ausgeschlossenen Regeln sind reine Namenskonventionen (Variablen-
 # Praefix pro Rolle, Grossschreibung von Task-Namen), deren Durchsetzung
 # in diesem Projekt keinen praktischen Nutzen haette (siehe
-# GITHUB_DEPLOYMENT_REPORT.md, Abschnitt CI/Linting).
+# docs/GITHUB_DEPLOYMENT_REPORT.md, Abschnitt CI/Linting).
 profile: basic
 
 skip_list:

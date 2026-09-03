@@ -25,9 +25,9 @@ ros_setup_bash: "/opt/ros/{{ ros_distro }}/setup.bash"
 # ---- Pepper / NAOqi ----
 # pepper_qi_host bewusst OHNE Default -- site-spezifisch, gehoert in die
 # echte (gitignorede) production.yml oder host_vars, nicht in diese
-# versionierte Datei (Repo ist oeffentlich, siehe GITHUB_DEPLOYMENT_REPORT.md).
+# versionierte Datei (Repo ist oeffentlich, siehe docs/GITHUB_DEPLOYMENT_REPORT.md).
 pepper_qi_host: "{{ undef(hint='pepper_qi_host muss in production.yml/host_vars gesetzt werden') }}"
-pepper_qi_port: 9503                  # NAOqi-2.9-Quirk, siehe STATUS.md
+pepper_qi_port: 9503                  # NAOqi-2.9-Quirk, siehe docs/STATUS.md
 pepper_qi_user: nao
 
 # ---- AnythingLLM ----

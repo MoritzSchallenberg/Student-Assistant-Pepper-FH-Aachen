@@ -2,7 +2,7 @@
 per-file-ignores =
     # Toter Code aus dem urspruenglichen Projekt-Scaffold -- nirgendwo
     # importiert/aufgerufen (per grep bestaetigt, siehe
-    # GITHUB_DEPLOYMENT_REPORT.md). Bewusst NICHT "repariert" (das wuerde
+    # docs/GITHUB_DEPLOYMENT_REPORT.md). Bewusst NICHT "repariert" (das wuerde
     # Parameter erfinden, die es nie gab), aber auch nicht aus dem Repo
     # entfernt (Auftrag 3.1: bestehenden Code nicht ohne Not loeschen).
-    flask_wrapper/mission/missioncontroller.py:F821
+    apps/web/mission/missioncontroller.py:F821

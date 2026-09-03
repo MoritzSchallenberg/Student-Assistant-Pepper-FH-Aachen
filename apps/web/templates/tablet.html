@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=1280, height=800, initial-scale=1, user-scalable=no">
+<title>Pepper</title>
+<style>
+  :root {
+    --ihk-blue: #003a5d;
+    --ihk-accent: #009fe3;
+    --bg: #0d1b24;
+    --panel: #12283a;
+    --text: #f2f6f8;
+    --muted: #9db3c2;
+    --danger: #d1495b;
+    --ok: #3ea35e;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    overflow: hidden; /* kein Scrollen fuer die Haupt-Aktionen, Auftrag Abschnitt 20 */
+    background: var(--bg); color: var(--text);
+    font-family: "Segoe UI", Arial, sans-serif;
+  }
+  .screen {
+    display: none;
+    width: 100vw; height: 100vh;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    padding: 24px;
+  }
+  .screen.active { display: flex; }
+
+  .brand { position: absolute; top: 18px; left: 24px; display: flex; align-items: center; gap: 12px; opacity: 0.85; }
+  .brand img { height: 42px; }
+  .brand span { font-size: 1.1rem; color: var(--muted); }
+
+  h1 { font-size: 3rem; margin: 0 0 12px 0; }
+  h2 { font-size: 2.2rem; margin: 0 0 16px 0; }
+  p.big { font-size: 1.6rem; line-height: 1.4; max-width: 900px; color: var(--text); }
+  p.muted { color: var(--muted); font-size: 1.2rem; }
+
+  .pulse-dot {
+    width: 140px; height: 140px; border-radius: 50%;
+    background: var(--ihk-accent);
+    display: flex; align-items: center; justify-content: center;
+    font-size: 3.5rem; margin-bottom: 28px;
+    animation: pulse 1.4s infinite ease-in-out;
+  }
+  @keyframes pulse {
+    0% { box-shadow: 0 0 0 0 rgba(0,159,227,0.55); }
+    70% { box-shadow: 0 0 0 40px rgba(0,159,227,0); }
+    100% { box-shadow: 0 0 0 0 rgba(0,159,227,0); }
+  }
+  .spinner {
+    width: 90px; height: 90px; border-radius: 50%;
+    border: 10px solid rgba(255,255,255,0.15); border-top-color: var(--ihk-accent);
+    animation: spin 0.9s linear infinite; margin-bottom: 28px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  .answer-box, .content-box {
+    background: var(--panel); border-radius: 24px; padding: 36px 44px;
+    max-width: 1000px; width: 90%; max-height: 60vh; overflow-y: auto;
+  }
+
+  video { max-width: 90%; max-height: 55vh; border-radius: 16px; background: black; }
+
+  .quiz-list { text-align: left; max-width: 900px; }
+  .quiz-list li { font-size: 1.4rem; margin: 14px 0; }
+
+  .button-bar {
+    position: absolute; bottom: 26px; left: 0; right: 0;
+    display: flex; justify-content: center; gap: 22px;
+  }
+  .tbtn {
+    font-size: 1.3rem; padding: 20px 34px; border-radius: 18px; border: none;
+    background: var(--panel); color: var(--text); min-width: 180px;
+    box-shadow: 0 4px 14px rgba(0,0,0,0.35);
+  }
+  .tbtn:active { transform: scale(0.96); }
+  .tbtn.stop { background: var(--danger); color: white; }
+  .tbtn.primary { background: var(--ihk-accent); color: white; }
+
+  .status-pill {
+    position: absolute; top: 18px; right: 24px; font-size: 1rem;
+    padding: 8px 16px; border-radius: 999px; background: var(--panel); color: var(--muted);
+  }
+  .status-pill.ok { color: var(--ok); }
+  .status-pill.bad { color: var(--danger); }
+
+  #screen-error { color: var(--text); }
+  #screen-error .icon { font-size: 4rem; margin-bottom: 20px; }
+  #screen-offline .icon { font-size: 4rem; margin-bottom: 20px; opacity: 0.6; }
+
+  .more-box { margin-top: 20px; font-size: 1.2rem; color: var(--muted); display: none; max-width: 900px; }
+  .more-box.shown { display: block; }
+</style>
+</head>
+<body>
+
+<div class="brand"><img src="{{ url_for('static', filename='images/logo_ihk.png') }}" alt="IHK"><span>Pepper</span></div>
+<div id="conn-pill" class="status-pill">verbinde...</div>
+
+<!-- START: Standardbildschirm, niemand erkannt -->
+<div id="screen-start" class="screen">
+  <h1>Hallo, ich bin Pepper!</h1>
+  <p class="big">Komm naeher und sag "Hallo", oder tippe einfach auf mein Tablet.</p>
+</div>
+
+<!-- ATTRACT: Person erkannt, aber noch nicht im Dialog -->
+<div id="screen-attract" class="screen">
+  <div class="pulse-dot">👋</div>
+  <h1>Schoen, dass du da bist!</h1>
+  <p class="big">Sprich einfach mit mir, ich hoere zu.</p>
+</div>
+
+<!-- LISTENING -->
+<div id="screen-listening" class="screen">
+  <div class="pulse-dot">🎤</div>
+  <h2>Ich hoere zu ...</h2>
+  <p class="muted">Sprich jetzt ganz normal mit mir.</p>
+</div>
+
+<!-- TRANSCRIBING -->
+<div id="screen-transcribing" class="screen">
+  <div class="spinner"></div>
+  <h2>Ich verstehe ...</h2>
+  <div class="content-box"><p class="big" id="transcribing-text"></p></div>
+</div>
+
+<!-- THINKING -->
+<div id="screen-thinking" class="screen">
+  <div class="spinner"></div>
+  <h2>Ich ueberlege ...</h2>
+</div>
+
+<!-- ANSWER -->
+<div id="screen-answer" class="screen">
+  <h2>Meine Antwort</h2>
+  <div class="answer-box"><p class="big" id="answer-text"></p></div>
+</div>
+
+<!-- PRESENTATION -->
+<div id="screen-presentation" class="screen">
+  <h2 id="presentation-title">Tagesthema</h2>
+  <video id="presentation-video" controls>
+    <track id="presentation-track" kind="subtitles" srclang="de" label="Deutsch" default>
+  </video>
+  <div class="content-box" id="presentation-text-box" style="display:none;">
+    <p class="big" id="presentation-text"></p>
+  </div>
+  <div class="more-box" id="presentation-more"></div>
+</div>
+
+<!-- QUIZ -->
+<div id="screen-quiz" class="screen">
+  <h2>Quiz-Zeit!</h2>
+  <div class="content-box">
+    <ul class="quiz-list" id="quiz-list"></ul>
+    <p class="muted">Sag mir einfach deine Antwort.</p>
+  </div>
+</div>
+
+<!-- NAVIGATION (Platzhalter, Nav2-Integration in dieser Version nicht aktiv) -->
+<div id="screen-navigation" class="screen">
+  <div class="spinner"></div>
+  <h2>Ich bewege mich</h2>
+  <p class="big muted">Navigation ist in dieser Version noch nicht aktiv (siehe docs/IMPLEMENTATION_REPORT.md).</p>
+</div>
+
+<!-- ERROR -->
+<div id="screen-error" class="screen">
+  <div class="icon">⚠️</div>
+  <h2>Es gab ein Problem</h2>
+  <p class="big" id="error-text">Bitte wende dich an das Personal.</p>
+</div>
+
+<!-- OFFLINE -->
+<div id="screen-offline" class="screen">
+  <div class="icon">🔌</div>
+  <h2>Keine Verbindung zum System</h2>
+  <p class="big muted">Diese Ansicht wird aktiv, sobald die ROS2-Knoten laufen.</p>
+</div>
+
+<div class="button-bar" id="button-bar" style="display:none;">
+  <button class="tbtn" onclick="sendControl('back')">Zurueck</button>
+  <button class="tbtn" onclick="sendControl('repeat')">Wiederholen</button>
+  <button class="tbtn" id="more-btn" onclick="toggleMore()">Mehr</button>
+  <button class="tbtn stop" onclick="sendControl('stop')">Stopp</button>
+</div>
+
+<script>
+const SCREENS = ["start","attract","listening","transcribing","thinking","answer",
+                  "presentation","quiz","navigation","error","offline"];
+const SCREENS_WITH_BUTTONS = new Set(["listening","transcribing","thinking","answer","presentation","quiz","navigation"]);
+
+let lastPresentationTopic = null;
+let moreShown = false;
+
+function showScreen(name) {
+  for (const s of SCREENS) {
+    document.getElementById("screen-" + s).classList.toggle("active", s === name);
+  }
+  document.getElementById("button-bar").style.display = SCREENS_WITH_BUTTONS.has(name) ? "flex" : "none";
+  if (name !== "presentation") { moreShown = false; }
+}
+
+function resolveScreen(state) {
+  if (!state.bridge_available) return "offline";
+  const ds = state.dialogue_state, ps = state.presentation_state, ss = state.safety_state;
+  if (ds === null && ps === null && ss === null) return "offline"; // ROS laeuft, aber nichts empfangen -- ehrlich als offline zeigen
+
+  if (ss && ss.emergency_stop) return "error";
+  if (ds && ds.state === 8) return "error";       // DialogueState.ERROR
+  if (ps && ps.state === 13) return "error";       // PresentationState.ERROR
+
+  if (ps && ps.state === 8) return "quiz";         // QUIZ
+  if (ps && [1,2,3,4,5,6,7,9,10,11].includes(ps.state)) return "presentation"; // SELECTING..SUMMARY, QA, RETURNING, PAUSED
+
+  if (ds) {
+    switch (ds.state) {
+      case 0: return (state.interaction_state_name === "ATTRACT") ? "attract" : "start"; // WAITING_FOR_WAKEWORD
+      case 1: return "listening";
+      case 2: return "transcribing";
+      case 3: case 4: return "thinking";           // RETRIEVING, THINKING
+      case 5: case 6: return "answer";              // SPEAKING, WAITING_FOR_FOLLOWUP
+      case 7: return "start";                        // CANCELLED
+    }
+  }
+  if (state.interaction_state_name === "ATTRACT") return "attract";
+  if (state.interaction_state_name === "NAVIGATING") return "navigation";
+  return "start";
+}
+
+function renderPresentation(state) {
+  const cmd = state.tablet_command;
+  const video = document.getElementById("presentation-video");
+  const track = document.getElementById("presentation-track");
+  const title = document.getElementById("presentation-title");
+  const textBox = document.getElementById("presentation-text-box");
+  const text = document.getElementById("presentation-text");
+  const more = document.getElementById("presentation-more");
+
+  if (!cmd) return;
+  if (cmd.cmd === "preview") {
+    title.textContent = cmd.title || "Tagesthema";
+    text.textContent = cmd.short_description || "";
+    textBox.style.display = "block";
+    video.style.display = "none";
+    more.classList.remove("shown"); more.textContent = "";
+  } else if (cmd.cmd === "play_video") {
+    if (lastPresentationTopic !== cmd.video_path) {
+      video.src = "/tablet/media/" + cmd.video_path.split("/content/").pop().replace(/^.*content\//, "");
+      // Fallback falls video_path bereits relativ zu content/ ist:
+      if (!video.src.includes("/tablet/media/")) { video.src = "/tablet/media/" + cmd.video_path; }
+      if (cmd.subtitle_path) {
+        track.src = "/tablet/media/" + cmd.subtitle_path.replace(/^.*content\//, "");
+      }
+      lastPresentationTopic = cmd.video_path;
+    }
+    video.style.display = "block";
+    textBox.style.display = "none";
+  } else if (cmd.cmd === "video_ended" || cmd.cmd === "cancelled" || cmd.cmd === "return") {
+    video.style.display = "none";
+  }
+}
+
+function renderQuiz(state) {
+  const cmd = state.tablet_command;
+  const list = document.getElementById("quiz-list");
+  if (cmd && cmd.cmd === "quiz" && Array.isArray(cmd.questions)) {
+    list.innerHTML = "";
+    for (const q of cmd.questions) {
+      const li = document.createElement("li");
+      li.textContent = typeof q === "string" ? q : (q.question || "");
+      list.appendChild(li);
+    }
+  }
+}
+
+function toggleMore() {
+  moreShown = !moreShown;
+  const more = document.getElementById("presentation-more");
+  more.classList.toggle("shown", moreShown);
+  if (moreShown && !more.textContent) {
+    more.textContent = "Weitere Details werden hier angezeigt, sobald ein Thema mit Volltext aktiv ist.";
+  }
+}
+
+async function sendControl(action) {
+  try {
+    await fetch("/tablet/api/control", {
+      method: "POST",
+      headers: {"Content-Type": "application/x-www-form-urlencoded"},
+      body: "action=" + encodeURIComponent(action)
+    });
+  } catch (e) { console.warn("control failed", e); }
+  if (action === "stop" || action === "back") { showScreen("start"); }
+}
+
+async function poll() {
+  const pill = document.getElementById("conn-pill");
+  try {
+    const res = await fetch("/tablet/api/state", {cache: "no-store"});
+    const state = await res.json();
+
+    pill.textContent = state.bridge_available ? "verbunden" : "nicht verbunden";
+    pill.className = "status-pill " + (state.bridge_available ? "ok" : "bad");
+
+    const screen = resolveScreen(state);
+    showScreen(screen);
+
+    if (screen === "transcribing" && state.dialogue_state) {
+      document.getElementById("transcribing-text").textContent = state.dialogue_state.last_transcript || "";
+    }
+    if (screen === "answer" && state.dialogue_state) {
+      document.getElementById("answer-text").textContent = state.dialogue_state.last_response || "";
+    }
+    if (screen === "error") {
+      const msg = (state.dialogue_state && state.dialogue_state.error_message)
+        || (state.safety_state && state.safety_state.reason) || "Unbekannter Fehler.";
+      document.getElementById("error-text").textContent = msg;
+    }
+    if (screen === "presentation") { renderPresentation(state); }
+    if (screen === "quiz") { renderQuiz(state); }
+  } catch (e) {
+    pill.textContent = "nicht erreichbar";
+    pill.className = "status-pill bad";
+    showScreen("offline");
+  }
+}
+
+showScreen("start");
+poll();
+setInterval(poll, 700);
+</script>
+</body>
+</html>

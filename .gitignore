@@ -1,4 +1,4 @@
-# Grosse/generierte Sachen leben in large_files/ (siehe INSTALL.md) und
+# Grosse/generierte Sachen leben in large_files/ (siehe docs/INSTALL.md) und
 # werden hier zur Sicherheit nochmal explizit ausgeschlossen, falls
 # jemand large_files/ selbst mit hochlaedt oder ein Tool Symlinks doch
 # mitkopiert.
@@ -7,8 +7,8 @@ large_files/
 # Lokaler Bequemlichkeits-Symlink auf large_files/ros2_ws (naoqi_driver2-
 # Fremdcode) -- zeigt auf einen Pfad, der nie ins Repo kommt, war aber
 # versehentlich als Git-Symlink-Blob getrackt (kaputter Link bei jedem
-# frischen Clone). "venv/"-Symlinks derselben Art (flask_wrapper/venv,
-# vision_ws/venv) faengt die generische Regel weiter unten schon ab.
+# frischen Clone). "venv/"-Symlinks derselben Art (apps/web/venv,
+# vision/venv) faengt die generische Regel weiter unten schon ab.
 /ros2_ws
 
 # Alte Vollbackup-Zips gehoeren nicht ins Repo (Modelle/Downloads separat,
@@ -18,9 +18,14 @@ large_files/
 # Python
 __pycache__/
 *.pyc
-venv/
+# KEIN Trailing-Slash bei venv/.venv: Git matcht ein Verzeichnismuster mit
+# "/" nie gegen einen Symlink (nur gegen echte Verzeichnisse) -- apps/web/venv
+# und vision/venv sind aber Symlinks auf large_files/venvs/... und wurden
+# durch "venv/" nie erfasst, landeten deshalb versehentlich im Git-Tracking
+# (per git-mv-Redo nach Repo-Reorg gefunden, siehe docs/GITHUB_DEPLOYMENT_REPORT.md).
+venv
 venv_dialog/
-.venv/
+.venv
 *.egg-info/
 .pytest_cache/
 
@@ -50,7 +55,7 @@ log/
 # Ausnahme: winziges, anonymes Test-Fixture fuer die Audio-Pipeline-Tests
 # (ihk_pepper_tests) -- bewusst versioniert, damit CI die Tests ausfuehren
 # kann (siehe docs/troubleshooting.md).
-!pepper_autonomy_ws/src/ihk_pepper_tests/test/fixtures/*.wav
+!ros2/autonomy_ws/src/ihk_pepper_tests/test/fixtures/*.wav
 
 # Logs
 *.log
@@ -59,9 +64,9 @@ runtime-data/
 # Grosse/ladbare ML-Modelle (YOLO/Whisper/sentence-transformers) --
 # werden per Downloadverfahren nachgeladen, siehe docs/configuration.md.
 # *.pt landet z.B. automatisch im CWD, wenn YOLO das Modell selbst
-# herunterlaedt (siehe pepper_autonomy_ws/yolov8n-pose.pt, gefunden beim
+# herunterlaedt (siehe ros2/autonomy_ws/yolov8n-pose.pt, gefunden beim
 # Vorbereiten dieses Repos -- identisch zu large_files/models/, siehe
-# GITHUB_DEPLOYMENT_REPORT.md).
+# docs/GITHUB_DEPLOYMENT_REPORT.md).
 models/
 *.pt
 *.onnx
@@ -75,7 +80,7 @@ secrets/
 # bewusst lokal gehalten statt versioniert, siehe docs/configuration.md).
 # HINWEIS: group_vars/vault.yml (flache Datei statt group_vars/all/vault.yml)
 # wird von Ansible gar nicht geladen -- das war ein echter, per Live-Test
-# gefundener Bug, siehe GITHUB_DEPLOYMENT_REPORT.md.
+# gefundener Bug, siehe docs/GITHUB_DEPLOYMENT_REPORT.md.
 ansible/inventory/production.yml
 ansible/inventory/group_vars/all/vault.yml
 ansible/vault-password*
