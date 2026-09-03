@@ -12,3 +12,10 @@ bool charging_cable_connected
 bool bumper_active
 bool emergency_stop
 string reason
+
+# Erweiterung Entwicklungsauftrag 1, Abschnitt 10: Rechen-NUC-Eingang.
+# false blockiert Bewegung genauso wie jeder andere SafetyInputs-Grund
+# (siehe safety_gate.py) -- KEINE elektrische Aussage, nur ein
+# Software-Eingang, in dieser Runde ausschliesslich durch einen Mock
+# befuellt (kein echtes NUC-Telemetrie-Signal vorhanden).
+bool compute_power_valid

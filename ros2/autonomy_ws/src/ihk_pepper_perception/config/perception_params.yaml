@@ -1,17 +1,37 @@
 perception_node:
   ros__parameters:
-    # Pepper-Kamera (Fallback, ~1Hz, siehe docs/STATUS.md):
+    # Pepper-Kamera (Fallback, ~1Hz, siehe docs/STATUS.md), rein 2D --
+    # depth_topic leer heisst has_3d_position bleibt IMMER False:
     image_topic: "/camera/front/image_raw"
     camera_info_topic: "/camera/front/camera_info"
     camera_frame: "CameraTop_optical_frame"
-    depth_topic: ""  # Pepper-Tiefenbild: "/camera/depth/image_raw"
+    depth_topic: ""
+    source_camera_name: "pepper_camera_2d_only"
 
-    # Fuer externe RealSense umschalten (KEINE Code-Aenderung noetig):
+    # Fuer externe RealSense umschalten (KEINE Code-Aenderung noetig,
+    # siehe ihk_pepper_navigation/launch/realsense_bringup.launch.py und
+    # docs/REALSENSE_CALIBRATION.md -- Frames sind Platzhalter, bis
+    # realsense_mount.xacro real vermessen ist):
     #   image_topic: "/camera/color/image_raw"
     #   camera_info_topic: "/camera/color/camera_info"
-    #   camera_frame: "camera_color_optical_frame"
+    #   camera_frame: "realsense_color_optical_frame"
     #   depth_topic: "/camera/aligned_depth_to_color/image_raw"
+    #   source_camera_name: "realsense"
+    #   depth_scale_to_m: 1.0   # 1.0 bei 32FC1 (Meter), 0.001 bei 16UC1 (Millimeter) -- Treiber-abhaengig!
 
     confidence_threshold: 0.4
     model_path: "yolov8n-pose.pt"
     publish_rate_limit_s: 0.0
+
+    # Synchronisierte 3D-Verarbeitung (Entwicklungsauftrag 1, Abschnitt 4)
+    sync_slop_s: 0.05
+    depth_scale_to_m: 1.0
+    base_frame: "base_link"
+    tf_timeout_s: 0.1
+    track_timeout_s: 5.0
+    min_stable_frames: 5
+    min_stable_duration_s: 1.0
+
+    # Wink-Erkennung (Entwicklungsauftrag 1, Abschnitt 5)
+    enable_wave_detection: true
+    wave_min_keypoint_confidence: 0.3

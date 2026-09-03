@@ -1,0 +1,12 @@
+# Erlaubt dem Behavior Tree (SetInteractionState-Knoten), explizit einen
+# Zustandswechsel bei ihk_pepper_interaction/supervisor_node anzufragen
+# (Entwicklungsauftrag 1, Abschnitt 6) -- z.B. den Uebergang in
+# CONVERSATION_READY nach erfolgreicher Mock-Annaeherung. Der Supervisor
+# bleibt die einzige Quelle der Wahrheit fuer den Zustand: er darf die
+# Anfrage ablehnen (success=false), z.B. wenn ein Safety-Event
+# zwischenzeitlich eingetreten ist.
+
+string state_name   # muss zu einem Namen in InteractionState passen, siehe interaction_state.py
+---
+bool success
+string message

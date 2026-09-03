@@ -11,6 +11,7 @@ find_package(action_msgs REQUIRED)
 rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/PersonTrack.msg"
   "msg/PersonTrackArray.msg"
+  "msg/WaveGestureEvent.msg"
   "msg/DialogueState.msg"
   "msg/PresentationState.msg"
   "msg/SafetyState.msg"
@@ -20,6 +21,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ReloadKnowledge.srv"
   "srv/CancelInteraction.srv"
   "srv/SetMotionPermission.srv"
+  "srv/SetInteractionState.srv"
   "action/Say.action"
   "action/RunDialogue.action"
   "action/PlayPresentation.action"

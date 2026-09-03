@@ -46,6 +46,11 @@ class TrackHistory:
     age_s: float = 0.0
     time_since_seen_s: float = 0.0
     in_keepout_zone: bool = False
+    # Entwicklungsauftrag 1, Abschnitt 4: echte Zeitstempel statt der
+    # bisherigen "+= 1.0 pro Frame"-Naeherung, siehe perception_node.py.
+    first_seen_s: float = None
+    last_seen_wall_s: float = 0.0
+    depth_confidence: float = 0.0
 
 
 GOOD_DISTANCE_RANGE_M = (1.0, 2.5)
