@@ -4,6 +4,13 @@
 # mitkopiert.
 large_files/
 
+# Lokaler Bequemlichkeits-Symlink auf large_files/ros2_ws (naoqi_driver2-
+# Fremdcode) -- zeigt auf einen Pfad, der nie ins Repo kommt, war aber
+# versehentlich als Git-Symlink-Blob getrackt (kaputter Link bei jedem
+# frischen Clone). "venv/"-Symlinks derselben Art (flask_wrapper/venv,
+# vision_ws/venv) faengt die generische Regel weiter unten schon ab.
+/ros2_ws
+
 # Alte Vollbackup-Zips gehoeren nicht ins Repo (Modelle/Downloads separat,
 # siehe docs/configuration.md "Modelle & Medien").
 *.zip
