@@ -57,3 +57,23 @@ am Ende geschrieben), damit jeder Zwischenstand nachvollziehbar ist.
   ihk_pepper_llm_contracts ihk_pepper_person_memory ihk_pepper_tests`
   grün (nur bekannte setuptools-Deprecation-Warnungen, keine neuen).
   Gesamtsuite jetzt **77/77** (54 Baseline + 23 neu).
+- **AP4+AP5 abgeschlossen** (Kernlogik + ROS-Verdrahtung):
+  `deprojection.py` (Median-Patch-Tiefe, Entprojektion), `wave_detector.py`
+  (Zustandsfolge arm_raised→wave_candidate→wave_confirmed), beide pure/
+  ROS-frei mit 17 neuen Tests. `perception_node.py` neu verdrahtet:
+  `message_filters.ApproximateTimeSynchronizer` fuer Farbe+Tiefe+
+  CameraInfo, tf2-Transformation ins `base_frame` (fehlende/veraltete TF
+  → `has_3d_position=False`, nie eine Fantasieposition), echte
+  Track-Timeout-Loeschung mit echten Zeitdifferenzen (vorher grobe
+  `+=1.0`-Naeherung), `positions_m` wird jetzt tatsaechlich befuellt.
+  `PersonTrack.msg` um `stable`/`stable_for_s`/`depth_confidence`/
+  `source_camera` erweitert, neue `WaveGestureEvent.msg`,
+  `SetInteractionState.srv`, `SafetyState.msg.compute_power_valid`.
+  Gesamtsuite **94/94**. **Nicht verifiziert**: echte Kamera/YOLO-
+  Erkennung einer realen Person, echtes TF -- keine RealSense-Hardware
+  angeschlossen. Node konstruiert/spinnt in beiden Modi nachweislich
+  fehlerfrei, ein synthetischer synchronisierter Frame durchlaeuft die
+  komplette Pipeline ohne Exception.
+- `ros-jazzy-behaviortree-cpp` war zum Zeitpunkt dieses Zwischenstands
+  **noch nicht installiert** -- AP2/AP6 (Behavior-Tree-Bau) folgen,
+  sobald verfuegbar; bis dahin Fortsetzung mit AP7 (Gestenkatalog v2).
