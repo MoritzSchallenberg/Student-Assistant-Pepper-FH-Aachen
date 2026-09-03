@@ -1,0 +1,25 @@
+schema_version: 2
+name: look_at_person
+description: >
+  Kopf in eine neutrale, nach vorne gerichtete Position bringen
+  ("Aufmerksamkeit zeigen"). PLATZHALTER: berechnet noch KEINE echte
+  Blickrichtung zu einer konkreten Person (das braeuchte deren
+  Bildposition/Winkel relativ zu Pepper aus ihk_pepper_perception) --
+  folgt erst in einem spaeteren Auftrag, sobald eine echte 3D-
+  Personenposition zuverlaessig vorliegt. Aktuell nur eine feste,
+  sichere Neutralstellung.
+requires_stationary: true
+allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY, SPEAKING]
+speed_scale_default: 0.8
+restore_after: false
+tested_status: draft
+tested_date: null
+test_note: >
+  Reine Neutralstellung (HeadYaw=0, HeadPitch=0) -- braucht keine
+  Live-Referenz, ist aber noch keine echte Personen-Blickrichtung.
+  Siehe description.
+max_duration_s: 1.5
+on_cancel: hold
+keyframes:
+  - time_from_start_s: 0.8
+    joints: {HeadYaw: 0.0, HeadPitch: 0.0}

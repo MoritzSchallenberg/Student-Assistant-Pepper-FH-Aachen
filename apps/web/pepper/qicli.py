@@ -179,6 +179,34 @@ class qicli:
         )
         return error == ""
 
+    def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute=True):
+        """Synchrone Multi-Gelenk-Trajektorie in EINEM
+        ALMotion.angleInterpolation-Aufruf -- alle Gelenke bewegen sich
+        zueinander synchron (NAOqi fuehrt das selbst atomar aus), keine
+        sequenziellen Einzelaufrufe wie set_angle(). NAOqis eigene API
+        unterstuetzt names[]/angleLists[][]/timeLists[][]/isAbsolute
+        nativ; die qicli-CLI-Argumente werden dafuer als JSON kodiert.
+
+        WICHTIG (Entwicklungsauftrag 1, Abschnitt 7): ob die qicli-CLI auf
+        diesem Pepper verschachtelte Listen als JSON-Argumente tatsaechlich
+        korrekt an ALMotion durchreicht, konnte in dieser Session NICHT
+        live geprueft werden (kein Zugriff auf einen echten Pepper). Diese
+        Methode ist dry_run_validated, NICHT live_validated -- vor
+        produktivem Einsatz einmal einzeln, langsam, unter Aufsicht
+        gegenpruefen (siehe docs/GESTURE_AUTHORING.md). Falls die JSON-
+        Kodierung nicht funktioniert, ist der sichere Fallback eine
+        sequenzielle Ausfuehrung ueber mehrere set_angle()-Aufrufe (KEINE
+        echte Synchronitaet -- dann so dokumentieren, nicht vortaeuschen)."""
+        max_duration = max((t for times in time_lists for t in times), default=1.0)
+        names_json = json.dumps(joint_names)
+        angles_json = json.dumps(angle_lists)
+        times_json = json.dumps(time_lists)
+        output, error = self.exec_command(
+            f"timeout {int(max_duration) + 10} qicli call ALMotion.angleInterpolation "
+            f"'{names_json}' '{angles_json}' '{times_json}' {int(is_absolute)}"
+        )
+        return error == ""
+
     def set_stiffness(self, chain, value):
         """Setzt die Steifigkeit (0.0-1.0) einer Gelenkkette, z.B. 'LArm', 'RArm', 'Head', 'Body'."""
         output, error = self.exec_command(f"timeout 8 qicli call ALMotion.setStiffnesses {chain} {value}")

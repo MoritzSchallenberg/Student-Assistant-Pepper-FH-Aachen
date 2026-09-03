@@ -29,7 +29,7 @@ if _FLASK_WRAPPER_PATH not in sys.path:
 from pepper.qicli import qicli  # noqa: E402
 import config.config as _cfg  # noqa: E402
 
-from .joint_limits import validate_angle, JointLimitError  # noqa: E402
+from .joint_limits import validate_angle, validate_angle_with_margin, JointLimitError  # noqa: E402
 
 
 class ThreadSafePepperClient:
@@ -72,6 +72,21 @@ class ThreadSafePepperClient:
         with self._lock:
             self._ensure_connected()
             return self._client.set_angle(joint, angle, duration)
+
+    def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute: bool = True):
+        """Synchrone Multi-Gelenk-Trajektorie, siehe qicli.play_trajectory()
+        -- dry_run_validated, NICHT live_validated (Entwicklungsauftrag 1,
+        Abschnitt 7). Validiert jeden Winkel nochmal mit Sicherheitsmarge,
+        auch wenn GestureCatalog._validate_v2() das schon beim Laden
+        geprueft hat (Verteidigung in der Tiefe -- diese Methode kann
+        theoretisch auch mit Werten aufgerufen werden, die nicht aus
+        einer geladenen Gesture stammen)."""
+        for joint_name, angles in zip(joint_names, angle_lists):
+            for angle in angles:
+                validate_angle_with_margin(joint_name, angle)
+        with self._lock:
+            self._ensure_connected()
+            return self._client.play_trajectory(joint_names, angle_lists, time_lists, is_absolute)
 
     def get_angle(self, joint: str):
         with self._lock:

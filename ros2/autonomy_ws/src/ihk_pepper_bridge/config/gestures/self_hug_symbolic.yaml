@@ -1,0 +1,24 @@
+schema_version: 2
+name: self_hug_symbolic
+description: >
+  Kontaktlose, SYMBOLISCHE Eigenbewegung -- Arme leicht Richtung eigenen
+  Oberkoerper. Pepper darf hierbei KEINE Person beruehren und KEINE
+  echte Umarmung ausfuehren (Entwicklungsauftrag 1, Abschnitt 7,
+  explizit ausgeschlossen). Keine vergleichbare bisher getestete Geste
+  vorhanden -- Winkel deshalb bewusst klein/konservativ gewaehlt.
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY, SPEAKING]
+speed_scale_default: 0.5
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Keine Live-Referenzgeste vorhanden -- Winkel bewusst konservativ
+  gewaehlt, noch nicht einmal dry_run visuell an einem echten Pepper
+  geprueft. Vor jeder Live-Nutzung besonders sorgfaeltig einzeln,
+  langsam und unter direkter Aufsicht pruefen.
+max_duration_s: 3.0
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 2.0
+    joints: {LShoulderPitch: 0.5, RShoulderPitch: 0.5, LElbowRoll: -0.6, RElbowRoll: 0.6}

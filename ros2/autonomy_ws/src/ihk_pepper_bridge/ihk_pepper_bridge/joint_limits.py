@@ -46,8 +46,41 @@ JOINT_LIMITS = {
 }
 
 
+# Entwicklungsauftrag 1, Abschnitt 7: Gestenkatalog v2 (synchrone
+# Keyframes) prueft zusaetzlich mit Sicherheitsmarge, statt exakt an der
+# Dokumentationsgrenze zu erlauben -- besonders wichtig fuer die vielen
+# NICHT live_verified Grenzwerte oben.
+SAFETY_MARGIN_RAD = 0.05
+
+# Nur diese Gelenke duerfen in einem Gestenkatalog-Eintrag ueberhaupt
+# referenziert werden (Entwicklungsauftrag 1, Abschnitt 7: "nur
+# freigegebene Gelenke zulassen") -- bewusst identisch zu JOINT_LIMITS.keys(),
+# als eigener Name fuer klare Absicht im Code, der ihn importiert.
+ALLOWED_GESTURE_JOINTS = frozenset(JOINT_LIMITS.keys())
+
+
 class JointLimitError(ValueError):
     pass
+
+
+def validate_angle_with_margin(joint: str, angle: float, margin_rad: float = SAFETY_MARGIN_RAD) -> None:
+    """Strenger als validate_angle(strict=True): verlangt zusaetzlich
+    Abstand zur Dokumentationsgrenze. Wirft JointLimitError, wenn das
+    Gelenk unbekannt ist ODER der Winkel (inkl. Marge) ausserhalb liegt --
+    anders als validate_angle() reicht dies unbekannte Gelenke NICHT
+    durch, siehe ALLOWED_GESTURE_JOINTS."""
+    limits = JOINT_LIMITS.get(joint)
+    if limits is None:
+        raise JointLimitError(f"{joint}: unbekanntes/nicht freigegebenes Gelenk")
+    lo, hi, _ = limits
+    eff_lo, eff_hi = lo + margin_rad, hi - margin_rad
+    if eff_lo > eff_hi:
+        raise JointLimitError(f"{joint}: Sicherheitsmarge {margin_rad} groesser als der gesamte Gelenkbereich")
+    if not (eff_lo <= angle <= eff_hi):
+        raise JointLimitError(
+            f"{joint}: Winkel {angle} ausserhalb der Grenzen mit Sicherheitsmarge "
+            f"[{eff_lo}, {eff_hi}] (Rohgrenze [{lo}, {hi}])"
+        )
 
 
 def validate_angle(joint: str, angle: float, strict: bool = True) -> float:

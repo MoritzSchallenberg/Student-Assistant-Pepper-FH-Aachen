@@ -1,15 +1,34 @@
+schema_version: 2
 name: wave_left
-description: "Winkt mit dem linken Arm (3x)"
-metadata:
-  imported_from: "apps/web/pepper/qicli.py wave(side='L')"
-disable_breathing: []
+description: >
+  Winkt mit dem linken Arm. Aus der vorher live getesteten sequenziellen
+  v1-Version (LShoulderPitch=-1.0, LElbowRoll=-0.9, LElbowYaw -0.6<->-1.6
+  oszillierend, siehe docs/STATUS.md/docs/CAPABILITIES.md) in synchrone
+  Keyframes uebersetzt -- dieselben Winkelwerte, jetzt als EIN
+  synchroner ALMotion-Aufruf statt 8 sequenzieller qicli-Einzelaufrufe.
+requires_stationary: true
+allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
+speed_scale_default: 1.0
 restore_after: true
-steps:
-  - {joint: LShoulderPitch, angle: -1.0, duration: 1.0}
-  - {joint: LElbowRoll, angle: -0.9, duration: 1.0}
-  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
-  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}
-  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
-  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}
-  - {joint: LElbowYaw, angle: -0.6, duration: 0.4}
-  - {joint: LElbowYaw, angle: -1.6, duration: 0.4}
+tested_status: dry_run_validated
+tested_date: "2026-09-03"
+test_note: >
+  Winkelwerte identisch zur live getesteten v1-Sequenz. Der NEUE
+  synchrone v2-Transportweg selbst ist dry_run_validated, NICHT
+  live_validated -- kein Pepper-Zugriff in dieser Session. Vor
+  produktivem Einsatz einzeln unter Aufsicht pruefen.
+max_duration_s: 3.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.8
+    joints: {LShoulderPitch: -1.0, LElbowRoll: -0.9, LElbowYaw: -0.6}
+  - time_from_start_s: 1.2
+    joints: {LElbowYaw: -1.6}
+  - time_from_start_s: 1.6
+    joints: {LElbowYaw: -0.6}
+  - time_from_start_s: 2.0
+    joints: {LElbowYaw: -1.6}
+  - time_from_start_s: 2.4
+    joints: {LElbowYaw: -0.6}
+  - time_from_start_s: 2.8
+    joints: {LElbowYaw: -1.6}
