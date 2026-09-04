@@ -69,6 +69,30 @@ class SupervisorNode(Node):
         self.create_subscription(Bool, "/compute_power_valid", self._on_compute_power_valid, 10)
         self._compute_power_valid = True
 
+        # Entwicklungsauftrag 1, Abschnitt 12: dieselben drei Werte waren
+        # bisher fest auf False verdrahtet (kein Laser-/Lokalisierungs-/
+        # Tiefen-Node in dieser Session live verbunden -- sicherer
+        # Default). Jetzt zusaetzlich als Topics ueberschreibbar, exakt
+        # nach demselben Muster wie compute_power_valid -- damit ein
+        # Offline-/Testmodus (oder spaeter Entwicklungsauftrag 2s echte
+        # Lokalisierung/Hinderniserkennung) sie tatsaechlich setzen kann,
+        # OHNE den sicheren Default fuer alle bestehenden Systeme ohne
+        # solche Publisher zu aendern.
+        self.create_subscription(Bool, "/localization_valid", self._on_localization_valid, 10)
+        self.create_subscription(Bool, "/obstacle_data_valid", self._on_obstacle_data_valid, 10)
+        self.create_subscription(Bool, "/person_depth_valid", self._on_person_depth_valid, 10)
+        self._localization_valid = False
+        self._obstacle_data_valid = False
+        self._person_depth_valid = False
+
+        # charging_cable_connected: sicherer Default bleibt True
+        # ("angeschlossen bis Gegenteil bekannt", siehe safety_gate.py) --
+        # gleiches Ueberschreib-Muster wie oben, damit ein Offline-/
+        # Testmodus ihn testweise auf False setzen kann.
+        self.create_subscription(
+            Bool, "/charging_cable_connected", self._on_charging_cable_connected, 10)
+        self._charging_cable_connected = True
+
         self.safety_pub = self.create_publisher(SafetyState, "safety_state", 10)
         self.create_timer(0.5, self._publish_safety_state)
 
@@ -116,19 +140,35 @@ class SupervisorNode(Node):
     def _on_compute_power_valid(self, msg: Bool):
         self._compute_power_valid = msg.data
 
+    def _on_localization_valid(self, msg: Bool):
+        self._localization_valid = msg.data
+
+    def _on_obstacle_data_valid(self, msg: Bool):
+        self._obstacle_data_valid = msg.data
+
+    def _on_person_depth_valid(self, msg: Bool):
+        self._person_depth_valid = msg.data
+
+    def _on_charging_cable_connected(self, msg: Bool):
+        self._charging_cable_connected = msg.data
+
     def _build_safety_inputs(self) -> SafetyInputs:
         now = time.time()
         data_age = (now - self._last_tracks_t) if self._last_tracks_t else 999.0
         return SafetyInputs(
             bumper_active=self._bumper_active,
             hardware_fault=False,  # kein Health-Aggregator in dieser Session verdrahtet
-            localization_valid=False,  # keine Nav2-Lokalisierung in dieser Session aufgesetzt -- sicherer Default
+            # Sicherer Default False, solange kein Publisher etwas anderes
+            # sagt (kein Laser-/Lokalisierungs-/Tiefen-Node live verbunden)
+            # -- jetzt ueberschreibbar via /localization_valid etc., siehe
+            # _on_localization_valid() und Konstruktor-Kommentar.
+            localization_valid=self._localization_valid,
             battery_percent=self._battery_percent,
             low_battery_threshold=self.get_parameter("low_battery_threshold").value,
             user_stop_requested=self.state_machine.state == InteractionState.SAFE_STOP,
-            obstacle_data_valid=False,  # dito -- kein Laser-Filter-Node in dieser Session live verbunden
-            person_depth_valid=False,   # dito -- keine 3D-Personenposition in dieser Session verdrahtet
-            charging_cable_connected=True,  # sicherer Default, siehe SafetyInputs-Doku
+            obstacle_data_valid=self._obstacle_data_valid,
+            person_depth_valid=self._person_depth_valid,
+            charging_cable_connected=self._charging_cable_connected,
             data_age_s=data_age,
             max_data_age_s=self.get_parameter("max_data_age_s").value,
             compute_power_valid=self._compute_power_valid,

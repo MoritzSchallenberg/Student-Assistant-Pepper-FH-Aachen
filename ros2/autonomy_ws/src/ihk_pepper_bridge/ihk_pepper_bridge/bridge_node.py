@@ -47,6 +47,19 @@ class PepperBridgeNode(Node):
 
         self.declare_parameter("gesture_dir", DEFAULT_GESTURE_DIR)
         self.declare_parameter("health_publish_interval_s", 5.0)
+        # Entwicklungsauftrag 1, Abschnitt 12: erlaubt offline_test/
+        # navigation_dry_run, den kompletten Behavior-Tree-Ablauf bis
+        # CONVERSATION_READY zu durchlaufen, OHNE eine echte SSH-
+        # Verbindung zu Pepper zu brauchen -- Say/PlayGesture melden
+        # sofort Erfolg, OHNE pepper_client anzufassen. Siehe
+        # gesture_catalog.py::play(dry_run=...), das dieselbe Idee schon
+        # fuer die reine Katalog-Logik hatte.
+        self.declare_parameter("dry_run", False)
+        if self.get_parameter("dry_run").value:
+            self.get_logger().warn(
+                "pepper_bridge im dry_run-Modus -- KEINE echte SSH-Verbindung zu Pepper, "
+                "Say/PlayGesture melden sofort Erfolg ohne jede Hardwareaktion."
+            )
 
         gesture_dir = self.get_parameter("gesture_dir").value
         self.catalog = GestureCatalog(gesture_dir)
@@ -110,7 +123,8 @@ class PepperBridgeNode(Node):
         try:
             import time
             t0 = time.time()
-            self.pepper.say(text)
+            if not self.get_parameter("dry_run").value:
+                self.pepper.say(text)
             result.duration_s = time.time() - t0
             result.success = True
             goal_handle.succeed()
@@ -144,7 +158,10 @@ class PepperBridgeNode(Node):
             goal_handle.publish_feedback(fb)
 
         try:
-            self.catalog.play(self.pepper, name, speed, feedback_cb)
+            self.catalog.play(
+                self.pepper, name, speed, feedback_cb,
+                dry_run=self.get_parameter("dry_run").value,
+            )
             result.success = True
             goal_handle.succeed()
         except (KeyError, GestureValidationError) as e:

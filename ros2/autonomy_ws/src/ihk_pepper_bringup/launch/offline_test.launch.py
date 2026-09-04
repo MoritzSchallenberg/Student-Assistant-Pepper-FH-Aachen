@@ -5,8 +5,9 @@ offline_test: vollstaendiger Software-Stack OHNE Pepper und OHNE Kamera
 Nav2-Pfad laeuft ausschliesslich gegen mock_nav2_server (published NIE
 /cmd_vel, siehe dortige Moduldoku).
 
-Startet: bridge_node (verbindet sich nur lazy bei echtem Aufruf, siehe
-pepper_client.py -- schadet ohne Pepper nicht), supervisor_node,
+Startet: bridge_node MIT dry_run:=true (Say/PlayGesture melden sofort
+Erfolg, OHNE jede SSH-Verbindung zu Pepper -- das ist die "Pepper-Wink-
+Action als Mock" aus Entwicklungsauftrag 1, Abschnitt 6/12), supervisor_node,
 compute_health_mock_node, perception_node (ohne echte Kamera -- bleibt
 idle, keine Tracks, kein Crash), camera_pose_gate_node, mock_nav2_server,
 person_approach_node, bt_executor_node.
@@ -30,6 +31,7 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_bridge", executable="bridge_node",
             namespace="pepper_bridge", output="screen",
+            parameters=[{"dry_run": True}],
         ),
         Node(
             package="ihk_pepper_interaction", executable="supervisor_node", output="screen",

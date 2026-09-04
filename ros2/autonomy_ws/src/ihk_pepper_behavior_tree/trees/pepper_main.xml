@@ -16,8 +16,21 @@
   bei allen StatefulActionNodes die laufende ROS2-Action wirklich
   abbricht) und wechselt zu SafetySubtree.
 
-  Prioritaet (unveraendert von Auftrag 39, GreetAndApproach neu):
-  Safety > Battery > Interaction > Presentation > GreetAndApproach > IdleAttract.
+  Prioritaet: Safety > Battery > GreetAndApproach > Interaction >
+  Presentation > IdleAttract.
+
+  GreetAndApproach steht bewusst VOR Interaction (per E2E-Test in
+  Entwicklungsauftrag 1, AP12 gefunden – siehe
+  docs/DEVELOPMENT_ORDER_01_REPORT.md): IsPersonEngaged wird bereits
+  allein durch einen hohen interest_score wahr (siehe
+  interest_scoring.py), OHNE dass je gewinkt/zurueckgewinkt wurde. Stand
+  Interaction VOR GreetAndApproach, gewann eine interessierte, aber noch
+  nie begruesste Person sofort das Fallback und GreetAndApproachSubtree
+  wurde nie getickt. SelectStablePerson gibt bei fehlender Person
+  weiterhin sauber FAILURE zurueck (siehe bt_nodes.cpp), das Fallback
+  faellt dann normal zu Interaction/Presentation/IdleAttract durch –
+  GreetAndApproach "stiehlt" also nur dann Prioritaet, wenn tatsaechlich
+  eine Zielperson aktiv verfolgt/begruesst/angefahren wird.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
 
@@ -25,9 +38,9 @@
     <ReactiveFallback name="PepperTopLevel">
       <SubTree ID="SafetySubtree"/>
       <SubTree ID="BatterySubtree"/>
+      <SubTree ID="GreetAndApproachSubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
-      <SubTree ID="GreetAndApproachSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
     </ReactiveFallback>
   </BehaviorTree>
@@ -55,8 +68,11 @@
        — kein RunDialogue-Action-Server implementiert, siehe README.md).
        Dieser Subtree beobachtet daher nur den Zustand, statt Dialog aktiv
        zu STEUERN — er "gewinnt" im Fallback (SUCCESS), solange ein
-       Gespraech laeuft, damit Praesentation/GreetAndApproach nicht
-       gleichzeitig etwas anderes anfangen. -->
+       Gespraech laeuft, damit Praesentation nicht gleichzeitig etwas
+       anderes anfangen. Steht bewusst NACH GreetAndApproach (siehe
+       Kommentar oben an der Wurzel) – waehrend eine Person aktiv
+       begruesst/angefahren wird, "gewinnt" GreetAndApproachSubtree
+       zuerst, auch wenn IsPersonEngaged parallel schon true waere. -->
   <BehaviorTree ID="InteractionSubtree">
     <IsPersonEngaged/>
   </BehaviorTree>
