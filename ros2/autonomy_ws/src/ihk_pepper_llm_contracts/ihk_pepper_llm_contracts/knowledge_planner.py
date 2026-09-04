@@ -49,8 +49,11 @@ class KnowledgePlanResponse:
     bestaetigt wurde."""
 
     schema_version: int = SCHEMA_VERSION
+    normalized_intent: str = ""  # z.B. "information_request" (Entwicklungsauftrag 3, AP3)
     search_queries: list = field(default_factory=list)  # list[str]
     required_data_kinds: list = field(default_factory=list)  # z.B. ["faq"]
+    use_person_memory: bool = False  # Entwicklungsauftrag 3: darf NUR eine Anfrage sein,
+                                      # der eigentliche Zugriff bleibt dem Retriever + Consent-Pruefung vorbehalten
     uncertainties: list = field(default_factory=list)  # vom LLM benannte Unsicherheiten
     assumes_known_identity: bool = False  # MUSS False sein, siehe validate()
 
@@ -61,8 +64,10 @@ class KnowledgePlanResponse:
     def from_dict(cls, data: dict) -> "KnowledgePlanResponse":
         return cls(
             schema_version=data.get("schema_version", SCHEMA_VERSION),
+            normalized_intent=str(data.get("normalized_intent", "")),
             search_queries=list(data.get("search_queries", [])),
             required_data_kinds=list(data.get("required_data_kinds", [])),
+            use_person_memory=bool(data.get("use_person_memory", False)),
             uncertainties=list(data.get("uncertainties", [])),
             assumes_known_identity=bool(data.get("assumes_known_identity", False)),
         )

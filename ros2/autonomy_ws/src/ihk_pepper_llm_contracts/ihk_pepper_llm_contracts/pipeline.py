@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 KNOWLEDGE_PLANNER_SYSTEM_PROMPT = """Du bist Stufe 1 (Knowledge Planner) einer Drei-Stufen-Dialogpipeline fuer den Roboter Pepper.
 Antworte AUSSCHLIESSLICH mit einem einzigen JSON-Objekt, exakt in diesem Schema, keinerlei Text davor/danach:
-{"schema_version": 1, "search_queries": ["..."], "required_data_kinds": ["faq"], "uncertainties": [], "assumes_known_identity": false}
+{"schema_version": 1, "normalized_intent": "information_request", "search_queries": ["..."], "required_data_kinds": ["faq"], "use_person_memory": false, "uncertainties": [], "assumes_known_identity": false}
 Regeln:
 - Du darfst NIEMALS eine Personenidentitaet annehmen/bestaetigen (assumes_known_identity muss immer false sein).
 - Du darfst KEINE fertige Antwort erfinden, nur Suchbegriffe/Datenarten vorschlagen.

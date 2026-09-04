@@ -146,6 +146,33 @@ strukturell nicht zurückgeben, nicht nur per Konvention).
 
 Gesamttestzahl nach AP3+AP7: **250/250** (235 + 15 neu).
 
+## AP4: Deterministischer Wissensabruf
+
+`knowledge_planner.py::KnowledgePlanResponse` um `normalized_intent` und
+`use_person_memory` ergänzt (im Auftrag-Beispiel-JSON vorhanden, in der
+Auftrag-1-Fassung noch gefehlt) -- `from_dict()` bleibt abwärtskompatibel
+(`.get(..., default)`), keine bestehenden Tests gebrochen.
+
+Neu: `ihk_pepper_llm_contracts/retriever.py` (kein ROS, kein LLM-Aufruf).
+`run_retrieval()` -- Reihenfolge exakt wie im Auftrag: exakter FAQ-Treffer
+→ semantischer FAQ-Treffer → freigegebenes Personengedächtnis (NUR bei
+`use_person_memory` UND `person_context["known"]`, sonst niemals
+aufgerufen -- Test bestätigt beide Bedingungen unabhängig) → RAG →
+sichere Antwort ohne Information. Callback-basiertes Design
+(`faq_lookup_fn`/`person_memory_fn`/`rag_fn` injiziert) hält das Modul
+frei von ROS-/SQLite-Importen. `source_id` nach festem Schema
+(`faq:<id>`, `memory:topic:<slug>`, `rag:<chunk_id>`) -- niemals erfunden,
+immer aus der jeweiligen Quelle abgeleitet.
+
+**Getestet**: 11 neue Unit-Tests -- Reihenfolge (exakt schlägt semantisch
+schlägt Gedächtnis), Consent-/Flag-Gate für Personengedächtnis (beide
+Bedingungen einzeln getestet), RAG als letzte Instanz vor dem sicheren
+Fallback, RAG-Fehlschlag fällt sauber durch, keine Quelle konfiguriert →
+sichere "keine verlässliche Information"-Antwort, `source_id`s werden
+nur generiert, nie erfunden.
+
+Gesamttestzahl nach AP4: **261/261** (250 + 11 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,
