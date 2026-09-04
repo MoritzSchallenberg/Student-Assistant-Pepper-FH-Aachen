@@ -80,6 +80,16 @@ class PepperBridgeNode(Node):
         # zuhoeren (sonst transkribiert er sich selbst).
         self.speaking_pub = self.create_publisher(Bool, "speaking", 10)
 
+        # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt (siehe
+        # ihk_pepper_navigation/person_approach_node.py) duerfen keine
+        # Arm-/Kopfgesten laufen -- gesture_catalog.py::play() konnte das
+        # bereits seit Auftrag 1 pruefen (nav2_moving-Parameter), wurde
+        # aber nie tatsaechlich live verdrahtet. Sicherer Default: False
+        # bis das Topic je empfangen wurde -- KEIN Blockieren durch
+        # Abwesenheit des Signals, aber auch keine falsche Freigabe.
+        self._nav2_moving = False
+        self.create_subscription(Bool, "/nav2_moving", self._on_nav2_moving, 10)
+
         self.say_action_server = ActionServer(
             self, Say, "say",
             execute_callback=self._execute_say,
@@ -144,6 +154,9 @@ class PepperBridgeNode(Node):
         zuhoeren (sonst transkribiert er sich selbst)."""
         return self._say_active.is_set()
 
+    def _on_nav2_moving(self, msg: Bool):
+        self._nav2_moving = msg.data
+
     # ---- PlayGesture ----
 
     def _execute_gesture(self, goal_handle):
@@ -161,6 +174,10 @@ class PepperBridgeNode(Node):
             self.catalog.play(
                 self.pepper, name, speed, feedback_cb,
                 dry_run=self.get_parameter("dry_run").value,
+                # Entwicklungsauftrag 2, AP10: jetzt tatsaechlich live
+                # verdrahtet (vorher dokumentierte Luecke aus Auftrag 1,
+                # siehe docs/GESTURE_AUTHORING.md "Live-Wiring-Stand").
+                nav2_moving=self._nav2_moving,
             )
             result.success = True
             goal_handle.succeed()

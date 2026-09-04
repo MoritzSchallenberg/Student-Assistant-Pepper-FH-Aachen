@@ -472,6 +472,65 @@ echten Nav2-Nodes live gestartet, keine reale Fahrt.
 
 Gesamttestzahl nach AP6+AP7: **218/218** (209 + 9 neu).
 
+## AP10: Behavior-Tree-Ablauf erweitert (Fahrtüberwachung + Gestensperre)
+
+Zwei echte Lücken behoben, kein neuer BT-Knotensatz nötig (die
+bestehenden neun Knoten aus Auftrag 1 reichen strukturell):
+
+**Aktive Fahrtüberwachung** (`person_approach_node.py::_drive_to_pose()`):
+lief bisher blockierend bis zu 60s auf das Nav2-Ergebnis, OHNE
+währenddessen Track-Kontinuität oder Sicherheitszustand erneut zu
+prüfen. Umgebaut auf eine Polling-Schleife (0.5s-Intervall): bei jedem
+Intervall wird `monitor_fn()` aufgerufen (Zielperson noch gültig?
+Sicherheit noch OK?) -- schlägt das fehl, wird die laufende Nav2-Action
+**aktiv** per `cancel_goal_async()` abgebrochen (nicht nur passiv auf ein
+Timeout gewartet). `_execute_approach` übergibt dafür einen Monitor, der
+`_validate_target()`/`_safety_ok_for_approach()` erneut aufruft -- exakt
+dieselben Funktionen wie bei der initialen Prüfung, keine Logik-Dopplung.
+Nach einem Abbruch: keine automatische Wiederaufnahme (Auftrag-Vorgabe)
+-- der Aufrufer bekommt `abort_reason="monitor_abort:<grund>"` und
+müsste bewusst neu anfragen.
+
+**Echt getestet** (neues, committetes manuelles Skript
+`manual_approach_monitor_check.py`, gleiches Muster wie
+`manual_e2e_offline_check.py` aus Auftrag 1): startet `mock_nav2_server`
++ `person_approach_node`, sendet ein `ApproachPerson`-Ziel, stoppt nach
+1.5s bewusst das Track-Publishing (simuliert Personenverlust
+**während** der laufenden Fahrt) -- verifiziert `success=False`,
+`abort_reason="monitor_abort:person_lost"`. **2/2 Läufe erfolgreich**,
+Abbruch erfolgt sofort (nicht erst nach 60s-Timeout). Beim Schreiben des
+Testskripts wurde ein reales Timing-Problem im Testskript selbst
+gefunden und behoben (`ActionClient.wait_for_server()` spint nicht die
+eigenen Timer/Subscriptions des Treiber-Nodes -- ohne kurze Aufwärmphase
+kam beim Senden des Ziels noch kein einziger Track an, das Ziel wurde
+sofort mit der initialen statt der Monitor-Ablehnung verworfen).
+
+**Gestensperre während der Fahrt live verdrahtet** (vorher dokumentierte
+Lücke aus Auftrag 1, siehe `docs/GESTURE_AUTHORING.md`
+"Live-Wiring-Stand"): `person_approach_node.py` publiziert jetzt
+`/nav2_moving` (Bool, `true` exakt während der aktiven Polling-Schleife,
+`false` sonst -- `try`/`finally` garantiert das Zurücksetzen bei jedem
+Ausgang). `bridge_node.py`s `PlayGesture`-Handler abonniert das Topic
+und übergibt es tatsächlich an `gesture_catalog.py::play(nav2_moving=...)`
+(vorher immer hartcodiert `False`). **Echt getestet** (bridge_node im
+`dry_run`, `/nav2_moving` per `ros2 topic pub` gesetzt): `nav2_moving=true`
+→ `PlayGesture wave_right` korrekt abgelehnt (`"Geste 'wave_right'
+waehrend Nav2-Bewegung gesperrt"`); `nav2_moving=false` → dieselbe Geste
+korrekt erfolgreich. Beide Richtungen live verifiziert.
+
+**Nicht behoben in dieser Runde** (dokumentierte, kleinere Lücke):
+`mapping_active` bleibt weiterhin nicht live verdrahtet (kein Node
+publiziert es) -- geringeres Risiko, da `mode_lock.py` (AP5) Mapping-
+und Bewegungsmodus ohnehin strukturell trennt (unterschiedliche
+Launch-Sitzungen). `current_interaction_state` ebenfalls weiterhin nicht
+an `gesture_catalog.play()` übergeben.
+
+Keine neuen Unit-Tests nötig (bestehende `test_gesture_catalog_v2.py`
+deckt `nav2_moving`-Ablehnungslogik bereits ab, siehe Auftrag 1) -- der
+Wert dieses AP liegt in der tatsächlichen Live-Verdrahtung, nicht in
+neuer Logik. Gesamttestzahl bleibt **218/218** (automatisiert) + das
+neue manuelle Skript (2/2 Läufe).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

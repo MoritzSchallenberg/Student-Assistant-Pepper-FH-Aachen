@@ -50,6 +50,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, ActionClient, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from ament_index_python.packages import get_package_share_directory
+from std_msgs.msg import Bool
 
 from ihk_pepper_interfaces.msg import PersonTrackArray, SafetyState
 from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson
@@ -107,6 +108,14 @@ class PersonApproachNode(Node):
         self.create_subscription(PersonTrackArray, "/perception_node/person_tracks",
                                   self._on_tracks, 10)
         self.create_subscription(SafetyState, "/safety_state", self._on_safety_state, 10)
+
+        # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt, muessen
+        # Arm-/Kopfgesten gesperrt sein (gesture_catalog.py::play() kann
+        # das bereits seit Auftrag 1 pruefen -- bridge_node.py's
+        # PlayGesture-Handler abonniert dieses Topic, um es tatsaechlich
+        # zu uebergeben, siehe docs/DEVELOPMENT_ORDER_02_REPORT.md AP10).
+        self.nav2_moving_pub = self.create_publisher(Bool, "/nav2_moving", 10)
+        self.nav2_moving_pub.publish(Bool(data=False))
 
         cb_group = ReentrantCallbackGroup()
 
@@ -399,9 +408,28 @@ class PersonApproachNode(Node):
         distance_remaining = math.hypot(
             result.target_x - robot_x, result.target_y - robot_y)
         feedback_cb("moving", distance_remaining)
-        return self._drive_to_pose(goal_handle, pose, feedback_cb)
 
-    def _drive_to_pose(self, goal_handle, pose_stamped, feedback_cb):
+        def monitor():
+            """Entwicklungsauftrag 2, AP10: Ziel/Person WAEHREND der Fahrt
+            ueberwachen, bei Track-Verlust oder Sicherheitsereignis SOFORT
+            abbrechen -- nicht nur einmalig vor Fahrtbeginn pruefen."""
+            fresh_track, reason = self._validate_target(goal_handle.request.track_id)
+            if fresh_track is None:
+                return False, reason
+            ok, reason = self._safety_ok_for_approach()
+            if not ok:
+                return False, reason
+            return True, ""
+
+        return self._drive_to_pose(goal_handle, pose, feedback_cb, monitor_fn=monitor)
+
+    def _drive_to_pose(self, goal_handle, pose_stamped, feedback_cb, monitor_fn=None):
+        """monitor_fn (optional): wird waehrend der Fahrt periodisch
+        aufgerufen (Entwicklungsauftrag 2, AP10). Liefert monitor_fn()
+        (False, grund) -> die laufende Nav2-Action wird aktiv abgebrochen
+        (cancel_goal_async), NICHT nur auf ein Timeout gewartet. Nach
+        einem Abbruch erfolgt KEINE automatische Wiederaufnahme -- der
+        Aufrufer (BT ueber ApproachPerson.Result) muss neu entscheiden."""
         timeout = self.get_parameter("nav2_connect_timeout_s").value
         if not self._nav2_client.wait_for_server(timeout_sec=timeout):
             self.get_logger().error(
@@ -419,8 +447,10 @@ class PersonApproachNode(Node):
         # presentation_manager_node._say_and_wait (MultiThreadedExecutor
         # + ReentrantCallbackGroup vorausgesetzt, siehe main()).
         import threading
-        done = threading.Event()
+        goal_response_done = threading.Event()
+        result_done = threading.Event()
         outcome = {"success": False, "reason": "timeout"}
+        goal_state = {"handle": None, "rejected": False}
 
         def on_result(fut):
             try:
@@ -429,21 +459,48 @@ class PersonApproachNode(Node):
                 outcome["reason"] = "" if outcome["success"] else f"nav2_status_{r.status}"
             except Exception as e:
                 outcome["reason"] = str(e)
-            done.set()
+            result_done.set()
 
         def on_goal_response(fut):
             gh = fut.result()
+            goal_state["handle"] = gh
             if not gh.accepted:
+                goal_state["rejected"] = True
                 outcome["reason"] = "nav2_goal_rejected"
-                done.set()
-                return
-            rf = gh.get_result_async()
-            rf.add_done_callback(on_result)
+                result_done.set()
+            else:
+                rf = gh.get_result_async()
+                rf.add_done_callback(on_result)
+            goal_response_done.set()
 
         send_future.add_done_callback(on_goal_response)
-        if not done.wait(60.0):
+        if not goal_response_done.wait(10.0):
+            return False, "nav2_goal_response_timeout"
+        if goal_state["rejected"] or goal_state["handle"] is None:
+            return False, outcome["reason"] or "nav2_goal_rejected"
+
+        gh = goal_state["handle"]
+        deadline = time.time() + 60.0
+        poll_interval_s = 0.5
+        # AP10: nav2_moving=True nur waehrend der eigentlichen Fahrt --
+        # gesture_catalog.py::play() sperrt Arm-/Kopfgesten darauf.
+        self.nav2_moving_pub.publish(Bool(data=True))
+        try:
+            while time.time() < deadline:
+                if result_done.wait(poll_interval_s):
+                    return outcome["success"], outcome["reason"]
+                if monitor_fn is not None:
+                    ok, reason = monitor_fn()
+                    if not ok:
+                        self.get_logger().warn(
+                            f"ApproachPerson waehrend der Fahrt abgebrochen: {reason}")
+                        gh.cancel_goal_async()
+                        return False, f"monitor_abort:{reason}"
+
+            gh.cancel_goal_async()
             return False, "nav2_timeout"
-        return outcome["success"], outcome["reason"]
+        finally:
+            self.nav2_moving_pub.publish(Bool(data=False))
 
 
 def main(args=None):
