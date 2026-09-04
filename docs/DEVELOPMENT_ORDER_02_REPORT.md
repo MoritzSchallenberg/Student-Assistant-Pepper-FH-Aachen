@@ -531,6 +531,54 @@ Wert dieses AP liegt in der tatsächlichen Live-Verdrahtung, nicht in
 neuer Logik. Gesamttestzahl bleibt **218/218** (automatisiert) + das
 neue manuelle Skript (2/2 Läufe).
 
+## AP11: Sechs neue Startmodi
+
+`offline_test.launch.py`/`realsense_test.launch.py` erweitert um die
+Auftrag-2-Diagnose-/Sicherheitsknoten (`realsense_diagnostics_node`,
+`odometry_health_node`, `motion_guard_node`) -- bleiben ohne echte
+Kamera/RTAB-Map sicher im "ungültig"-Zustand. **Live getestet**:
+`offline_test.launch.py` mit allen jetzt 11 Nodes fehlerfrei gestartet
+(vorher 8).
+
+Vier neue Bringup-Wrapper (dünne `IncludeLaunchDescription`-Hüllen um
+die AP5/AP7-Launches, gleiches Muster wie `realsense_test.launch.py`):
+
+- **`realsense_mapping.launch.py`**: Wrapper um `ihk_pepper_navigation/
+  launch/realsense_mapping.launch.py` (AP5).
+- **`realsense_localization_test.launch.py`**: Wrapper um
+  `realsense_localization.launch.py`, `database_path` PFLICHT.
+- **`navigation_dry_run.launch.py`**: vollständige Planung/Annäherung
+  gegen den **echten** Nav2-Stack (nicht Mock) -- Motion Guards
+  Ausgabetopic wird auf `navigation_dry_run/cmd_vel_sink` umgebogen
+  (neuer `cmd_vel_out_topic`-Parameter an `nav2_bringup.launch.py`
+  ergänzt), **kein Publisher zum echten `/cmd_vel`**.
+  `enable_live_motion:=true` gesetzt, damit Motion Guard tatsächlich
+  vollständig durchläuft -- Sicherheit kommt aus dem Sink-Topic.
+- **`navigation_live.launch.py`**: technisch vorbereitet, **niemals in
+  dieser Sitzung ausgeführt** (Auftrag: "darf von Claude in diesem
+  Auftrag nicht am echten Pepper gestartet werden"). Zusätzliches
+  Pflicht-Argument `i_understand_this_moves_pepper` (per `OpaqueFunction`
+  erzwungen, keine echte Sicherheitsfunktion, nur Schutz gegen
+  versehentliches Kopieren eines anderen Modus-Befehls) -- echtes
+  `/cmd_vel`, kein Sink. Nur per `--show-args` auf korrekte
+  Launch-Struktur geprüft, **nicht** per `ros2 launch` gestartet.
+
+Neues Dokument `docs/NAVIGATION_SAFETY_ACCEPTANCE.md`: 15-Punkte-
+Abnahme-Checkliste aus Auftrag Abschnitt 18, ehrlich als überwiegend
+noch offen markiert (kein Punkt, der echte Hardware braucht, wurde in
+dieser Sitzung erfüllt).
+
+**Getestet**: alle vier neuen Bringup-Launches + `nav2_bringup.launch.py`s
+neuer Parameter per `--show-args` verifiziert (inkl. transitiv
+eingebundener Kindargumente -- bestätigt, dass die Includes korrekt
+auflösen). `navigation_live.launch.py --show-args` löst die
+`OpaqueFunction`-Prüfung NICHT aus (nur Argument-Enumeration, kein
+tatsächlicher Start) -- bewusst genutzt, um die Datei zu verifizieren,
+ohne sie auszuführen.
+
+Gesamttestzahl nach AP11: **218/218** (unverändert -- reine
+Launch-/Konfigurationsarbeit).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

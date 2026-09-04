@@ -70,6 +70,13 @@ def generate_launch_description():
                         "muessen 'true' sein, bevor ueberhaupt ein "
                         "Fahrsignal /cmd_vel erreichen kann.",
         ),
+        DeclareLaunchArgument(
+            "cmd_vel_out_topic", default_value="/cmd_vel",
+            description="Motion Guards tatsaechliches Ausgabetopic (AP11: "
+                        "navigation_dry_run.launch.py biegt das auf einen "
+                        "Test-Sink um, damit KEIN Pfad zum echten "
+                        "naoqi_driver2-/cmd_vel existiert).",
+        ),
 
         # Immer sicher zu starten (reine Sensor-Aufbereitung, keine
         # Aktuatorik) -- laesst sich unabhaengig von allow_motion nutzen.
@@ -142,7 +149,7 @@ def generate_launch_description():
             name="motion_guard", output="screen", condition=motion_on,
             parameters=[{
                 "cmd_vel_in_topic": "cmd_vel_smoothed",
-                "cmd_vel_out_topic": "/cmd_vel",
+                "cmd_vel_out_topic": LaunchConfiguration("cmd_vel_out_topic"),
                 "enable_live_motion": enable_live_motion,
             }],
         ),
