@@ -30,11 +30,22 @@ Position/Keepout) und der Sicherheits-Abbruchpfad (safety_state.
 allow_person_approach == False -> sofortiger, korrekter Abbruch) per
 Unit-/Live-Node-Test. Der eigentliche Fahr-Pfad (Nav2-ActionClient-Aufruf)
 ist NICHT getestet (Nav2 nicht installiert).
+
+Entwicklungsauftrag 2, AP9 (siehe docs/DEVELOPMENT_ORDER_02_REPORT.md):
+_drive_to_person() nutzte bisher die Personenposition SELBST als Nav2-
+Ziel -- bestaetigter, dokumentierter Mangel aus Auftrag 1. Behoben durch
+approach_pose.compute_approach_pose() (reine Geometrie, unit-getestet in
+ihk_pepper_tests/test/test_approach_pose.py, unabhaengig von Nav2/RTAB-
+Map-Verfuegbarkeit). Fehlende/veraltete TF fuer die Roboterpose fuehrt
+IMMER zu einem Abbruch, NIE zu einer geschaetzten Position -- gleiches
+Prinzip wie ihk_pepper_perception/perception_node.py::_transform_to_base_frame.
 """
+import math
 import os
 import time
 
 import rclpy
+import tf2_ros
 from rclpy.node import Node
 from rclpy.action import ActionServer, ActionClient, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
@@ -43,9 +54,16 @@ from ament_index_python.packages import get_package_share_directory
 from ihk_pepper_interfaces.msg import PersonTrackArray, SafetyState
 from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson
 
+from .approach_pose import compute_approach_pose, is_track_fresh
 from .zone_config import load_all_zones, point_in_any_keepout
 
 MAX_TRACK_AGE_S = 2.0
+
+
+def _yaw_to_quaternion(yaw_rad: float):
+    """Reine 2D-Yaw->Quaternion-Konvertierung (roll=pitch=0), keine externe
+    tf_transformations-Abhaengigkeit noetig fuer diesen einfachen Fall."""
+    return 0.0, 0.0, math.sin(yaw_rad / 2.0), math.cos(yaw_rad / 2.0)
 
 
 def _default_zones_dir():
@@ -67,6 +85,15 @@ class PersonApproachNode(Node):
         self.declare_parameter("nav2_action_name", "navigate_to_pose")
         self.declare_parameter("nav2_connect_timeout_s", 2.0)
         self.declare_parameter("enable_follow_person", False)  # Abschnitt 3.2: experimentell, aus per Default
+
+        # Entwicklungsauftrag 2, AP9: Annaeherungszielpose-Parameter.
+        self.declare_parameter("minimum_person_distance_m", 0.5)
+        self.declare_parameter("maximum_approach_distance_m", 8.0)
+        self.declare_parameter("robot_base_frame", "base_link")
+        self.declare_parameter("tf_lookup_timeout_s", 0.5)
+
+        self.tf_buffer = tf2_ros.Buffer()
+        self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
         zones, errors = load_all_zones(self.get_parameter("zones_dir").value)
         for e in errors:
@@ -142,7 +169,7 @@ class PersonApproachNode(Node):
         if entry is None:
             return None, "person_lost"
         track, received_at = entry
-        if (time.time() - received_at) > MAX_TRACK_AGE_S:
+        if not is_track_fresh(time.time() - received_at, MAX_TRACK_AGE_S):
             return None, "person_lost"
         if track.confidence < self.get_parameter("min_confidence").value:
             return None, "confidence_zu_niedrig"
@@ -305,19 +332,73 @@ class PersonApproachNode(Node):
 
     # ---- Nav2-Anbindung (siehe Moduldoku: strukturell vorbereitet, nicht getestet) ----
 
+    def _get_robot_position_in_frame(self, frame_id, stamp):
+        """Liefert (x, y, ok). Fehlende/veraltete TF fuehrt IMMER zu
+        ok=False, NIE zu einer geschaetzten Position (Entwicklungsauftrag 2,
+        AP9 -- gleiches Prinzip wie perception_node.py::_transform_to_base_frame).
+        Ist die Person bereits im Basis-Frame des Roboters selbst
+        angegeben (aktueller Stand ohne Lokalisierung, siehe AP1-Bericht),
+        ist keine TF-Lookup noetig -- die Roboterpose ist per Definition
+        der Ursprung dieses Frames."""
+        robot_base_frame = self.get_parameter("robot_base_frame").value
+        if frame_id == robot_base_frame:
+            return 0.0, 0.0, True
+        try:
+            timeout = rclpy.duration.Duration(
+                seconds=self.get_parameter("tf_lookup_timeout_s").value)
+            transform = self.tf_buffer.lookup_transform(
+                frame_id, robot_base_frame, stamp, timeout)
+            t = transform.transform.translation
+            return t.x, t.y, True
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException) as e:
+            self.get_logger().warn(
+                f"Keine TF {frame_id}->{robot_base_frame} fuer Roboterpose: {e}")
+            return 0.0, 0.0, False
+
     def _drive_to_person(self, goal_handle, track, target_distance_m, feedback_cb):
-        """Baut aus der Personenposition eine Ziel-Pose (target_distance_m
-        vor der Person) und delegiert an _drive_to_pose. Ohne echte
-        Kamera-Kalibrierung/TF-Kette ist dies eine grobe Naeherung --
-        siehe docs/IMPLEMENTATION_REPORT.md."""
+        """Berechnet eine Gespraechs-Zielpose target_distance_m VOR der
+        Person (approach_pose.compute_approach_pose) und delegiert an
+        _drive_to_pose. NIEMALS die Personenposition selbst als Ziel --
+        behebt den in Auftrag 1 dokumentierten Mangel (siehe
+        docs/DEVELOPMENT_ORDER_02_REPORT.md, AP9)."""
         from geometry_msgs.msg import PoseStamped
+
+        frame_id = track.frame_id or "map"
+        robot_x, robot_y, tf_ok = self._get_robot_position_in_frame(
+            frame_id, track.last_seen)
+        if not tf_ok:
+            return False, "keine_tf_fuer_roboterpose"
+
+        result = compute_approach_pose(
+            robot_x=robot_x, robot_y=robot_y,
+            person_x=track.position_3d.x, person_y=track.position_3d.y,
+            target_distance_m=target_distance_m,
+            minimum_person_distance_m=self.get_parameter("minimum_person_distance_m").value,
+            maximum_approach_distance_m=self.get_parameter("maximum_approach_distance_m").value,
+            zones=self.zones,
+        )
+        if not result.valid:
+            self.get_logger().warn(f"Annaeherungszielpose abgelehnt: {result.reason}")
+            return False, result.reason
+
+        if result.already_within_distance:
+            feedback_cb("reached", 0.0)
+            return True, ""
+
         pose = PoseStamped()
-        pose.header.frame_id = track.frame_id or "map"
-        pose.pose.position.x = track.position_3d.x
-        pose.pose.position.y = track.position_3d.y
+        pose.header.frame_id = frame_id
+        pose.pose.position.x = result.target_x
+        pose.pose.position.y = result.target_y
         pose.pose.position.z = 0.0
-        pose.pose.orientation.w = 1.0
-        feedback_cb("moving", track.distance_m)
+        qx, qy, qz, qw = _yaw_to_quaternion(result.target_yaw_rad)
+        pose.pose.orientation.x = qx
+        pose.pose.orientation.y = qy
+        pose.pose.orientation.z = qz
+        pose.pose.orientation.w = qw
+        distance_remaining = math.hypot(
+            result.target_x - robot_x, result.target_y - robot_y)
+        feedback_cb("moving", distance_remaining)
         return self._drive_to_pose(goal_handle, pose, feedback_cb)
 
     def _drive_to_pose(self, goal_handle, pose_stamped, feedback_cb):
