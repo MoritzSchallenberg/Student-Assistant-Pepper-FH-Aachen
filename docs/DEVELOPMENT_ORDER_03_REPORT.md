@@ -673,6 +673,82 @@ Gesamttestzahl nach AP13: **372/372** (350 + 1 Verteidigung-in-der-Tiefe-
 Test aus der AP12-Nacharbeit + 4 neue Katalog-Regressionstests + 17
 parametrisierte Kompilier-Tests).
 
+## AP14: Gesture-CLI, Vorschau und optionaler Live-Test
+
+Neu: `ros2 run ihk_pepper_bridge gesturectl <subcommand>`
+(`ihk_pepper_bridge/gesturectl.py`, neuer `console_scripts`-Eintrag in
+`setup.py`). Kein Shell-Passthrough -- jeder Unterbefehl ruft
+ausschließlich die bestehende, bereits validierte Katalog-/Compiler-/
+Transport-API auf.
+
+Unterbefehle (alle live gegen `ros2 run` geprüft, siehe unten):
+- **`list`**: alle Kataloggesten mit Version/Status/Dauer/Gelenken.
+- **`validate <name>`**: laden + (bei v2) `KinematicCompiler.compile()`,
+  ohne abzuspielen.
+- **`show <name>`**: vollständige Metadaten/Keyframes.
+- **`dry-run <name>`**: volle Pipeline über `DryRunMotionTransport` (v2)
+  bzw. `GestureCatalog.play(None, ..., dry_run=True)` (v1) -- **rührt
+  garantiert nie Hardware an** (v1-Pfad bereits durch bestehende Tests
+  abgesichert, `pepper_client=None` ist dabei sicher, weil der
+  `dry_run=True`-Zweig in `_play_v1`/`_play_v2` `pepper_client` nie
+  aufruft).
+- **`preview <name>`**: spielt die Geste über das bestehende
+  `pepper_description`-URDF/RViz-System ab (`sim_qicli.py`,
+  `display_scripted.launch.py`) -- **kein neues Simulationssystem
+  gebaut**. Für v2-Gesten nur eine SEQUENZIELLE Annäherung (SimQicli
+  kennt kein `play_trajectory()`), explizit als NICHT repräsentativ für
+  das echte synchrone Timing dokumentiert, nur zur visuellen
+  Winkelkontrolle.
+- **`capture-pose`**: REIN lesend (`get_angle()` je Gelenk) -- ruft
+  nachweislich (Testfall + Code-Review) nie `set_breathing`/`set_angle`/
+  `play_trajectory` auf, löst also nie eine Bewegung oder eine
+  Steifigkeits-Änderung aus.
+- **`compare <name> [other]`**: Endpose-Diff zweier Gesten ODER (ohne
+  zweites Argument) Katalog-Geste gegen einen Live-Snapshot, falls
+  Pepper erreichbar.
+- **`live-test <name>`**: siehe unten.
+
+**`live-test`-Sicherheits-Gate** (Code, nicht nur Dokumentation, siehe
+`docs/GESTURE_LIVE_TEST_CHECKLIST.md`): bricht sofort ab, wenn
+`pepper_client.is_reachable()` `False` liefert oder die Geste
+`schema_version 1` ist. Fragt danach VIER Checklisten-Punkte einzeln ab
+(Armraum frei, Bediener am Not-Stopp, sichere Aufstellung, vorheriger
+erfolgreicher `dry-run`) -- **jede** Antwort ungleich exakt `ja` bricht
+sofort ab, ohne jede Bewegung. Erster Durchgang erzwungen
+`speed_scale <= 0.4` (nur über `--full-speed` umgehbar). Nutzt denselben
+`QicliTrajectoryTransport` wie der Produktivbetrieb (kein separater
+"Testmodus"-Codepfad). **Schreibt NIEMALS selbst** `tested_status:
+live_validated` in eine YAML -- druckt stattdessen eine Anleitung für den
+manuellen Eintrag, exakt wie im Auftrag gefordert ("kein versehentliches
+still-als-getestet-Markieren").
+
+**Live geprüft** (`ros2 run ihk_pepper_bridge gesturectl ...`, echte
+Prozesse, kein Pepper nötig für die meisten Unterbefehle):
+`list` (alle 20 Einträge korrekt gelistet), `validate`/`show`/`dry-run`
+(v1 und v2) fehlerfrei, `compare` (zwei Gesten UND ohne zweites
+Argument -- letzteres bricht korrekt mit "Pepper nicht erreichbar" ab),
+`capture-pose`/`live-test` brechen beide sofort und sauber mit "Pepper
+nicht erreichbar" ab (kein Hängenbleiben, `is_reachable()`s
+2-Sekunden-Timeout greift), `preview` läuft fehlerfrei durch (SimQicli
+importiert, publiziert auf `/joint_states`, Log-Datei geschrieben,
+`display_scripted.launch.py` war in dieser Session nicht separat
+gestartet -- daher keine sichtbare Bewegung, aber der Befehl selbst
+funktioniert wie dokumentiert).
+
+**Getestet**: 12 neue Tests in `test_gesturectl.py` (alle Unterbefehle
+gegen einen temporären Zwei-Gesten-Katalog, Abbruchpfade für
+`capture-pose`/`live-test` ohne erreichbaren Pepper per Monkeypatch,
+`live-test` lehnt v1-Gesten ab, Grep-Regressionstest "gesturectl.py
+referenziert nie `/cmd_vel`").
+
+Neues `docs/GESTURE_LIVE_TEST_CHECKLIST.md` dokumentiert den Ablauf
+vollständig, inklusive des ehrlichen Stands: **kein Pepper in dieser
+Session angeschlossen** -- `live-test` konnte nicht tatsächlich
+ausgeführt werden, alle 20 Kataloggesten bleiben bei
+`draft`/`dry_run_validated`.
+
+Gesamttestzahl nach AP14: **384/384** (372 + 12 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

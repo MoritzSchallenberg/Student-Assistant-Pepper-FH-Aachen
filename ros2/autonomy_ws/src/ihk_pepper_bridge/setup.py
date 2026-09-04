@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "bridge_node = ihk_pepper_bridge.bridge_node:main",
+            "gesturectl = ihk_pepper_bridge.gesturectl:main",
         ],
     },
 )
