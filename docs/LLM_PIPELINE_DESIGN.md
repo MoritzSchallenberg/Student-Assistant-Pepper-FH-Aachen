@@ -1,9 +1,13 @@
-# Architektur: Drei-LLM-Pipeline (Verträge)
+# Architektur: Drei-LLM-Pipeline (Verträge + Laufzeit)
 
-Stand: 2026-09-03. Teil von Entwicklungsauftrag 1, Abschnitt 8. **Dieses
-Dokument beschreibt nur Verträge/Schemas** (`ros2/autonomy_ws/src/ihk_pepper_llm_contracts/`)
--- es gibt in diesem Auftrag keine LLM-Aufrufe, keinen Retriever, keinen
-Executor. Alles hier ist reine Datentyp-/Validierungsschicht.
+Stand: 2026-09-04. Ursprünglich Entwicklungsauftrag 1, Abschnitt 8 (reine
+Verträge/Schemas, `ros2/autonomy_ws/src/ihk_pepper_llm_contracts/`).
+**Seit Entwicklungsauftrag 3 (AP2-AP11) existiert die vollständige
+Laufzeit** -- echte LLM-Provider, ein deterministischer Retriever, ein
+TTS-/Gesten-Executor und ein echter `RunDialogue`-Action-Server. Dieses
+Dokument beschreibt weiterhin primär die Verträge; die Laufzeit-Details
+stehen in `docs/LLM_RUNTIME_ARCHITECTURE.md` und
+`docs/LLM_PROVIDER_CONFIGURATION.md`.
 
 ## Warum drei Stufen statt einem großen LLM-Aufruf
 
@@ -27,10 +31,9 @@ Nutzerfrage ─▶ LLM 1 (Knowledge Planner)
               ResponsePlanValidator (deterministisch, siehe unten)
                  │  nur wenn valide:
                  ▼
-              (späterer Auftrag) ResponsePlanExecutor -- synchronisiert
-              TTS-/PlayGesture-Actions über die BEREITS VORHANDENEN,
-              geprüften Actions (ihk_pepper_interfaces/action/Say.action,
-              PlayGesture.action)
+              ResponsePlanExecutor (ihk_pepper_dialog, seit AP10) --
+              synchronisiert TTS-/PlayGesture-Actions über die bereits
+              vorhandenen, geprüften Actions (Say.action, PlayGesture.action)
 ```
 
 **Kein LLM in dieser Kette darf**: `SetMotionPermission` aufrufen, rohe
@@ -97,14 +100,34 @@ ruft kein LLM, hat keine Seiteneffekte, und prüft (siehe Tests in
    `context.known_source_ids` (tatsächlich vom Retriever gefunden)
    auftauchen.
 
-Ein **späterer** `ResponsePlanExecutor` (nicht Teil dieses Auftrags)
-würde nur valide Pläne entgegennehmen und TTS-/`PlayGesture`-Actions
-entsprechend `gesture_relation` synchronisieren.
+`ihk_pepper_dialog/response_plan_executor.py::ResponsePlanExecutor` (seit
+AP10) nimmt nur valide Pläne entgegen und synchronisiert TTS-/
+`PlayGesture`-Actions entsprechend `gesture_relation` -- siehe
+`docs/RESPONSE_PLAN_EXECUTION.md` für Details.
 
-## Grenzen dieser Runde
+## Seit Entwicklungsauftrag 3 ergänzt (AP2-AP11)
 
-- Kein LLM wird aufgerufen, kein Retriever existiert, kein Executor
-  existiert -- nur die Vertragsschicht + Tests.
+- **Echte LLM-Provider** (`providers.py`): `MockLLMProvider`,
+  `AnythingLLMProvider`, `OpenAICompatibleProvider`,
+  `OfflineFallbackProvider`, je Stufe unabhängig konfigurierbar (siehe
+  `docs/LLM_PROVIDER_CONFIGURATION.md`).
+- **Deterministischer Retriever** (`retriever.py`): exakte FAQ →
+  semantische FAQ → freigegebenes Personengedächtnis → RAG → sichere
+  "keine Information"-Fallback, siehe `docs/PERSON_MEMORY_RUNTIME.md` für
+  den Personengedächtnis-Teil.
+- **Echter Action-Server** (`ihk_pepper_dialog/run_dialogue_action_server.py`)
+  + BT-Knoten `RunDialogueViaBT` -- siehe
+  `docs/LLM_RUNTIME_ARCHITECTURE.md` für den vollständigen Ablauf.
+- `KnowledgePlanResponse` um `normalized_intent`/`use_person_memory`,
+  `ResponseSegment` um Pflichtfeld `segment_id` und
+  `estimated_duration_s()` erweitert (rückwärtskompatibel, siehe
+  Commit-Historie von Entwicklungsauftrag 3 AP3/AP9).
+
+## Grenzen (weiterhin gültig)
+
 - Die Quellenpflicht-Heuristik (`FACT_CLAIM_MARKERS`) ist bewusst grob
   (keine echte NLP-Faktenerkennung) -- ein zusätzliches Sicherheitsnetz,
   kein Ersatz für eine echte Quellenpflicht-Prüfung im Retriever selbst.
+- Kein LLM darf `SetMotionPermission` aufrufen, rohe ROS2-/qicli-/SSH-/
+  Shell-Befehle erzeugen oder Gelenknamen/-winkel festlegen -- weiterhin
+  strukturell (nicht nur durch Prompts) erzwungen.

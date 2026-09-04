@@ -759,3 +759,181 @@ unabhängigen, ROS-freien Bausteine (LLM-Provider-Schnittstelle,
 LLM-Verträge/Validierung, Identity Registry, Vector Memory, Kinematik-
 Compiler/Transport), dann die ROS-Integration (Executor, RunDialogue-
 Action, Behavior Tree), zuletzt Gesten-Erweiterung/CLI/Tests/Doku.
+
+## Abschluss Entwicklungsauftrag 3
+
+Alle 14 Arbeitspakete (AP1-AP14) sind umgesetzt, jedes einzeln committet
+auf Branch `order-03-llm-memory-kinematic-gestures`, Ausgangs-Commit
+`c4a80d1` (AP1) direkt auf Order 2s Abschluss-Commit `4d358c8` aufsetzend.
+Dieser Commit ist der Abschluss-Commit von Entwicklungsauftrag 3. 71
+Dateien geändert gegenüber `4d358c8` (`git diff --stat 4d358c8..HEAD`).
+
+### Build/Test-Ergebnis
+
+- `python3 -m pytest src/ihk_pepper_tests/test/ -q`: **384/384 grün**
+  (Ausgangsstand Auftrag 2: 218).
+- `colcon test --packages-select ihk_pepper_behavior_tree`: **17 Tests,
+  0 Fehler, 0 Failures, 3 übersprungen** -- unverändert zum
+  Auftrag-2-Ausgangsstand.
+- `colcon build --symlink-install` über alle betroffenen Pakete
+  (`ihk_pepper_interfaces`, `ihk_pepper_llm_contracts`,
+  `ihk_pepper_person_memory`, `ihk_pepper_dialog`, `ihk_pepper_bridge`,
+  `ihk_pepper_behavior_tree`) fehlerfrei.
+- `xmllint`/`python3 -c "ET.parse(...)"` gegen jede in diesem Auftrag
+  geänderte XML-Datei: valide (ein Doppel-Bindestrich-in-Kommentar-Fehler
+  in `pepper_main.xml` während AP11 gefunden und korrigiert, siehe dort).
+- Harter Grep-Test `/cmd_vel` über den gesamten in diesem Auftrag neuen/
+  geänderten Code: **keine** Fundstelle außerhalb von Kommentaren, die
+  ausdrücklich erklären, dass `/cmd_vel` NICHT berührt wird, bzw.
+  Prompt-Injection-Testfällen aus Auftrag 1 (`test_llm_contracts.py`,
+  `test_pipeline.py`), die genau das Gegenteil -- Ablehnung solcher
+  Strings -- prüfen.
+- `navigation_live.launch.py` wurde in dieser Sitzung zu keinem Zeitpunkt
+  gestartet. Kein Test publizierte auf `/cmd_vel`. Keine automatische
+  Personenannäherung auf echter Hardware fand statt (kein Pepper
+  angeschlossen).
+- Bekannter, vorbestehender (nicht durch diesen Auftrag verursachter)
+  Nebenbefund: `colcon test --packages-select ihk_pepper_bridge` liefert
+  bereits im Auftrag-2-Ausgangsstand "NO TESTS RAN" (exit code 5) --
+  gegengeprüft per `git stash`, siehe AP12.
+
+### Getestete LLM-Provider / genutzte Mocks
+
+- **`MockLLMProvider`**: einziger in dieser Session tatsächlich
+  durchlaufener Provider -- Unit-Tests (`test_llm_providers.py`,
+  `test_pipeline.py`) UND der vollständige `manual_dialogue_e2e_check.py`
+  E2E-Lauf nutzen ihn mit realistischen, canonical formatierten
+  Mock-JSON-Antworten je Stufe.
+- **`OfflineFallbackProvider`**: Unit-getestet, ist der Node-Default.
+- **`AnythingLLMProvider`**/**`OpenAICompatibleProvider`**: NICHT gegen
+  einen echten Endpunkt getestet -- ob in dieser Umgebung ein
+  AnythingLLM-Server erreichbar ist, wurde nicht geprüft. Nur die
+  HTTP-/Retry-/Circuit-Breaker-Logik selbst ist unit-getestet (mit
+  gestubbten `requests`-Antworten).
+
+### Pipeline-Stufen-Status
+
+| Stufe | Status |
+|---|---|
+| LLM 1 (Knowledge Planner) | implementiert, Mock-getestet, Fallback-Pfad (Parse-/Validierungsfehler) getestet |
+| Deterministischer Retriever | implementiert, alle vier Quellen (FAQ exakt/semantisch, Personengedächtnis, RAG) + sichere Fallback-Antwort unit-getestet |
+| LLM 2 (Gesture Planner) | implementiert, Mock-getestet, Allowlist-Ablehnung getestet |
+| LLM 3 (Response Composer) | implementiert, Mock-getestet, interner Fallback bei Parse-/Validierungsfehler getestet |
+| `ResponsePlanValidator` | erweitert (segment_id, Gesamtdauer, nav2_moving/mapping_active/gesture_in_progress/pepper_reachable/tts_available), alle Regeln unit-getestet |
+| `ResponsePlanExecutor` | implementiert, 12 Unit-Tests, E2E-live-geprüft |
+| `RunDialogue`-Action-Server + BT-Integration | implementiert, E2E-live-geprüft (zwei Szenarien) |
+
+### Gesten-Status (siehe `docs/GESTURE_AUTHORING.md` für die volle Tabelle)
+
+20 Kataloggesten gesamt (8 bestehend, davon 4 mit behobenem
+SPEAKING-Bug, + 12 neu aus AP13). **Live getestet: NUR `t_pose`**
+(bereits vor diesem Auftrag `live_validated`, aus Auftrag 1). **ALLE 19
+übrigen Gesten bleiben `draft` oder `dry_run_validated`** -- kein Pepper
+in dieser Session angeschlossen, `gesturectl live-test` ist vorbereitet
+und Code-seitig fertig (Sicherheits-Gate, Checkliste), aber nicht
+tatsächlich gegen Hardware ausgeführt worden.
+
+### Speicher-Backends / Ablagepfade
+
+- `~/.ihk_pepper_memory/identity.db`, `~/.ihk_pepper_memory/vector_memory.db`
+  (SQLite, außerhalb jedes Git-/Colcon-Baums).
+- FAQ-Cache unverändert: `ihk_pepper_dialog/faq_cache.py`s bestehender
+  Pfad (Auftrag 1/2).
+- Datenschutz/Löschung: `delete_person`-Service löscht echte Zeilen (kein
+  Flag) aus beiden Stores; `valid_until` ist Pflichtfeld für jeden
+  `VectorMemoryStore`-Eintrag; kein Rohbild/Gesichts-Embedding/roher
+  LLM-Prompt wird je persistiert (strukturell durch das Schema
+  ausgeschlossen). Siehe `docs/PERSON_MEMORY_RUNTIME.md`.
+
+### Pipeline-Latenzen
+
+**Nicht systematisch gemessen** in dieser Session -- der
+`manual_dialogue_e2e_check.py`-Lauf bestätigt nur, dass die komplette
+Pipeline (LLM1→Retriever→LLM2→LLM3→Validator→Executor→Memory-Write)
+innerhalb der konfigurierten `question_timeout_s`/`session_timeout_s`
+durchläuft; da ausschließlich `MockLLMProvider` (keine echte
+Netzwerklatenz) genutzt wurde, wären gemessene Werte ohnehin nicht
+repräsentativ für einen echten LLM-Endpunkt. Für Auftrag 4 empfohlen,
+falls ein echter Endpunkt verfügbar wird.
+
+### Fallback-Ergebnisse
+
+Alle in AP9 spezifizierten Fallback-Pfade sind unit-getestet und im
+E2E-Lauf mindestens einmal bewusst provoziert und beobachtet worden
+(FAQ-Suchbegriff/Saat-Mismatch führte in einem frühen Testlauf zu einem
+korrekten Ablehnungs-Fallback statt eines erfundenen Fakts -- siehe
+AP11-Fehlerbehebung oben, dort als "Sicherheitsnetz funktioniert
+korrekt" eingeordnet, nicht als Bug).
+
+### Bekannte Fehler / offene Punkte
+
+1. `AMENT_PREFIX_PATH`/`package.dsv`-Umgebungsquirk (wiederkehrend seit
+   Auftrag 2): manche `ros2 run`/`ros2 launch`-Aufrufe finden ein frisch
+   gebautes Paket nicht ohne manuelles `export AMENT_PREFIX_PATH=...`.
+   Kein Produktbug, ungelöst, dokumentiert.
+2. `colcon test --packages-select ihk_pepper_bridge` liefert "NO TESTS
+   RAN" -- vorbestehend, nicht durch diesen Auftrag verursacht.
+3. `point_to_tablet.yaml` hat KEINE verifizierte Tablet-Kollisionsprüfung
+   (keine Vorwärtskinematik in dieser Session verfügbar) -- bewusst
+   konservativ gebaut und auf `draft` belassen.
+4. `QicliTrajectoryTransport.cancel()` ist ein Best-Effort
+   (Halteposition nach Ende des laufenden Aufrufs), kein echtes
+   Mid-Flight-Abbrechen -- ehrlich dokumentiert, siehe
+   `docs/GESTURE_TRANSPORT.md`.
+5. Pipeline-Latenzen nicht gemessen (siehe oben).
+6. `AnythingLLMProvider`/`OpenAICompatibleProvider` nicht gegen einen
+   echten Endpunkt getestet.
+
+### Fehlende Hardware
+
+Kein Pepper-Roboter in dieser Session erreichbar (SSH/Port 22 nicht
+erreichbar, `is_reachable()` durchgängig `False`). Keine RealSense-Kamera
+angeschlossen (bereits in Auftrag 1/2 dokumentiert, unverändert). Alle
+Aussagen zu Bewegungen/Gesten bleiben auf `dry_run_validated`/`draft`
+begrenzt.
+
+### Exakte Startbefehle (Referenz)
+
+```bash
+# RunDialogue-Action-Server (Mock-Provider, sicherer Default):
+ros2 run ihk_pepper_dialog run_dialogue_action_server
+
+# Personengedächtnis-Node:
+ros2 run ihk_pepper_person_memory person_memory_node
+
+# Gesten-CLI:
+ros2 run ihk_pepper_bridge gesturectl list
+ros2 run ihk_pepper_bridge gesturectl dry-run wave_right
+ros2 run ihk_pepper_bridge gesturectl live-test <name>   # nur mit echtem Pepper
+
+# Vollstaendiger E2E-Testtreiber (zwei Szenarien):
+python3 src/ihk_pepper_tests/test/manual_dialogue_e2e_check.py known_person
+python3 src/ihk_pepper_tests/test/manual_dialogue_e2e_check.py unknown_person
+```
+
+Verbindlich weiterhin: `navigation_live.launch.py` NICHT starten, kein
+Test publiziert auf `/cmd_vel`, keine echte Personenannäherung auf
+Hardware, kein LLM darf Bewegungsfreigaben/Gelenkwinkel/ROS2-Befehle
+erzeugen -- alle diese Regeln wurden in diesem Auftrag durchgängig
+eingehalten (siehe Grep-Tests/Vertragsschicht oben).
+
+### Empfehlung für Entwicklungsauftrag 4
+
+Wie im Auftrag selbst vorgesehen, bieten sich zwei sinnvolle,
+unabhängige Fortsetzungen an:
+
+1. **RealSense-Hardwareabnahme**: sobald eine RealSense-Kamera und ein
+   Pepper tatsächlich gemeinsam verfügbar sind, die in Auftrag 1/2
+   vorbereiteten `dry_run_validated`-Annahmen (Odometrie, Mapping,
+   Motion Guard, Annäherungsgeometrie) unter Aufsicht live verifizieren.
+2. **Beaufsichtigte Livekalibrierung der vorbereiteten Gesten**: alle 20
+   Kataloggesten (besonders die 12 neuen aus AP13) über `gesturectl
+   live-test` einzeln, langsam, unter Aufsicht durchgehen und bei Erfolg
+   manuell auf `live_validated` heben (siehe
+   `docs/GESTURE_LIVE_TEST_CHECKLIST.md`). `point_to_tablet` besonders
+   sorgfältig prüfen (keine verifizierte Kollisionsfreiheit).
+
+Beides ist unabhängig von der LLM-/Gedächtnis-Laufzeit -- ein möglicher
+dritter, ebenfalls unabhängiger Strang wäre die Anbindung eines echten
+AnythingLLM-Endpunkts (Latenzmessung, Live-Test der drei Provider-Stufen
+gegen echte Modellantworten statt Mocks).

@@ -1,9 +1,13 @@
-# Architektur: Personen-/Gesprächsgedächtnis (Verträge)
+# Architektur: Personen-/Gesprächsgedächtnis (Verträge + Laufzeit)
 
-Stand: 2026-09-03. Teil von Entwicklungsauftrag 1, Abschnitt 9. **Nur
-Datenmodell + Regelvalidierung** (`ros2/autonomy_ws/src/ihk_pepper_person_memory/`)
--- keine echte Gesichtsdatenbank, kein echter Speicher, keine
-Gesichtserkennung in diesem Auftrag.
+Stand: 2026-09-04. Ursprünglich Entwicklungsauftrag 1, Abschnitt 9 (nur
+Datenmodell + Regelvalidierung, `ros2/autonomy_ws/src/ihk_pepper_person_memory/`).
+**Seit Entwicklungsauftrag 3 (AP5/AP6) existiert ein echter, persistenter
+SQLite-Speicher** (`identity_registry_db.py`, `vector_memory_db.py`) und
+ein ROS2-Node (`person_memory_node.py`) mit sechs Services. Weiterhin
+**keine Gesichtserkennung** -- `person_id` wird nach wie vor nie
+automatisch aus einer `track_id` abgeleitet. Details zur Laufzeit:
+`docs/PERSON_MEMORY_RUNTIME.md`.
 
 ## Aktueller Stand vs. dieser Vertrag (ehrlich)
 
@@ -74,8 +78,32 @@ höchstens einen `memory_summary_candidate`-**Vorschlag** in einem
 deterministischer Dienst über `validate_memory_write()` -- niemals das
 LLM selbst und niemals automatisch.
 
-## Grenzen dieser Runde
+## Seit Entwicklungsauftrag 3 ergänzt (AP5/AP6)
 
-- Keine echte Datenbank, kein echter Identity-Service, keine
-  Gesichtserkennung, kein Consent-UI-Flow -- nur die Vertragsschicht +
-  Tests (`ihk_pepper_tests/test/test_person_memory.py`).
+- **`IdentityRegistryStore`**/**`VectorMemoryStore`** (SQLite, Pfad
+  standardmäßig `~/.ihk_pepper_memory/{identity,vector_memory}.db` --
+  außerhalb jedes Git-/Colcon-Baums) implementieren die obigen Verträge
+  tatsächlich persistent.
+- **`person_memory_node.py`** exponiert `lookup_person`, `set_consent`
+  (legt eine Person implizit an, falls noch unbekannt -- es gibt weiterhin
+  KEIN separates "Person anlegen"-Service, kein LLM kann das), 
+  `set_display_name`, `delete_person` (echtes Löschen aus beiden Stores),
+  `get_person_context`, `write_memory_summary` (ruft
+  `validate_memory_write()` auf, lehnt bei Verstoß mit `success=False` +
+  Begründung ab, nie stiller Erfolg).
+- `embedding_backend.py` ist eine bewusste, eigenständige Kopie von
+  `ihk_pepper_dialog/faq_cache.py`s Embedding-Backend-Muster (kein Import,
+  um eine zirkuläre Paketabhängigkeit zu vermeiden).
+- E2E-live-geprüft (siehe `docs/DEVELOPMENT_ORDER_03_REPORT.md`, AP11):
+  eine eingewilligte Person bekommt nach einem beantworteten Gespräch
+  einen echten `memory_entries`-Eintrag; eine nicht eingewilligte Person
+  hinterlässt nachweislich keine Spur in keiner der beiden Tabellen.
+
+## Grenzen (weiterhin gültig)
+
+- Keine Gesichtserkennung, kein Consent-UI-Flow, `person_id` wird
+  weiterhin nie automatisch aus einer `track_id` abgeleitet -- nur über
+  einen expliziten `set_consent`-Aufruf mit von außen übergebener
+  `person_id` (siehe Tests: `inspect.signature`-Test in
+  `test_identity_registry_db.py` bestätigt, dass `track_id` in keiner
+  Methode dieser Klasse als Parameter existiert).
