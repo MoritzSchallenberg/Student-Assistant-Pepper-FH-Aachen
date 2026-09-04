@@ -299,6 +299,56 @@ Kontext übergeben).
 
 Gesamttestzahl nach AP8+AP9: **318/318** (298 + 20 neu).
 
+## AP10: Deterministischer TTS-/Gesten-Executor
+
+Neu: `ihk_pepper_dialog/response_plan_executor.py`. `ResponsePlanExecutor`
+enthält NUR die Reihenfolge-/Zustandslogik -- keine eigenen ROS2-Action-
+Aufrufe. `say_fn(text) -> bool`/`gesture_fn(name, speed) -> bool` werden
+injiziert (gleiches "Logik von ROS trennen"-Muster wie z.B.
+`ihk_pepper_navigation/approach_pose.py`) -- macht die komplette Executor-
+Logik ohne echten ROS2-Node testbar. Der reale ROS-Wrapper (AP11) liefert
+`say_fn`/`gesture_fn` über das bestehende blockierende
+`presentation_manager_node.py::_say_and_wait()`-Muster.
+
+Ablauf je Segment exakt wie im Auftrag: kein `gesture_name` → nur
+sprechen; `before_segment` → Geste vollständig, dann sprechen;
+`after_segment` → sprechen, dann Geste; `with_segment_start` → Geste in
+eigenem Thread gestartet, Sprache im Hauptthread, dann auf beide warten
+("nahezu gleichzeitig", explizit KEINE exakte Wort-Synchronisation
+behauptet -- die aktuelle TTS-Schnittstelle bietet das nicht).
+Verhindert Doppelstarts (`is_busy()`/`_busy`-Flag, ein zweiter
+`execute()`-Aufruf während eines laufenden wird sofort mit
+`rejected_reason="bereits_eine_ausfuehrung_aktiv"` abgelehnt, startet
+NICHTS). `cancel()` wird zwischen Segmenten geprüft und bricht den Plan
+ab. Halbduplex-Sperre (`set_speaking_fn`) bleibt bis zum TATSÄCHLICHEN
+Ende aktiv -- inklusive der konfigurierbaren Nachlaufzeit, erst danach
+freigegeben (Test bestätigt exakte Reihenfolge `[True, False]`). Ein
+fehlgeschlagenes Sprachsegment bricht den GESAMTEN Plan ab (kein
+"einfach weitermachen"); ein fehlgeschlagenes Gestensegment markiert nur
+dieses Segment als `failed`, die Sprache läuft weiter (Auftrag-
+Fallback-Prinzip "Fehler im Gestenplayer: Sprache fortsetzen, wenn
+sicher"). Jeder Segmentstatus wird veröffentlicht (`segment_status_cb`).
+
+**Behebt den in `dialog_manager_node.py` gefundenen Bug strukturell**:
+der Aufrufer (künftig `run_dialogue_action_server.py`, AP11) wechselt
+den Dialogzustand ERST NACH `execute()`s Rückkehr, nie vorher --
+`execute()` kehrt garantiert erst zurück, wenn Sprache UND Geste jedes
+Segments tatsächlich fertig sind, nicht nur gestartet.
+
+Textsanitisierung (`tts_sanitizer.py::prepare_for_speech`) wird bewusst
+NICHT hier, sondern erst in der realen `say_fn`-Implementierung (AP11)
+angewendet -- unmittelbar vor dem echten Say-Aufruf, der natürlichste
+Ort dafür (siehe AP8/AP9-Begründung).
+
+**Getestet**: 12 neue Unit-Tests -- alle vier Reihenfolge-Varianten,
+Gestenfehler bricht nur das Segment ab, Sprachfehler bricht den ganzen
+Plan ab, Cancel zwischen Segmenten, Halbduplex-Sperre exakt bis zum
+Ende inkl. Nachlaufzeit, kein Doppelstart (echter, zeitgleicher zweiter
+`execute()`-Versuch während eines laufenden simuliert), Nachlaufzeit
+wird eingehalten, Segmentstatus für jedes Segment veröffentlicht.
+
+Gesamttestzahl nach AP10: **330/330** (318 + 12 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,
