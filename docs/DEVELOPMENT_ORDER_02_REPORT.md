@@ -116,6 +116,57 @@ mit der realen omnidirektionalen Basis).
 
 Diese vier Punkte werden in AP7 behoben.
 
+## AP9: Sichere Annäherungszielpose (vorgezogen, keine Paketabhängigkeit)
+
+Neues reines Modul `ihk_pepper_navigation/approach_pose.py` (kein ROS,
+gleiches Muster wie `zone_config.py`/`head_pose_gate.py`):
+`compute_approach_pose()` berechnet die Zielpose `target_distance_m`
+VOR der Person (normierter Richtungsvektor Roboter→Person, Zielpose auf
+dieser Geraden), Blickrichtung zur Person (`atan2`). Lehnt ab bei:
+Zielpose in Keepout-Zone (`zone_config.py` wiederverwendet), Person
+identisch mit Roboterposition, Person jenseits
+`maximum_approach_distance_m`, `target_distance_m` unter
+`minimum_person_distance_m` oder ≤0. Sonderfall "Person bereits näher
+als der Gesprächsabstand" -> `already_within_distance=True`, Zielpose =
+aktuelle Roboterpose (keine Fahrt nötig, niemals über die Person hinaus
+oder direkt auf sie zu). Optionaler `costmap_free_fn`-Rückruf als
+Schnittstelle für AP6 (Nav2-Costmap, noch nicht vorhanden -- Prüfung
+wird ohne Costmap übersprungen, nicht stillschweigend als "frei"
+angenommen). Zusätzlich `should_replan()` (Schwellenvergleich gegen
+Tracking-Jitter), `is_track_fresh()`, `RepeatedPlanningFailureGuard`
+(Zähler für "wiederholte Planungsfehler führen zum sicheren Abbruch")
+als wiederverwendbare Bausteine -- deren volle Verdrahtung in eine
+laufende Fahrt-Überwachungsschleife ist bewusst AP10 zugeordnet
+(Behavior-Tree-Fahrtüberwachung), nicht Teil dieses Node-Fixes.
+
+`person_approach_node.py::_drive_to_person()` umgebaut: nutzt jetzt
+`compute_approach_pose()` statt `track.position_3d` direkt als Nav2-Ziel
+zu setzen -- behebt den in Auftrag 1 bestätigten Mangel direkt.
+Roboterpose wird per TF bestimmt (`_get_robot_position_in_frame()`):
+liegt der Track bereits im `robot_base_frame` vor (aktueller Stand ohne
+Lokalisierung -- `perception_node.py` transformiert bewusst noch nicht
+nach `map`, siehe dessen eigener Kommentar), ist die Roboterpose per
+Definition der Ursprung, keine TF-Lookup nötig. Sobald AP4/AP5 eine
+echte `map`-Lokalisierung liefern, greift stattdessen ein echter
+TF-Lookup -- fehlende/veraltete TF führt IMMER zu einem Abbruch
+(`keine_tf_fuer_roboterpose`), NIE zu einer geschätzten Position
+(gleiches Prinzip wie `perception_node.py::_transform_to_base_frame`).
+
+**Getestet**: 19 neue Unit-Tests (`test_approach_pose.py`) -- Zielpose-
+Geometrie (achsenparallel + diagonal), Grenzfälle (Person näher als
+Zielabstand, identische Position, zu weit entfernt, Keepout-Zone,
+Costmap-Callback), Replanning-Schwelle, Track-Timeout,
+Fehler-Zähler. Live-Smoke-Test: `ros2 run ihk_pepper_navigation
+person_approach_node` startet fehlerfrei mit dem neuen TF-Buffer/
+Listener und den neuen Parametern (`minimum_person_distance_m`,
+`maximum_approach_distance_m`, `robot_base_frame`,
+`tf_lookup_timeout_s`). **Nicht getestet**: der eigentliche Nav2-
+Fahrpfad selbst (Nav2 nicht installiert, siehe AP1) -- nur die
+Zielgeometrie und der TF-Abbruchpfad.
+
+Gesamttestzahl nach AP9: **144/144** (125 Baseline + 19 neu). Commit
+`de12343`.
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen
