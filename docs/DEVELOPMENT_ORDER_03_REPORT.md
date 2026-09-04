@@ -64,6 +64,46 @@ ausgeführt -- erzeugt ein 1,8 MB-ZIP. Inhalt mit `unzip -l | grep`
 gegen `build/`, `install/`, `.db`, `.sqlite`, `.env`, `venv/` geprüft:
 **keine Treffer, ZIP ist sauber.**
 
+## AP2: Einheitliche LLM-Provider-Schnittstelle
+
+Neu: `ihk_pepper_llm_contracts/providers.py` (kein ROS). `LLMProvider`-ABC
+mit öffentlichem `complete(prompt) -> ProviderResult` (kapselt
+Eingabe-/Ausgabegrößenbegrenzung, Circuit Breaker, Latenzmessung
+einheitlich für alle Unterklassen -- diese implementieren nur `_call()`).
+`ProviderConfig.from_env(prefix)` liest exakt die im Auftrag benannten
+Variablen (`KNOWLEDGE_LLM_URL/MODEL/WORKSPACE`, `GESTURE_LLM_*`,
+`RESPONSE_LLM_*`) -- alle drei Rollen unabhängig konfigurierbar, auch
+wenn sie denselben Endpunkt nutzen. Token/Passwort ausschließlich über
+Umgebungsvariablen (`<PREFIX>_API_TOKEN`, fällt auf die bereits
+bestehende `ANYTHINGLLM_API_TOKEN` zurück, falls kein rollenspezifisches
+Token gesetzt ist).
+
+Vier Provider: `MockLLMProvider` (für Tests, konfigurierbare feste/
+regelbasierte Antworten, protokolliert Aufrufe), `AnythingLLMProvider`
+(ruft `apps/web/llm/anythingllm.py` direkt auf -- bewusst NICHT über
+`ihk_pepper_dialog/anythingllm_client.py::RobustAnythingLLMClient`, das
+hätte eine zirkuläre Paketabhängigkeit erzeugt, da `ihk_pepper_dialog`
+umgekehrt `ihk_pepper_llm_contracts` für die Pipeline einbindet --
+Retry-/Timeout-Verhalten bewusst identisch nachgebildet, kein Verlust
+an Robustheit), `OpenAICompatibleProvider` (generischer
+`requests.post` gegen einen `/chat/completions`-artigen Endpunkt),
+`OfflineFallbackProvider` (wirft nie, liefert immer einen sicheren
+Fallback-Text). Jeder Provider: Timeout, begrenzte Wiederholungen mit
+Backoff, Healthcheck, Größenbegrenzung, strukturiertes Fehlerergebnis
+(`ProviderResult`), Latenzmessung, `CircuitBreaker` (reiner
+Zustandsautomat mit injizierbarer `time_fn` -- ohne echte Wartezeit
+testbar). Kein vollständiges Prompt-Logging per Default (nur Länge+Hash,
+`log_full_prompts` explizit opt-in).
+
+**Getestet**: 17 neue Unit-Tests -- Mock-Erfolg/-Fehler, Offline-Fallback
+wirft nie, Ein-/Ausgabe-Trunkierung, Drei-Rollen-Unabhängigkeit über
+Env-Vars, Circuit-Breaker-Zustandsübergänge (geschlossen → offen →
+Half-Open → zurückgesetzt bei Erfolg), Provider hört nach offenem
+Circuit Breaker tatsächlich auf, weitere Aufrufe zu machen, "jede Stufe
+darf einzeln ausfallen" (Abnahmekriterium) direkt getestet.
+
+Gesamttestzahl nach AP2: **235/235** (218 Baseline + 17 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

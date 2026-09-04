@@ -3,12 +3,15 @@
   <name>ihk_pepper_llm_contracts</name>
   <version>0.1.0</version>
   <description>
-    Versionierte Verträge (Python-Datentypen + Validatoren) für die spätere
-    Drei-LLM-Pipeline (Knowledge Planner / Gesture Planner / Response
-    Composer). Ruft KEINE LLMs auf, führt NICHTS aus -- reine Schema-/
-    Validierungsschicht, damit spätere Integrationen nicht zu freien
-    ROS2-/Shell-/Gelenk-Befehlen aus LLM-Ausgaben führen koennen
-    (Entwicklungsauftrag 1, Abschnitt 8).
+    Verträge (Python-Datentypen + Validatoren) UND die austauschbare
+    Provider-/Orchestrierungsschicht für die Drei-LLM-Pipeline (Knowledge
+    Planner / Gesture Planner / Response Composer), Entwicklungsauftrag 3.
+    Führt selbst NIE einen ROS2-/Shell-/qicli-Befehl aus und erzeugt nie
+    Gelenkwinkel -- ein LLM-Ergebnis kann strukturell nur Text/Gestennamen
+    aus einer Allowlist enthalten, alles andere wird von
+    ResponsePlanValidator abgelehnt. Bleibt bewusst ROS-frei (kein
+    rclpy-Depend) -- ein aufrufender ROS2-Node (ihk_pepper_dialog) bindet
+    dieses Paket nur ein, importiert es aber nie andersherum.
   </description>
   <maintainer email="you@example.com">you</maintainer>
   <license>BSD</license>
