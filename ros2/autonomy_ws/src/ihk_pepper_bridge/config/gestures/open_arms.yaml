@@ -6,7 +6,7 @@ description: >
   t_pose.yaml) bewusst konservativer als der bewiesene t_pose-Wert
   gewaehlt, ShoulderPitch=0.0 identisch zu t_pose.yaml uebernommen.
 requires_stationary: true
-allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY, SPEAKING]
+allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 0.6
 restore_after: true
 tested_status: dry_run_validated

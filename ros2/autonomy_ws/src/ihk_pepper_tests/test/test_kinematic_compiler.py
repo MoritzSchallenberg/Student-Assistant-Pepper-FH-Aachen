@@ -124,3 +124,17 @@ def test_compile_rejects_non_positive_speed_scale():
     gesture = _v2_gesture([{"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.1}}])
     with pytest.raises(KinematicCompileError):
         KinematicCompiler().compile(gesture, speed_scale=0.0)
+
+
+def test_compile_rejects_synthetically_filled_value_outside_margin():
+    # HeadYaw kommt erst im zweiten Keyframe vor -- der Haltewert fuer
+    # Keyframe 0 wird komplett aus start_pose aufgefuellt und durchlief
+    # NIE Gesture._validate_v2() (das prueft nur woertlich in Keyframes
+    # stehende Werte). compile() muss auch diesen synthetischen Wert
+    # gegenpruefen (Verteidigung in der Tiefe, siehe Moduldoku).
+    gesture = _v2_gesture([
+        {"time_from_start_s": 0.0, "joints": {"HipRoll": 0.1}},
+        {"time_from_start_s": 1.0, "joints": {"HipRoll": 0.1, "HeadYaw": 0.1}},
+    ])
+    with pytest.raises(KinematicCompileError):
+        KinematicCompiler().compile(gesture, speed_scale=1.0, start_pose={"HipRoll": 0.1, "HeadYaw": 99.0})

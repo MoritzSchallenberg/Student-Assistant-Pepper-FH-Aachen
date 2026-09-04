@@ -1,0 +1,26 @@
+schema_version: 2
+name: celebrate_small
+description: >
+  Entwicklungsauftrag 3, AP13: kleine, symbolische Freude-Geste (beide
+  Arme leicht anheben und oeffnen, dann sanft absinken lassen). BEWUSST
+  keine ruckartigen Richtungswechsel (Bewegungsregel: "keine ruckartigen
+  Richtungswechsel") -- nur EINE Bewegung nach oben, danach ein sanftes
+  Teil-Absinken, keine Oszillation. KEINE Umarmungs-Andeutung (Arme
+  bleiben seitlich geoeffnet, nicht nach vorne/zueinander gefuehrt).
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.6
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Neue, symmetrische Bewegung ohne Live-Referenz -- Winkel deutlich
+  konservativer als open_arms.yaml (ShoulderRoll 0.4 statt 0.9), nur
+  eine Bewegungsrichtung ohne Oszillation.
+max_duration_s: 2.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.7
+    joints: {LShoulderPitch: -0.3, RShoulderPitch: -0.3, LShoulderRoll: 0.4, RShoulderRoll: -0.4}
+  - time_from_start_s: 1.6
+    joints: {LShoulderPitch: -0.1, RShoulderPitch: -0.1, LShoulderRoll: 0.2, RShoulderRoll: -0.2}

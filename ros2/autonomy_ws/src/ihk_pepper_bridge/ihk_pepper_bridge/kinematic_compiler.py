@@ -26,10 +26,20 @@ docs/DEVELOPMENT_ORDER_03_REPORT.md AP12):
    Kurve, einfache Schwellenwertpruefung) NACH Anwendung des
    speed_scale -- ein hoher speed_scale kann eine an sich unauffaellige
    Geste beschleunigungsseitig unzulaessig machen.
+
+Verteidigung in der Tiefe: Gesture._validate_v2() prueft nur Winkel, die
+WOERTLICH in einem Keyframe stehen. Ein durch fill_missing_joint_holds()
+synthetisch eingefuegter Haltewert (aus start_pose ODER NEUTRAL_STAND_POSE)
+durchlief diese Pruefung nie. compile() validiert deshalb JEDEN --
+auch jeden synthetisch eingefuegten -- Winkel zusaetzlich mit
+validate_angle_with_margin(), bevor ein TrajectoryPlan zurueckgegeben
+wird (gleiches Prinzip wie in pepper_client.py::play_trajectory()
+dokumentiert: "kann theoretisch auch mit Werten aufgerufen werden, die
+nicht aus einer geladenen Gesture stammen").
 """
 from __future__ import annotations
 
-from .joint_limits import ALLOWED_GESTURE_JOINTS
+from .joint_limits import ALLOWED_GESTURE_JOINTS, JointLimitError, validate_angle_with_margin
 
 # Keine gemessene Referenz vorhanden (wie schon bei MAX_JOINT_VELOCITY_RAD_S
 # in gesture_catalog.py dokumentiert) -- konservativ gewaehlt: bei der live
@@ -51,6 +61,12 @@ NEUTRAL_STAND_POSE = {joint: 0.0 for joint in ALLOWED_GESTURE_JOINTS}
 # haengen leicht angewinkelt, nicht exakt am Koerper.
 NEUTRAL_STAND_POSE["LShoulderRoll"] = 0.15
 NEUTRAL_STAND_POSE["RShoulderRoll"] = -0.15
+# LElbowRoll/RElbowRoll: 0.0 liegt jeweils GENAU auf der margenbereinigten
+# Grenze (siehe joint_limits.py: LElbowRoll-Obergrenze 0.05, RElbowRoll-
+# Untergrenze -0.05, SAFETY_MARGIN_RAD=0.05) -- funktional zwar noch
+# zulaessig, aber ohne jeden Abstand. Bewusst leicht nach innen versetzt.
+NEUTRAL_STAND_POSE["LElbowRoll"] = -0.02
+NEUTRAL_STAND_POSE["RElbowRoll"] = 0.02
 
 
 class KinematicCompileError(ValueError):
@@ -127,6 +143,19 @@ class KinematicCompiler:
             effective_start_pose.update({j: a for j, a in start_pose.items() if a is not None})
 
         filled = fill_missing_joint_holds(gesture.keyframes, all_joints, effective_start_pose)
+
+        # Verteidigung in der Tiefe (siehe Moduldoku): auch synthetisch
+        # eingefuegte Haltewerte (aus start_pose/NEUTRAL_STAND_POSE) werden
+        # hier validiert, nicht nur die woertlich in der YAML stehenden.
+        for kf in filled:
+            for joint, angle in kf["joints"].items():
+                try:
+                    validate_angle_with_margin(joint, float(angle))
+                except JointLimitError as e:
+                    raise KinematicCompileError(
+                        f"Geste '{gesture.name}': synthetisch aufgefuellter Wert fuer '{joint}' "
+                        f"ungueltig: {e}"
+                    ) from e
 
         # Zeitachse skalieren (identisch zur bisherigen Semantik in
         # gesture_catalog.py::_play_v2: time_from_start_s / speed_scale).

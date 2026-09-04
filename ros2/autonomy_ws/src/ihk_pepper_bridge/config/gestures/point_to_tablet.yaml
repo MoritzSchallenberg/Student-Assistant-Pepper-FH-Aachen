@@ -1,0 +1,32 @@
+schema_version: 2
+name: point_to_tablet
+description: >
+  Entwicklungsauftrag 3, AP13: Kopf senkt sich leicht (wie nod_once.yaml,
+  HeadPitch 0.3) UND der rechte Arm bewegt sich nach vorne-unten in
+  Richtung Brust/Tablet-Bereich -- OHNE das Tablet zu beruehren.
+  Sicherheitsabstand bewusst konservativ gehalten: RElbowRoll bleibt
+  stark angewinkelt (0.5 statt der bei anderen Gesten genutzten
+  0.0-0.15), damit der Unterarm KURZ bleibt und die Hand deutlich vor
+  dem Tablet stehen bleibt (keine echte Reichweiten-/Kollisionspruefung
+  in dieser Session moeglich -- deshalb bewusst konservativ UND
+  tested_status: draft, nicht dry_run_validated). RShoulderRoll bleibt
+  nahe am Koerper (-0.15, keine seitliche Ausladung), damit der Arm
+  nicht in Kopf- oder Tablet-Nachbarbereiche schwenkt.
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.6
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Kombinierte Kopf-/Arm-Geste ohne Live-Referenz und ohne verifizierte
+  Tablet-Ausschlusszone -- bewusst konservativ (kurzer, angewinkelter
+  Unterarm) und auf draft belassen, bis eine beaufsichtigte Pruefung
+  (siehe docs/GESTURE_LIVE_TEST_CHECKLIST.md, AP14) stattgefunden hat.
+max_duration_s: 2.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 1.0
+    joints: {HeadPitch: 0.3, RShoulderPitch: 0.6, RShoulderRoll: -0.15, RElbowRoll: 0.5}
+  - time_from_start_s: 1.8
+    joints: {HeadPitch: 0.2, RShoulderPitch: 0.5, RShoulderRoll: -0.15, RElbowRoll: 0.4}

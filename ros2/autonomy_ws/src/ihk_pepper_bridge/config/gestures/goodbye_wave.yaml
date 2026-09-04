@@ -1,0 +1,30 @@
+schema_version: 2
+name: goodbye_wave
+description: >
+  Entwicklungsauftrag 3, AP13: Verabschiedungswinken -- identische
+  Winkelwerte wie die bereits live getestete wave_right-Sequenz (siehe
+  wave_right.yaml/docs/STATUS.md), aber nur zwei statt drei
+  Oszillationen (kuerzere, abschliessende Geste passend zum
+  Gespraechsende) und zusaetzlich fuer CONVERSATION_READY freigegeben
+  (Verabschiedung findet typischerweise am Ende eines Dialogs statt).
+requires_stationary: true
+allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
+speed_scale_default: 1.0
+restore_after: true
+tested_status: dry_run_validated
+tested_date: "2026-09-04"
+test_note: >
+  Winkelwerte identisch zur live getesteten wave_right-Sequenz
+  (RShoulderPitch=-1.0, RElbowRoll=0.9, RElbowYaw 0.6<->1.6). Der
+  v2-Transport selbst ist dry_run_validated, NICHT live_validated.
+max_duration_s: 2.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.8
+    joints: {RShoulderPitch: -1.0, RElbowRoll: 0.9, RElbowYaw: 0.6}
+  - time_from_start_s: 1.2
+    joints: {RElbowYaw: 1.6}
+  - time_from_start_s: 1.6
+    joints: {RElbowYaw: 0.6}
+  - time_from_start_s: 2.0
+    joints: {RElbowYaw: 1.6}

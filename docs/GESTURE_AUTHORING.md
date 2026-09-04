@@ -1,8 +1,11 @@
 # Gesten anlegen (Katalog v2)
 
-Stand: 2026-09-04. Teil von Entwicklungsauftrag 1, Abschnitt 7.
+Stand: 2026-09-04. Ursprünglich Entwicklungsauftrag 1, Abschnitt 7;
+Compiler/Transport-Architektur und 12 neue Gesten aus Entwicklungsauftrag 3,
+AP12+AP13 ergänzt (siehe docs/DEVELOPMENT_ORDER_03_REPORT.md).
 Implementierung: `ros2/autonomy_ws/src/ihk_pepper_bridge/ihk_pepper_bridge/gesture_catalog.py`,
-`joint_limits.py`, `pepper_client.py`; Katalog-Dateien:
+`kinematic_compiler.py`, `motion_transport.py`, `joint_limits.py`,
+`pepper_client.py`; Katalog-Dateien:
 `ros2/autonomy_ws/src/ihk_pepper_bridge/config/gestures/*.yaml`.
 
 ## Zwei Schema-Versionen
@@ -85,7 +88,7 @@ sofort Erfolg, ohne jede SSH-Verbindung zu Pepper. Das macht den
 vollautomatisierten Offline-E2E-Test möglich (siehe
 `ihk_pepper_tests/test/manual_e2e_offline_check.py`).
 
-## Synchroner Transport (`pepper_client.play_trajectory()`)
+## Synchroner Transport (`pepper_client.play_trajectory()` / `motion_transport.py`)
 
 `apps/web/pepper/qicli.py::play_trajectory()` ruft NAOqis
 `ALMotionProxy.angleInterpolation(names[], angleLists[][], timeLists[][],
@@ -102,7 +105,21 @@ ist der sichere Fallback eine sequenzielle Ausführung über mehrere
 `set_angle()`-Aufrufe -- das wäre **keine echte Synchronität** mehr und
 muss dann auch so dokumentiert werden (nicht vortäuschen).
 
-## Die sieben Katalog-Einträge
+**Seit Entwicklungsauftrag 3, AP12** läuft `_play_v2()` nicht mehr direkt
+über `pepper_client.play_trajectory()`, sondern über
+`KinematicCompiler.compile()` (siehe `kinematic_compiler.py` für die
+damit behobenen Schwächen: fehlende Gelenke pro Keyframe, undefinierter
+Startzustand, inkonsistente Zeitachsen je Gelenk, fehlende
+Beschleunigungsprüfung) und `motion_transport.QicliTrajectoryTransport`
+(siehe `docs/GESTURE_TRANSPORT.md` für die Transport-Abstraktion:
+`prepare/start/poll/cancel/restore`, Mock-/Dry-Run-/Qicli-
+Implementierungen). Insbesondere **`restore()`** sendet seitdem EINEN
+synchronen `play_trajectory()`-Aufruf für alle wiederherzustellenden
+Gelenke -- nicht mehr Gelenk für Gelenk über
+`qicli.py::restore_joints()` (dort weiterhin sequenziell, aber nur noch
+von v1-Gesten genutzt).
+
+## Die 20 Katalog-Einträge
 
 | Name | Status | Herkunft der Winkelwerte |
 |---|---|---|
@@ -113,10 +130,33 @@ muss dann auch so dokumentiert werden (nicht vortäuschen).
 | `self_hug_symbolic` | **draft** | keine Live-Referenz vorhanden, bewusst konservative Winkel |
 | `nod_once` | **draft** | keine Live-Referenz für Kopfgesten vorhanden |
 | `look_at_person` | **draft** | reine Neutralstellung (0,0) -- PLATZHALTER, berechnet noch keine echte Blickrichtung |
+| `neutral_stand` | dry_run_validated | identisch zur `NEUTRAL_STAND_POSE`-Konstante in `kinematic_compiler.py` |
+| `greet_open` | dry_run_validated | konservativer Bruchteil von `open_arms` |
+| `goodbye_wave` | dry_run_validated | identisch zur live getesteten `wave_right`-Sequenz, nur kürzer |
+| `explain_small` | **draft** | neue kleine Bewegung, konservativer als `open_arms` |
+| `explain_left` | **draft** | zwischen `greet_open`/`open_arms` interpoliert |
+| `explain_right` | **draft** | Spiegelung von `explain_left` |
+| `point_to_tablet` | **draft** | Kopf+Arm-Kombination, keine verifizierte Tablet-Ausschlusszone -- siehe Kommentar in der YAML |
+| `agree_nod` | **draft** | Doppel-Nicken, Amplitude von `nod_once` übernommen |
+| `disagree_head` | **draft** | HeadYaw-Oszillation, Geschwindigkeit unter der `wave_right`-Referenz |
+| `celebrate_small` | **draft** | neue symmetrische Bewegung, keine Oszillation (kein Ruck) |
+| `present_information` | **draft** | von `explain_right` abgeleitet, längere Haltezeit |
+| `thinking_symbolic` | **draft** | Kopf+Arm, Hand bewusst auf Brusthöhe gehalten (siehe Movement-Regel "keine Hände im Gesichtsbereich") |
 
 `self_hug_symbolic` ist kontaktlos/symbolisch -- Pepper darf keine
 Person berühren, keine echte Umarmung ausführen (Auftrag, explizit
-ausgeschlossen).
+ausgeschlossen). `celebrate_small` ist ebenfalls bewusst NICHT als
+Umarmungs-Andeutung gebaut (Arme bleiben seitlich, nicht zueinander
+geführt).
+
+**Behobener Bug (Entwicklungsauftrag 3, AP13)**: `look_at_person`,
+`nod_once`, `open_arms`, `self_hug_symbolic` referenzierten in
+`allowed_interaction_states` den Wert `SPEAKING` -- das ist **kein**
+gültiger `InteractionState`-Wert (existierte nur in `DialogueState.msg`,
+komplett getrennt von `interaction_state.py`) und verhinderte faktisch
+jede Gestenfreigabe während eines echten Gesprächs. Entfernt (die
+Gesten waren jeweils bereits zusätzlich für `CONVERSATION_READY`
+freigegeben, das den beabsichtigten Zustand tatsächlich trifft).
 
 ## Neue Geste anlegen -- Checkliste
 

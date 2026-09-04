@@ -1,0 +1,38 @@
+schema_version: 2
+name: neutral_stand
+description: >
+  Entwicklungsauftrag 3, AP13: neutrale Referenzhaltung fuer Kopf, Arme
+  und Huefte -- entspricht exakt der NEUTRAL_STAND_POSE-Konstante in
+  kinematic_compiler.py (dieselben Werte, hier als eigenstaendige,
+  abspielbare Geste). Dient als sicherer "Reset"-Zielzustand, z.B. nach
+  einer Praesentation oder einem Gespraech, BEVOR Pepper in einen
+  anderen Modus wechselt. Keine Live-Referenz noetig -- alle Winkel sind
+  konservativ nahe der neutralen Mittelstellung jedes Gelenks.
+requires_stationary: true
+allowed_interaction_states: []
+speed_scale_default: 0.5
+restore_after: false
+tested_status: dry_run_validated
+tested_date: "2026-09-04"
+test_note: >
+  Reine Neutralstellung, alle Winkel weit innerhalb der dokumentierten
+  (teils nicht live verifizierten) Gelenkgrenzen aus joint_limits.py.
+  Der v2-Transport selbst ist dry_run_validated, NICHT live_validated.
+max_duration_s: 2.5
+on_cancel: hold
+keyframes:
+  - time_from_start_s: 1.5
+    joints:
+      HeadYaw: 0.0
+      HeadPitch: 0.0
+      LShoulderPitch: 0.0
+      RShoulderPitch: 0.0
+      LShoulderRoll: 0.15
+      RShoulderRoll: -0.15
+      LElbowYaw: 0.0
+      RElbowYaw: 0.0
+      LElbowRoll: -0.02
+      RElbowRoll: 0.02
+      HipRoll: 0.0
+      HipPitch: 0.0
+      KneePitch: 0.0

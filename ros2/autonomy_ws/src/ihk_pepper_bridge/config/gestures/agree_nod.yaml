@@ -1,0 +1,29 @@
+schema_version: 2
+name: agree_nod
+description: >
+  Entwicklungsauftrag 3, AP13: zustimmendes Doppel-Nicken (staerker als
+  ein einzelnes nod_once.yaml, fuer explizite Zustimmung/Bestaetigung
+  einer Aussage). Gleiche konservative HeadPitch-Amplitude (0.25, knapp
+  unter dem in nod_once.yaml genutzten 0.3) wie die bestehende Geste,
+  nur zweimal wiederholt.
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.8
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Keine Live-Referenz fuer Kopfgesten vorhanden (wie nod_once.yaml) --
+  konservative Winkel innerhalb der dokumentierten (NICHT live
+  verifizierten) HeadPitch-Grenzen aus joint_limits.py.
+max_duration_s: 2.0
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.4
+    joints: {HeadPitch: 0.25}
+  - time_from_start_s: 0.8
+    joints: {HeadPitch: 0.0}
+  - time_from_start_s: 1.2
+    joints: {HeadPitch: 0.25}
+  - time_from_start_s: 1.6
+    joints: {HeadPitch: 0.0}

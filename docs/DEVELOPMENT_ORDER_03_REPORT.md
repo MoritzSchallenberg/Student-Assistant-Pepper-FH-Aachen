@@ -602,6 +602,77 @@ erkannten Testeintrag (alle echten Tests für dieses Paket laufen über
 
 Gesamttestzahl nach AP12: **350/350** (330 + 20 neu).
 
+## AP13: Bewegungen kinematisch vorentwickeln
+
+**Bug behoben**: `look_at_person.yaml`, `nod_once.yaml`, `open_arms.yaml`,
+`self_hug_symbolic.yaml` referenzierten in `allowed_interaction_states`
+den Wert `SPEAKING` -- bestätigt kein gültiger `InteractionState`-Wert
+(nur `IDLE, ATTRACT, ENGAGED, PRESENTING, NAVIGATING, ERROR, SAFE_STOP,
+CONVERSATION_READY` existieren, `SPEAKING` gibt es nur in
+`DialogueState.msg`, komplett getrennt). Blockierte faktisch jede
+Gestenfreigabe während eines echten Gesprächs. Entfernt -- alle vier
+Gesten waren bereits zusätzlich für `CONVERSATION_READY` freigegeben,
+das den beabsichtigten Zustand tatsächlich trifft; kein Verhalten
+abgeschwächt, nur der ungültige Wert entfernt.
+
+**12 neue Gesten-YAMLs** unter `config/gestures/`, alle nach dem
+bestehenden v2-Schema (siehe `docs/GESTURE_AUTHORING.md` für die
+vollständige Tabelle mit Status/Herkunft):
+
+- `neutral_stand` -- identisch zur `NEUTRAL_STAND_POSE`-Konstante aus
+  `kinematic_compiler.py` (AP12), als eigenständige, abspielbare Geste.
+- `greet_open`, `goodbye_wave` -- `goodbye_wave` übernimmt die live
+  getesteten `wave_right`-Winkelwerte 1:1 (nur kürzere Oszillation),
+  `greet_open` ist ein konservativer Bruchteil von `open_arms`.
+- `explain_small`, `explain_left`, `explain_right` -- kleine, einseitige
+  Erklär-Gesten, Winkel zwischen bereits dry_run_validated Gesten
+  interpoliert.
+- `point_to_tablet` -- Kopf+Arm-Kombination; OHNE verifizierte
+  Tablet-Kollisionsprüfung (keine Vorwärtskinematik in dieser Session
+  verfügbar) bewusst mit stark angewinkeltem, kurzem Unterarm gebaut und
+  auf `draft` belassen (nicht `dry_run_validated`) -- ehrlich als
+  ungeprüfte Annäherung an die Tablet-Ausschlusszone dokumentiert.
+- `agree_nod`, `disagree_head` -- Kopfgesten, Amplitude/Geschwindigkeit
+  konservativer als bzw. abgeleitet von bestehenden Referenzwerten
+  (`nod_once`, `wave_right`).
+- `celebrate_small` -- symmetrische Freude-Geste, bewusst OHNE
+  Oszillation/ruckartigen Richtungswechsel (Bewegungsregel), Arme bleiben
+  seitlich (keine Umarmungs-Andeutung).
+- `present_information` -- von `explain_right` abgeleitet, längere
+  Haltezeit für Präsentationsabschnitte.
+- `thinking_symbolic` -- Kopf+Arm; `RShoulderPitch=0.7` (positiver Wert
+  hält den Arm bewusst TIEF, siehe Vorzeichenkonvention in
+  `wave_right.yaml`/`open_arms.yaml`) hält die Hand auf Brusthöhe --
+  Bewegungsregel "keine Hände in den Gesichtsbereich" strikt eingehalten,
+  KEINE Hand-am-Kinn-Geste gebaut.
+
+Alle 12 neuen Gesten: `tested_status: draft` (kombinierte/neue
+Bewegungen ohne Live-Referenz) oder `dry_run_validated`
+(`neutral_stand`, `greet_open`, `goodbye_wave` -- direkt von bereits
+geprüften Werten abgeleitet) -- **keine** trägt `live_validated` (kein
+Pepper in dieser Session angeschlossen, ehrlich so belassen).
+
+**Verifikation**: `GestureCatalog(...).reload()` über den vollständigen,
+installierten Katalog -- `errors == []`, alle 20 Einträge (8 bestehend +
+12 neu) geladen. `KinematicCompiler().compile(...)` für jede v2-Geste
+einzeln ausgeführt -- alle kompilieren fehlerfrei (siehe
+`test_gesture_catalog.py::test_every_v2_gesture_compiles_without_error`,
+parametrisiert über alle 17 v2-Gesten). Zusätzliche Regressionstests:
+mindestens 15 Kataloggesten (`test_catalog_has_at_least_fifteen_gestures`,
+tatsächlich 20), kein YAML referenziert mehr `SPEAKING`
+(`test_no_gesture_references_the_invalid_speaking_state`). Harter
+Grep-Test: kein neues Gesten-YAML/kein neuer Transport-Code referenziert
+`/cmd_vel` (bestätigt für `motion_transport.py`, `kinematic_compiler.py`,
+`gesture_catalog.py` und alle `config/gestures/*.yaml`).
+
+Ergebnis: **20 Katalogeinträge**, deutlich über den im Auftrag
+geforderten 15 (8 bestehend, davon 4 mit behobenem SPEAKING-Bug, + 12
+neu).
+
+Gesamttestzahl nach AP13: **372/372** (350 + 1 Verteidigung-in-der-Tiefe-
+Test aus der AP12-Nacharbeit + 4 neue Katalog-Regressionstests + 17
+parametrisierte Kompilier-Tests).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

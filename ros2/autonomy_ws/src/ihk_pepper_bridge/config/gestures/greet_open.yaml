@@ -1,0 +1,25 @@
+schema_version: 2
+name: greet_open
+description: >
+  Entwicklungsauftrag 3, AP13: freundliche Begruessungsgeste -- beide
+  Arme oeffnen sich sanft und moderat (deutlich zurueckhaltender als
+  open_arms.yaml/t_pose.yaml), Kopf bleibt neutral-aufmerksam. Fuer den
+  Uebergang in CONVERSATION_READY gedacht ("Hallo, ich bin bereit").
+  ShoulderRoll-Zielwinkel (0.5) konservativ unterhalb des bereits in
+  open_arms.yaml verwendeten Werts (0.9) gewaehlt.
+requires_stationary: true
+allowed_interaction_states: [ATTRACT, CONVERSATION_READY]
+speed_scale_default: 0.7
+restore_after: true
+tested_status: dry_run_validated
+tested_date: "2026-09-04"
+test_note: >
+  Winkel als konservativer Bruchteil der bereits dry_run_validated
+  open_arms.yaml gewaehlt, keine neue Live-Referenz noetig.
+max_duration_s: 2.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.0
+    joints: {HeadPitch: -0.05}
+  - time_from_start_s: 1.2
+    joints: {LShoulderPitch: 0.1, RShoulderPitch: 0.1, LShoulderRoll: 0.5, RShoulderRoll: -0.5}

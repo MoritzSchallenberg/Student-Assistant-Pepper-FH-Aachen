@@ -1,0 +1,27 @@
+schema_version: 2
+name: present_information
+description: >
+  Entwicklungsauftrag 3, AP13: "Praesentier"-Geste -- rechter Arm oeffnet
+  sich ruhig zur Seite (wie explain_right.yaml, aber mit laengerer
+  Haltezeit und etwas groesserer Ausladung), Kopf bleibt leicht erhoben/
+  aufmerksam. Fuer laengere Erklaersegmente/Praesentationsabschnitte
+  gedacht (siehe PlayDailyPresentation), nicht fuer kurze
+  Zwischenbemerkungen (dafuer: explain_small.yaml).
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.6
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Abgeleitet von explain_right.yaml (dort ShoulderRoll -0.6, hier
+  identisch) mit laengerer Haltedauer -- keine neue Live-Referenz.
+max_duration_s: 3.0
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.0
+    joints: {HeadPitch: -0.05}
+  - time_from_start_s: 1.0
+    joints: {RShoulderPitch: -0.2, RShoulderRoll: -0.6, RElbowRoll: 0.2}
+  - time_from_start_s: 2.2
+    joints: {RShoulderPitch: 0.0, RShoulderRoll: -0.45, RElbowRoll: 0.1}

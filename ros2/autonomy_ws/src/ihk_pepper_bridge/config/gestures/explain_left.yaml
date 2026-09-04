@@ -1,0 +1,26 @@
+schema_version: 2
+name: explain_left
+description: >
+  Entwicklungsauftrag 3, AP13: Erklaer-Geste mit Verweis auf Peppers
+  linke Seite (aus Zuschauersicht rechts) -- linker Arm oeffnet sich
+  moderat zur Seite. Konservativer ShoulderRoll-Zielwinkel (0.6)
+  zwischen greet_open.yaml (0.5) und open_arms.yaml (0.9) gewaehlt,
+  ElbowRoll bleibt nahe Neutralstellung (kein Anwinkeln Richtung
+  Koerper/Gesicht).
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.7
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Neue, einseitige Bewegung ohne direkte Live-Referenz -- Winkel
+  zwischen zwei bereits dry_run_validated Gesten (greet_open.yaml,
+  open_arms.yaml) interpoliert.
+max_duration_s: 2.0
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.7
+    joints: {LShoulderPitch: 0.0, LShoulderRoll: 0.6, LElbowRoll: -0.1}
+  - time_from_start_s: 1.4
+    joints: {LShoulderPitch: 0.15, LShoulderRoll: 0.3, LElbowRoll: -0.05}

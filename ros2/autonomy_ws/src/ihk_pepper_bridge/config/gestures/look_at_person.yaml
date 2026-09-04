@@ -9,7 +9,7 @@ description: >
   Personenposition zuverlaessig vorliegt. Aktuell nur eine feste,
   sichere Neutralstellung.
 requires_stationary: true
-allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY, SPEAKING]
+allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 0.8
 restore_after: false
 tested_status: draft

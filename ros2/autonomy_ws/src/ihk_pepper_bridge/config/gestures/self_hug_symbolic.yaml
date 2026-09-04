@@ -7,7 +7,7 @@ description: >
   explizit ausgeschlossen). Keine vergleichbare bisher getestete Geste
   vorhanden -- Winkel deshalb bewusst klein/konservativ gewaehlt.
 requires_stationary: true
-allowed_interaction_states: [CONVERSATION_READY, SPEAKING]
+allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.5
 restore_after: true
 tested_status: draft
