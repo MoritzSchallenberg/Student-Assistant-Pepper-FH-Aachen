@@ -31,6 +31,7 @@ setup(
             "mock_nav2_server = ihk_pepper_navigation.mock_nav2_server:main",
             "realsense_diagnostics_node = ihk_pepper_navigation.realsense_diagnostics_node:main",
             "odometry_health_node = ihk_pepper_navigation.odometry_health_node:main",
+            "localization_health_node = ihk_pepper_navigation.localization_health_node:main",
         ],
     },
 )

@@ -59,7 +59,25 @@ Kovarianz, dann optional Inlier-Anzahl -- jeder Fehlerfall führt zu
 Live gestartet (kein Kamera-Stream, aber ein echter laufender
 RTAB-Map-Prozess) -- Details im Auftrag-2-Bericht.
 
+## Mapping und Lokalisierung (AP5)
+
+`realsense_mapping.launch.py`/`realsense_localization.launch.py`
+bauen auf `realsense_odometry.launch.py` (AP4) auf und starten
+`rtabmap_slam/rtabmap` im jeweiligen Modus (`Mem/IncrementalMemory`
+true/false). `mode_lock.py` (dateibasierte Sperre unter
+`/tmp/ihk_pepper_nav_mode_lock/`) verhindert, dass beide Modi
+gleichzeitig laufen -- beide würden sonst widersprechende Annahmen über
+`map -> odom` treffen. `database_path` zeigt für Mapping standardmäßig
+auf einen neuen, zeitgestempelten Pfad unter `~/.ihk_pepper_maps/`
+(bewusst außerhalb jedes Git-/Colcon-verwalteten Baums -- `.db`-Dateien
+sind laut CI-Regel ohnehin nie erlaubt im Repo), für Lokalisierung ist
+er PFLICHT und wird vor dem Start auf Existenz geprüft.
+`localization_health_node` publiziert direkt auf `/localization_valid`
+(derselbe Topic, den `supervisor_node` seit Auftrag 1 abonniert) --
+liefert die echte Implementierung dieses seit Auftrag 1 offenen
+Sicherheitseingangs.
+
 ## Weitere Abschnitte
 
-Werden mit AP5 (Mapping/Lokalisierung), AP6 (Costmap/Abdeckung), AP7
-(Nav2/Holonomie), AP8 (Motion Guard) ergänzt.
+Werden mit AP6 (Costmap/Abdeckung), AP7 (Nav2/Holonomie), AP8 (Motion
+Guard) ergänzt.

@@ -297,6 +297,59 @@ Colcon/Umgebungs-Eigenheit, kein Hinweis auf einen Fehler im eigenen Code.
 
 Gesamttestzahl nach AP4: **181/181** (171 + 10 neu).
 
+## AP5: Mapping und Lokalisierung
+
+Neue Module: `mode_lock.py` (rein, dateibasierte Sperre -- verhindert,
+dass Mapping- und Lokalisierungsmodus gleichzeitig aktiv sind, beide
+würden sich sonst bei `map->odom` widersprechen) und
+`localization_health.py` (rein, bewertet die Aktualität der von RTAB-Map
+publizierten `map->odom`-TF als praktischen Lokalisierungs-Gesundheits-
+indikator). Neuer Node `localization_health_node.py`: publiziert
+**direkt auf `/localization_valid`** -- denselben Topic-Namen, den
+`ihk_pepper_interaction/supervisor_node.py` bereits seit Auftrag 1
+abonniert (bisher nur per Mock überschreibbar). Damit liefert AP5 die
+**echte** Implementierung dieses seit Auftrag 1 offenen Sicherheits-
+eingangs.
+
+Neue Launches: `realsense_mapping.launch.py` (RTAB-Map SLAM-Modus,
+`Mem/IncrementalMemory=true`, `database_path` bekommt einen
+zeitgestempelten Default **außerhalb** jedes Git-/Colcon-verwalteten
+Baums -- `~/.ihk_pepper_maps/mapping_<timestamp>.db` -- explizit
+begründet: `.db`-Dateien sind laut CI-Regel ohnehin nie erlaubt im Repo,
+und `install/share/...` wird bei jedem `colcon build` neu geschrieben)
+und `realsense_localization.launch.py` (`Mem/IncrementalMemory=false`,
+`database_path` ist PFLICHT und wird vor dem Start auf Existenz geprüft
+-- kein stiller Fallback). Beide binden `realsense_odometry.launch.py`
+(AP4) ein und erzwingen über `mode_lock.py` (per `OpaqueFunction` +
+`OnShutdown`-Handler), dass immer nur einer der beiden Modi aktiv ist.
+
+**Echt getestet** (echte laufende RTAB-Map-SLAM-Prozesse, kein Kamera-
+Stream): `realsense_mapping.launch.py` gestartet -- Log bestätigt
+`SLAM mode (Mem/IncrementalMemory=true)`, korrekte Datenbankdatei unter
+`~/.ihk_pepper_maps/`, und dass `rtabmap` korrekt auf `/realsense/odom`
+(AP4s Ausgabe) + die RealSense-Topics abonniert ist -- AP4 und AP5
+verifiziert zusammenspielend. `realsense_localization.launch.py` OHNE
+`database_path` und mit einem NICHT existierenden Pfad jeweils korrekt
+mit klarer Fehlermeldung abgebrochen (kein stiller Fallback). Mutex
+verifiziert: `realsense_localization.launch.py` während laufendem
+`realsense_mapping.launch.py` bricht mit klarer `ModeLockError`-Meldung
+ab. Sperrdatei-Aufräumung beim sauberen Beenden (SIGINT) verifiziert
+(robuster Prozessgruppen-Test: `lock_before=True, lock_after=False`).
+13 neue Unit-Tests (`test_mode_lock.py`, `test_localization_health.py`).
+**Nicht getestet**: echte Kartenerstellung/-lokalisierung aus echten
+RGB-D-Daten (keine RealSense-Hardware angeschlossen).
+
+**Nebenbefund** (Testinfrastruktur, kein Produktcode-Bug): ein erster,
+unsauberer manueller Testversuch (Hintergrundjob per `&`/`setsid` ohne
+Prozessgruppen-Signalisierung) hinterließ mehrfach verwaiste
+`ros2 launch`-Prozesse und eine scheinbar nicht aufgeräumte Sperrdatei
+-- beim Wiederholen mit dem etablierten robusten Muster aus Auftrag 1
+(`start_new_session=True` + `os.killpg`, siehe `manual_e2e_offline_check.py`)
+war die Sperrdatei-Aufräumung einwandfrei. Alle verwaisten Testprozesse
+wurden identifiziert und beendet.
+
+Gesamttestzahl nach AP5: **194/194** (181 + 13 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen
