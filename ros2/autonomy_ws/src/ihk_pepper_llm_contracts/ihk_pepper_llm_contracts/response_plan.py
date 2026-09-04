@@ -15,6 +15,11 @@ SCHEMA_VERSION = 1
 MAX_SEGMENT_TEXT_CHARS = 400  # an ihk_pepper_dialog max_speech_chars angelehnt
 MAX_SEGMENTS_PER_PLAN = 6
 MIN_SEGMENT_TEXT_CHARS = 1
+# Entwicklungsauftrag 3, AP9: grobe Sprechdauer-Heuristik (Zeichen/Sekunde),
+# NICHT praezise -- nur ein zusaetzliches Sicherheitsnetz gegen einen
+# unrealistisch langen Gesamtplan, keine echte TTS-Zeitmessung.
+ESTIMATED_CHARS_PER_SECOND = 15.0
+MAX_TOTAL_ESTIMATED_DURATION_S = 90.0
 
 VALID_GESTURE_RELATIONS = ("before_segment", "with_segment_start", "after_segment")
 
@@ -40,8 +45,12 @@ FORBIDDEN_TEXT_SUBSTRINGS = (
 @dataclass
 class ResponseSegment:
     text: str
+    segment_id: str = ""  # Entwicklungsauftrag 3, AP9: Pflichtfeld, muss eindeutig sein
     gesture_name: Optional[str] = None
     gesture_relation: Optional[str] = None  # siehe gesture_planner.GestureRelation
+
+    def estimated_duration_s(self) -> float:
+        return len(self.text) / ESTIMATED_CHARS_PER_SECOND
 
 
 @dataclass
@@ -59,6 +68,7 @@ class ResponsePlan:
         segments = [
             ResponseSegment(
                 text=s.get("text", ""),
+                segment_id=s.get("segment_id", ""),
                 gesture_name=s.get("gesture_name"),
                 gesture_relation=s.get("gesture_relation"),
             )
@@ -84,6 +94,22 @@ class PlanContext:
     allowed_interaction_states_for_gestures: dict = field(default_factory=dict)
     safety_ok: bool = True
     known_source_ids: list = field(default_factory=list)  # tatsaechlich vom Retriever gefundene Quellen
+    # Entwicklungsauftrag 3, AP9: zusaetzliche Laufzeit-Bedingungen, vom
+    # aufrufenden System (RunDialogue-Action-Server) verantwortlich befuellt
+    # -- KEINE "sicherer Default bei fehlendem Topic"-Semantik wie bei
+    # ROS-Sensoreingaengen, sondern ein vollstaendig vom Aufrufer befuellter
+    # Kontext (analog zu safety_ok oben). nav2_moving/mapping_active/
+    # gesture_in_progress blockieren NUR Segmente MIT gesture_name (die
+    # Rede selbst kann trotzdem weiterlaufen, siehe Fallback-Prinzip
+    # "Fehler im Gestenplayer: Sprache fortsetzen, wenn sicher").
+    nav2_moving: bool = False
+    mapping_active: bool = False
+    gesture_in_progress: bool = False
+    pepper_reachable: bool = True
+    tts_available: bool = True
+    # gesture_name -> bewegt Kopfgelenke (aus GestureCatalog.affects_head())
+    # -- nur diese werden bei mapping_active blockiert, nicht jede Geste.
+    head_gesture_names: list = field(default_factory=list)
 
 
 @dataclass
@@ -110,6 +136,27 @@ class ResponsePlanValidator:
         if len(plan.segments) > MAX_SEGMENTS_PER_PLAN:
             errors.append(f"zu viele Segmente ({len(plan.segments)} > {MAX_SEGMENTS_PER_PLAN})")
 
+        if not context.tts_available:
+            errors.append("TTS nicht verfuegbar -- Plan kann nicht ausgefuehrt werden")
+
+        # Entwicklungsauftrag 3, AP9: eindeutige, nicht-leere segment_ids.
+        seen_segment_ids = set()
+        for i, seg in enumerate(plan.segments):
+            seg_id = (seg.segment_id or "").strip()
+            if not seg_id:
+                errors.append(f"Segment {i}: segment_id fehlt")
+            elif seg_id in seen_segment_ids:
+                errors.append(f"Segment {i}: segment_id '{seg_id}' ist nicht eindeutig")
+            else:
+                seen_segment_ids.add(seg_id)
+
+        total_estimated_s = sum(seg.estimated_duration_s() for seg in plan.segments)
+        if total_estimated_s > MAX_TOTAL_ESTIMATED_DURATION_S:
+            errors.append(
+                f"geschaetzte Gesamtdauer zu lang ({total_estimated_s:.0f}s > "
+                f"{MAX_TOTAL_ESTIMATED_DURATION_S:.0f}s)"
+            )
+
         for i, seg in enumerate(plan.segments):
             text = (seg.text or "").strip()
             lowered = text.lower()
@@ -135,6 +182,18 @@ class ResponsePlanValidator:
                         )
                 if seg.gesture_relation not in VALID_GESTURE_RELATIONS:
                     errors.append(f"Segment {i}: unbekannte gesture_relation '{seg.gesture_relation}'")
+
+                # Entwicklungsauftrag 3, AP9: Geste blockieren (nicht die
+                # Rede!), wenn Nav2 faehrt/Mapping laeuft/schon eine Geste
+                # aktiv ist/Pepper nicht erreichbar ist.
+                if context.nav2_moving:
+                    errors.append(f"Segment {i}: Geste waehrend Nav2-Bewegung gesperrt")
+                if context.mapping_active and seg.gesture_name in context.head_gesture_names:
+                    errors.append(f"Segment {i}: Kopfgeste waehrend Mapping gesperrt")
+                if context.gesture_in_progress:
+                    errors.append(f"Segment {i}: bereits eine laufende Geste -- kein Doppelstart")
+                if not context.pepper_reachable:
+                    errors.append(f"Segment {i}: Pepper nicht erreichbar -- Geste nicht ausfuehrbar")
 
             if any(marker in lowered for marker in FACT_CLAIM_MARKERS) and not plan.source_ids:
                 errors.append(f"Segment {i}: klingt nach Faktenanspruch, aber source_ids ist leer")

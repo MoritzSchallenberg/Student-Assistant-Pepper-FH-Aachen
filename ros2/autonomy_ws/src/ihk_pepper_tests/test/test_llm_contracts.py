@@ -27,6 +27,7 @@ def test_valid_response_plan_passes():
     plan = ResponsePlan(
         segments=[
             ResponseSegment(
+                segment_id="greeting",
                 text="Guten Tag. Schoen, Sie zu sehen.",
                 gesture_name="open_arms",
                 gesture_relation="with_segment_start",
@@ -94,7 +95,7 @@ def test_fact_claim_without_sources_rejected():
 
 def test_fact_claim_with_known_source_passes():
     plan = ResponsePlan(segments=[
-        ResponseSegment(text="Unsere Ausbildung dauert drei Jahre."),
+        ResponseSegment(segment_id="answer", text="Unsere Ausbildung dauert drei Jahre."),
     ], source_ids=["faq:42"])
     result = ResponsePlanValidator().validate(plan, _context())
     assert result.valid is True

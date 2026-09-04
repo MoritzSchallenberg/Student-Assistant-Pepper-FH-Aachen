@@ -243,6 +243,62 @@ Rohdaten-Feld) + 6 neue Unit-Tests (Affect/Identity-Beobachtungen, immer
 
 Gesamttestzahl nach AP5+AP6: **298/298** (261 + 37 neu).
 
+## AP8 + AP9: LLM 3 (Response Composer) + ResponsePlanValidator erweitert
+
+`response_plan.py` erweitert (bestehende `validate()`-Methode ergänzt,
+nicht neu geschrieben): `ResponseSegment.segment_id` (Pflichtfeld,
+Default `""`), Validator lehnt fehlende/doppelte `segment_id`s ab.
+Geschätzte Gesamtdauer (grobe Zeichen/Sekunde-Heuristik, explizit als
+Näherung dokumentiert, keine echte TTS-Zeitmessung) -- zu lange Pläne
+abgelehnt. `PlanContext` um `nav2_moving`, `mapping_active`,
+`gesture_in_progress`, `pepper_reachable`, `tts_available`,
+`head_gesture_names` ergänzt. Bewusste Design-Entscheidung: diese fünf
+Bedingungen blockieren NUR Segmente MIT `gesture_name` (nicht die Rede
+selbst) -- außer `tts_available=false`, das den GESAMTEN Plan ablehnt
+(ohne TTS kann ein sprachbasierter Plan grundsätzlich nicht ausgeführt
+werden). Entspricht dem Auftrag-Fallback-Prinzip "Fehler im Gestenplayer:
+Sprache fortsetzen, wenn sicher" -- durch einen Test explizit bestätigt
+(`test_nav2_moving_does_not_block_speech_only_segment`). `mapping_active`
+blockiert gezielt nur Gesten aus `head_gesture_names` (nicht pauschal
+jede Geste), gefüllt vom Aufrufer aus `GestureCatalog`s
+`affects_head()`-Ergebnis.
+
+Zwei bestehende Tests aus Auftrag 1
+(`test_valid_response_plan_passes`/`test_fact_claim_with_known_source_passes`)
+mussten um `segment_id` ergänzt werden, um mit der neuen Pflichtprüfung
+weiterhin `valid=True` zu liefern -- bewusste, dokumentierte Anpassung
+an die neue Schema-Anforderung, keine Verwässerung der Prüfung selbst.
+
+Neu: `pipeline.py::run_response_composer()` -- gleiches Muster wie
+Stufe 1/2 (Prompt bauen → Provider aufrufen → JSON parsen → Fallback bei
+jedem Fehler). Prompt-Kontext enthält `answer_brief_facts` (nur Text +
+`source_id` + Konfidenz, niemals mehr), `allowed_gesture_names`,
+Gestenvorschläge aus LLM 2 -- Regeltext verbietet erfundene
+Quellen/Erinnerungen/interne Prompt-Erwähnungen explizit. **Fallback bei
+Provider-/JSON-Fehler ist bereits der in AP9 geforderte "LLM-3-Fehler"-
+Fallback**: baut den `ResponsePlan` direkt aus `answer_brief.facts`
+(je ein Segment pro Fakt, kein Gesten-Segment, eindeutige
+`fallback_<i>`-IDs) -- ohne Fakten die im Auftrag vorgegebene sichere
+Antwort ("Dazu habe ich aktuell keine verlässliche Information.").
+
+**Textsanitisierung** (Auftrag: "keine Markdown-Tabellen/URLs
+vorlesen") wird bewusst NICHT hier dupliziert, sondern erst am
+Executor unmittelbar vor dem tatsächlichen TTS-Aufruf angewendet (AP10,
+`ihk_pepper_dialog/tts_sanitizer.py` vollständig wiederverwendet) --
+vermeidet eine weitere zirkuläre Paketabhängigkeit (`ihk_pepper_dialog`
+importiert bereits `ihk_pepper_llm_contracts`) und entspricht dem
+natürlichsten Ort für diese Prüfung ("unmittelbar vor der Sprachausgabe").
+
+**Getestet**: 12 neue Unit-Tests für die Validator-Erweiterung (fehlende/
+doppelte segment_id, Gesamtdauer, TTS-Verfügbarkeit, alle vier
+Bewegungs-/Verfügbarkeits-Bedingungen einzeln inkl. der Speech-weiterhin-
+erlaubt-Ausnahme) + 8 neue Unit-Tests für `run_response_composer`
+(gültige Antwort, Provider-/JSON-Fehler-Fallback, leerer AnswerBrief →
+sichere Antwort, eindeutige Fallback-IDs, Gestenvorschläge werden als
+Kontext übergeben).
+
+Gesamttestzahl nach AP8+AP9: **318/318** (298 + 20 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,
