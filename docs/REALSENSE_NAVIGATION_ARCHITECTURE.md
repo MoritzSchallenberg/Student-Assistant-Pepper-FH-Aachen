@@ -1,0 +1,49 @@
+# Architektur: RealSense-only Navigation (Entwicklungsauftrag 2)
+
+Stand: 2026-09-04. Lebendes Dokument -- wird nach jedem Arbeitspaket
+ergänzt (siehe docs/DEVELOPMENT_ORDER_02_REPORT.md für den detaillierten
+Fortschritt). Ergänzt docs/ARCHITECTURE_REALSense_BT.md (Entwicklungsauftrag 1)
+um den Navigations-/Mapping-/Annäherungs-Teil.
+
+## TF-Kette
+
+Vollständige, beabsichtigte Kette für diesen Auftrag:
+
+```
+map -> odom -> base_link -> realsense_mount_link -> camera_link
+                              (Entwicklungsauftrag 1, statisch)   (RTAB-Map, AP4/AP5)
+```
+
+- `base_link -> realsense_mount_link -> camera_link`: **statisch**
+  (Entwicklungsauftrag 1, `realsense_static_tf.launch.py`), Werte aus
+  `config/realsense_extrinsics.yaml` (Platzhalter, `is_calibrated: false`).
+  Diese Teilkette modelliert bewusst NICHT Peppers echte Kopf-Kinematik
+  (HeadYaw/HeadPitch) -- sie geht von einer FESTEN Kopfpose aus. Das ist
+  nur deshalb sicher, weil `camera_pose_gate_node` (Entwicklungsauftrag 1)
+  die Bewegungsfreigabe entzieht, sobald der Kopf von dieser Pose
+  abweicht (`head_navigation_pose_valid`). Eine echte kinematische Kette
+  wäre präziser, ist für den Umfang dieses Auftrags aber nicht
+  erforderlich (AP3).
+- `odom -> base_link`: aus RTAB-Map RGB-D Visual Odometry (AP4) --
+  ausschließlich RealSense-Daten, KEINE Pepper-Odometrie/-IMU.
+- `map -> odom`: aus RTAB-Map-Lokalisierung gegen eine gespeicherte Karte
+  (AP5).
+
+Fehlende/veraltete TF führt an jeder Stelle dieser Kette IMMER zu einem
+sicheren ungültigen Zustand, NIE zu einer geschätzten Position -- siehe
+`realsense_diagnostics_node` (AP2, `tf_zur_roboterbasis_fehlt`) und
+`person_approach_node.py::_get_robot_position_in_frame()` (AP9,
+`keine_tf_fuer_roboterpose`).
+
+## Plausibilitätsprüfung der Kameramontage (AP3)
+
+`extrinsics_plausibility.py` (rein, kein ROS) prüft die konfigurierten
+Montagewerte auf grobe Plausibilität (Translation < 2m, Rotation im
+gültigen Bereich) -- ergänzt die bereits vorhandene `is_calibrated`-
+Warnung (Entwicklungsauftrag 1) um eine echte Wertepruefung. Ersetzt
+KEINE echte Vermessung, siehe `docs/REALSENSE_CALIBRATION.md`.
+
+## Weitere Abschnitte
+
+Werden mit AP4 (RGB-D-Odometrie), AP5 (Mapping/Lokalisierung), AP6
+(Costmap/Abdeckung), AP7 (Nav2/Holonomie), AP8 (Motion Guard) ergänzt.

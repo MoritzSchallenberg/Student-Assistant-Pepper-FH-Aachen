@@ -211,6 +211,31 @@ RealSense-Hardware in dieser Session angeschlossen.
 
 Gesamttestzahl nach AP2: **164/164** (144 + 20 neu).
 
+## AP3: Kameramontage-TF-Kette erweitert
+
+Neues reines Modul `extrinsics_plausibility.py`: prüft die konfigurierten
+Montagewerte (`realsense_extrinsics.yaml`) auf grobe Plausibilität
+(Translation < 2m -- deutlich über Peppers Gesamthöhe, Rotation im
+gültigen [-π,π]-Bereich), ergänzt die bereits vorhandene
+`is_calibrated`-Warnung aus Auftrag 1 um eine echte Wertepruefung.
+In `realsense_static_tf.launch.py` verdrahtet (Warnung beim Start,
+blockiert das Launch nicht -- reine Diagnose). Neues Dokument
+`docs/REALSENSE_NAVIGATION_ARCHITECTURE.md`: beschreibt die volle
+beabsichtigte TF-Kette `map -> odom -> base_link ->
+realsense_mount_link -> camera_link` und dokumentiert ehrlich, dass die
+aktuelle `base_link -> camera_link`-Teilkette bewusst STATISCH ist
+(keine echte Kopf-Kinematik) -- sicher nur, weil
+`camera_pose_gate_node` (Auftrag 1) die Bewegungsfreigabe entzieht,
+sobald der Kopf von der Navigationspose abweicht. `map -> odom` und
+`odom -> base_link` existieren noch nicht (kommen aus AP4/AP5).
+
+**Getestet**: 7 neue Unit-Tests (`test_extrinsics_plausibility.py`).
+`realsense_static_tf.launch.py --show-args` erfolgreich verifiziert,
+Plausibilitätswarnung korrekt NICHT ausgelöst bei den aktuellen
+Platzhalter-Werten (0,0,0 -- plausibel, auch wenn nicht kalibriert).
+
+Gesamttestzahl nach AP3: **171/171** (164 + 7 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen
