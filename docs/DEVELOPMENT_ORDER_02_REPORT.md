@@ -628,6 +628,72 @@ Auftrag 2 verändert). Zwei committete manuelle Integrationstests
 gültig; `manual_approach_monitor_check.py`: neu, 2/2 Szenarien je
 mehrfach erfolgreich).
 
+## AP13: Ansible/rosdep und reproduzierbare Installation
+
+`ihk_pepper_navigation/package.xml` überarbeitet: `nav2_bringup` als
+`exec_depend` entfernt (irreführend -- `nav2_bringup.launch.py` nutzt
+NIE das gleichnamige `nav2_bringup`-ROS-Paket selbst, sondern startet
+die einzelnen Nav2-Server direkt), stattdessen die tatsächlich
+referenzierten Pakete einzeln eingetragen (`nav2_controller`,
+`nav2_planner`, `nav2_behaviors`, `nav2_bt_navigator`,
+`nav2_waypoint_follower`, `nav2_velocity_smoother`,
+`nav2_collision_monitor`, `nav2_lifecycle_manager`). `twist_mux` als
+`exec_depend` entfernt (entfällt seit AP7/AP8, Motion Guard übernimmt
+dessen Rolle). Neue `depend`-Einträge für bereits installierte Pakete
+(`cv_bridge`, `rtabmap_msgs`) und `exec_depend`-Einträge für RTAB-Map-
+Launch-Pakete (`rtabmap_odom`, `rtabmap_slam`). `ihk_pepper_interaction/
+package.xml`: `geometry_msgs` ergänzt (Motion Guard, AP8).
+
+**Beim Validieren gefunden und behoben**: `ihk_pepper_navigation/
+package.xml` enthielt zwei XML-Kommentare mit einem literalen `--`
+(Doppel-Bindestrich) -- laut XML-Spezifikation innerhalb von
+Kommentaren verboten (dieselbe Fehlerklasse, die in Auftrag 1 bereits
+mehrfach in `.xml`-BT-Dateien auftrat, hier aber erstmals in einer
+`package.xml`). Per `python3 -c "import xml.etree.ElementTree as ET;
+ET.parse(...)"` gefunden (genau die Prüfung, die auch die CI-Pipeline
+für jede `package.xml` durchführt, siehe `.github/workflows/ci.yml`) --
+wäre sonst erst in CI aufgefallen. Behoben (Gedankenstrich statt
+Doppelstrich), alle `package.xml`-Dateien im Workspace anschließend
+systematisch nachgeprüft -- keine weiteren betroffen.
+
+**Installation soll primär reproduzierbar sein über**:
+```bash
+rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
+```
+Nicht in dieser Session ausgeführt (kein sudo) -- die exakte, direkt
+kopierbare `apt`-Alternative für die in AP1 als fehlend identifizierten
+Pakete:
+```bash
+sudo apt install \
+  ros-jazzy-navigation2 \
+  ros-jazzy-robot-localization \
+  ros-jazzy-depthimage-to-laserscan \
+  ros-jazzy-slam-toolbox
+```
+(`ros-jazzy-navigation2` ist das Metapaket, das alle einzeln in
+`package.xml` eingetragenen `nav2_*`-Pakete mitinstalliert.)
+`realsense2_camera`, `librealsense2` und der komplette RTAB-Map-Stack
+sind bereits installiert (siehe AP1) -- keine weitere Aktion nötig.
+
+Gesamttestzahl nach AP13: **218/218** (unverändert -- reine
+Metadaten-/Konfigurationsarbeit, XML-Fix verifiziert per erneutem
+`colcon build` + vollem `pytest`-Lauf).
+
+**Ansible geprüft, bewusst NICHT geändert**: `ansible/roles/pepper_deploy/
+tasks/build.yml` installiert ROS-Abhängigkeiten bereits generisch über
+`rosdep install --from-paths .../src` (nicht über eine separat
+gepflegte Paketliste) -- die soeben korrigierten `package.xml`-Einträge
+greifen dort automatisch, ohne dass die Ansible-Rollen selbst angepasst
+werden müssten. `ansible/roles/pepper_dependencies/defaults/main.yml`
+enthält bereits ein `realsense_enabled`-Flag (Default `false`), das die
+RealSense-APT-Repository-Einrichtung UND den zugehörigen Healthcheck
+gattert -- **bewusst nicht auf `true` umgestellt**: ob die Zielmaschine
+tatsächlich eine RealSense physisch montiert hat, kann diese Session
+nicht wissen, ein sicherer Default bleibt `false` (explizit vom
+Nutzer/der Inventory beim tatsächlichen Deployment zu setzen, sobald die
+Hardware montiert ist -- kein Ansible-Deployment in dieser Session, wie
+im gesamten Auftrag durchgehend gefordert).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

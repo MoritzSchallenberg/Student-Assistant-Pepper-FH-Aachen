@@ -3,15 +3,19 @@
   <name>ihk_pepper_navigation</name>
   <version>0.1.0</version>
   <description>
-    Navigation/Mapping-Vorbereitung (Nav2 "Moeglichkeit B") + Personen
-    anfahren/begleiten/folgen. Nav2/slam_toolbox/robot_localization/
-    depthimage_to_laserscan/twist_mux sind auf dem Entwicklungssystem
-    dieser Session NICHT installiert (kein sudo-Zugriff) -- siehe
-    docs/IMPLEMENTATION_REPORT.md fuer die exakten Install-Befehle. Dieses
-    Paket enthaelt daher: (a) eigenstaendigen, getesteten Code ohne
-    Nav2-Abhaengigkeit (Laser-Filter, Zonen-Format, Personen-Ansteuerung
-    mit Nav2-ActionClient-Fallback), (b) vorbereitete, NICHT getestete
-    Konfigurations-/Launch-Dateien fuer den Rest der Kette.
+    RealSense-only Navigation/Mapping (Entwicklungsauftrag 2) + Personen
+    anfahren/begleiten/folgen. Der volle Nav2-Stack/robot_localization/
+    depthimage_to_laserscan sind auf dem Entwicklungssystem dieser
+    Session NICHT installiert (kein sudo-Zugriff) -- siehe
+    docs/DEVELOPMENT_ORDER_02_REPORT.md AP13 fuer die exakten
+    Install-Befehle. Dieses Paket enthaelt daher: (a) eigenstaendigen,
+    getesteten Code ohne Nav2-Abhaengigkeit (Zielpose-Geometrie,
+    Diagnose-/Gesundheits-Logik, Zonen-Format, Personen-Ansteuerung mit
+    Nav2-ActionClient-Fallback), (b) vorbereitete, teils live gestartete
+    (RTAB-Map), teils NICHT getestete (voller Nav2-Stack) Konfigurations-/
+    Launch-Dateien fuer den Rest der Kette. robot_localization.yaml/
+    slam_mapping.launch.py sind bewusst NICHT mehr Teil des aktiven
+    Pfads (ersetzt durch RTAB-Map, siehe deren Datei-Kopfkommentare).
   </description>
   <maintainer email="you@example.com">you</maintainer>
   <license>BSD</license>
@@ -33,16 +37,28 @@
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
-  <!-- NICHT installiert in dieser Session, siehe Paketbeschreibung oben.
-       Als <exec_depend> statt <depend> eingetragen, damit ein
-       rosdep-Lauf sie zwar auflistet, ein colcon build dieses Pakets
-       aber nicht daran scheitert, wenn sie fehlen. -->
+  <!-- NICHT installiert in dieser Session (kein sudo), siehe
+       Paketbeschreibung oben und docs/DEVELOPMENT_ORDER_02_REPORT.md
+       AP13 fuer die exakten Install-Befehle. Als <exec_depend> statt
+       <depend> eingetragen, damit ein rosdep-Lauf sie zwar auflistet,
+       ein colcon build dieses Pakets aber nicht daran scheitert, wenn
+       sie fehlen. Entwicklungsauftrag 2, AP7: die einzelnen Nav2-Pakete
+       aufgelistet, die nav2_bringup.launch.py TATSAECHLICH startet
+       (nicht das nav2_bringup-ROS-Paket selbst – gleichnamig, aber
+       nicht verwendet). twist_mux entfaellt (Motion Guard uebernimmt
+       dessen Rolle, siehe AP8). depthimage_to_laserscan/robot_localization/
+       slam_toolbox bleiben als Alternativpfad-Abhaengigkeiten. -->
   <exec_depend>depthimage_to_laserscan</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>slam_toolbox</exec_depend>
-  <exec_depend>nav2_bringup</exec_depend>
-  <exec_depend>twist_mux</exec_depend>
+  <exec_depend>nav2_controller</exec_depend>
+  <exec_depend>nav2_planner</exec_depend>
+  <exec_depend>nav2_behaviors</exec_depend>
+  <exec_depend>nav2_bt_navigator</exec_depend>
+  <exec_depend>nav2_waypoint_follower</exec_depend>
+  <exec_depend>nav2_velocity_smoother</exec_depend>
   <exec_depend>nav2_collision_monitor</exec_depend>
+  <exec_depend>nav2_lifecycle_manager</exec_depend>
   <!-- Entwicklungsauftrag 1, Abschnitt 3: RealSense-Bringup + statische
        TF-Kette. realsense2_camera ist auf diesem Entwicklungsrechner
        bereits installiert (siehe docs/DEVELOPMENT_ORDER_01_REPORT.md),
@@ -54,7 +70,7 @@
   <!-- Entwicklungsauftrag 2, AP4/AP5: RGB-D-Odometrie/Mapping/Lokalisierung.
        rtabmap_msgs ist bereits installiert (siehe
        docs/DEVELOPMENT_ORDER_02_REPORT.md), daher <depend> statt
-       <exec_depend> -- odometry_health_node importiert es direkt.
+       <exec_depend> – odometry_health_node importiert es direkt.
        rtabmap_odom/rtabmap_slam werden nur per Launch-File gestartet
        (kein Python-Import noetig), bleiben aber als exec_depend
        dokumentiert. -->
