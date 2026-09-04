@@ -694,6 +694,164 @@ Nutzer/der Inventory beim tatsächlichen Deployment zu setzen, sobald die
 Hardware montiert ist -- kein Ansible-Deployment in dieser Session, wie
 im gesamten Auftrag durchgehend gefordert).
 
+## AP14: Abschlussbericht
+
+### Nebenbefund beim finalen Reproduzierbarkeits-Check
+
+Unmittelbar vor Abschluss dieses Berichts wurde `manual_e2e_offline_check.py`
+(Auftrag 1) ein letztes Mal zur Kontrolle ausgeführt und schlug
+überraschend fehl (`/cmd_vel wurde waehrend des Laufs veroeffentlicht!`).
+Ursache **nicht** im Produktcode: zwei verwaiste `motion_guard_node`-
+Prozesse aus einem früheren manuellen AP8-Testlauf dieser Sitzung liefen
+seit über einer Stunde im Hintergrund weiter (`ros2 run`-Wrapper-Prozess
+ohne `start_new_session=True`+`os.killpg()` gestartet -- exakt dieselbe
+Fehlerklasse, die in Auftrag 1 bereits für den E2E-Test selbst gefunden
+und dort behoben wurde, hier aber in einer eigenen manuellen
+Testinvokation außerhalb des Testskripts wiederholt). Diese Prozesse
+publizierten mangels frischer Kommandos kontinuierlich
+Nullgeschwindigkeit auf `/cmd_vel` (Motion Guards eigener, korrekter
+Sicherheitsmechanismus!) -- die E2E-Prüfung schlägt bereits bei JEDER
+Nachricht auf `/cmd_vel` an, unabhängig vom Inhalt. Nach Beenden der
+verwaisten Prozesse (`kill -9`, zusätzlich zwei weitere verwaiste
+`odometry_health_node`-Prozesse aus einem noch früheren AP4-Testlauf
+gefunden und ebenfalls beendet): **3/3 Läufe wieder sauber erfolgreich**.
+Kein Code geändert -- reine Testinfrastruktur-Hygiene. Lehre: auch
+kurzlebige manuelle Live-Tests außerhalb committeter Skripte sollten
+künftig konsequent `start_new_session=True`+`os.killpg()` verwenden.
+
+### Ausgangsstand und Endstand
+
+- Ausgangs-Commit: `abbaf15d5405398629a1ed1ebb956ca6e09489cd` (Abschluss
+  Entwicklungsauftrag 1).
+- End-Commit (vor diesem Abschluss-Commit): `623f3b3` (AP13).
+- Branch: `order-02-realsense-nav2-safe-approach`, von
+  `order-01-realsense-bt-gestures` erstellt.
+- 13 Commits in diesem Auftrag (AP1 bis AP13, ein zusätzlicher
+  Zwischen-Commit für die AP9-Doku).
+- `git status`: sauber, keine uncommitteten Änderungen (zuletzt vor
+  diesem Abschluss-Commit geprüft).
+
+### Abschlusstabelle
+
+| Bereich | Status | Nachweis | Noch offen |
+|---|---|---|---|
+| Baseline/Branch (AP1) | ✅ | 12 Pakete gebaut, 125→218 Tests | – |
+| Sichere Annäherungszielpose (AP9) | ✅ vollständig | 19 Unit-Tests, Live-Smoke-Test | Nav2-Fahrpfad selbst nicht live |
+| RealSense-Diagnose (AP2) | ✅ Logik+Live-Start | 20 Unit-Tests, Live: `valid=False` mit korrekten Gründen ohne Kamera | Keine echten Kameradaten geprüft |
+| Kameramontage-TF/Plausibilität (AP3) | ✅ | 7 Unit-Tests, Launch verifiziert | Extrinsik weiter unvermessen |
+| RGB-D-Odometrie (AP4) | ✅ Logik+echter Prozessstart | 10 Unit-Tests, `rgbd_odometry` live gestartet+korrekt konfiguriert | Keine echten RGB-D-Daten |
+| Mapping/Lokalisierung (AP5) | ✅ Logik+echter Prozessstart | 13 Unit-Tests, `rtabmap` SLAM-Modus live gestartet, Mutex verifiziert | Keine echte Karte erstellt |
+| Costmap/Abdeckungsnachweis (AP6) | ✅ | 9 Unit-Tests, **belegt: 1 Kamera reicht nicht** | Kein Nav2-Vollstack installiert |
+| Nav2/Holonomie (AP7) | ✅ Konfiguration | YAML+Launch verifiziert, 4 Verdrahtungsfehler behoben | Nicht live (kein Nav2 installiert), Holonomie nur quellcode-bestätigt |
+| Motion Guard (AP8) | ✅ vollständig | 15 Unit-Tests, Block- UND Allow-Pfad live verifiziert | – |
+| BT-Fahrtüberwachung/Gestensperre (AP10) | ✅ vollständig | 2 manuelle Live-Szenarien (track_loss, safety_loss), Gestensperre live in beide Richtungen | mapping_active/current_interaction_state weiter nicht verdrahtet |
+| Startmodi (AP11) | ✅ Struktur | 4 neue + 2 erweiterte Launches, alle per `--show-args`/Live-Start verifiziert | `navigation_live` bewusst nie ausgeführt |
+| Tests (AP12) | ✅ | 218/218 automatisiert + 2 manuelle Skripte (3/3 + 2×erfolgreich) | Nav2-Zielpose-Akzeptanz ungetestet |
+| Ansible/rosdep (AP13) | ✅ | package.xml korrigiert, XML-Bug behoben, Ansible-Pfad geprüft | Kein echtes Deployment ausgeführt |
+| Dokumentation (AP14) | ✅ | dieser Bericht + 4 neue/erweiterte Docs | – |
+
+### Build-Ergebnis, Testanzahl
+
+- `colcon build --symlink-install --packages-skip ihk_pepper_dialog`:
+  **12/12 Pakete grün** (nur Deprecation-Warnungen, keine Fehler).
+- `python3 -m pytest ros2/autonomy_ws/src/ihk_pepper_tests/test/`:
+  **218/218 grün** (125 Baseline aus Auftrag 1 + 93 neu).
+- `colcon test --packages-select ihk_pepper_behavior_tree`: **17 Tests,
+  0 Fehler, 3 übersprungen** (unverändert seit Auftrag 1 -- keine
+  BT-Knoten in Auftrag 2 verändert).
+- Manuelle Integrationstests: `manual_e2e_offline_check.py` **3/3**,
+  `manual_approach_monitor_check.py` **2/2 Szenarien** (je mehrfach
+  reproduziert).
+
+### Getestete/nicht getestete Hardware
+
+- **Getestet**: keine echte Hardware (weder RealSense noch Pepper) in
+  dieser Session angeschlossen -- durchgehend so dokumentiert.
+- **Nicht getestet**: RealSense-Kamera (Modell/Firmware/Streams nie
+  erfasst), echter Pepper, Nav2-Vollstack (nicht installiert, kein
+  sudo), `robot_localization`/`depthimage_to_laserscan`/`slam_toolbox`
+  (nicht installiert).
+- **Bereits installiert und dadurch teilweise ECHT geprüft**: RTAB-Map-
+  Vollstack (0.22.1), `realsense2_camera`/`librealsense2` (4.58.1/2.58.1)
+  -- daher konnten `rgbd_odometry`/`rtabmap`-Prozesse tatsächlich
+  gestartet und ihre Konfiguration/Verdrahtung live bestätigt werden
+  (ohne echten Kamerastream).
+
+### Installationsbefehle (siehe auch AP13-Abschnitt oben)
+
+```bash
+rosdep install --from-paths src --ignore-src --rosdistro jazzy -y
+# Alternative/Ergänzung, falls rosdep-Keys fehlen:
+sudo apt install \
+  ros-jazzy-navigation2 \
+  ros-jazzy-robot-localization \
+  ros-jazzy-depthimage-to-laserscan \
+  ros-jazzy-slam-toolbox
+```
+
+### Sicherheitsstatus
+
+- `motion_capable`/`allow_motion`/`enable_live_motion` bleiben überall
+  standardmäßig `false`.
+- Zwei-Schlüssel-System (Auftrag 1) unverändert aktiv:
+  `motion_capable` UND explizite `/set_motion_permission`-Anfrage.
+- Motion Guard (AP8) als neue, dritte, hardwarenahe Instanz: live
+  verifiziert, dass Bumper/Not-Halt/RealSense-Diagnose/Odometrie/
+  Lokalisierung/Hindernisdaten/Kopfpose/Gestenablauf/Befehlsalter JEDEN
+  einzeln Bewegung blockieren, unabhängig von allen anderen.
+- `navigation_live.launch.py` **niemals ausgeführt** in dieser Sitzung.
+- Kein Test/keine manuelle Aktion hat je echtes `/cmd_vel` erreicht
+  (siehe Nebenbefund oben -- die einzige Verletzung dieses Prinzips war
+  ein verwaister Testprozess, der KORREKTERWEISE nur Nullgeschwindigkeit
+  publizierte, kein tatsächlicher Fahrbefehl).
+- Coverage-Nachweis (AP6) bestätigt aktiv, dass eine einzelne Kopfkamera
+  strukturell nicht für eigenständige Livebewegung ausreicht --
+  dokumentiert, nicht schöngeredet.
+
+### Bekannte Einschränkungen (Zusammenfassung, Details in den AP-Abschnitten oben)
+
+1. Kein Nav2-Vollstack installiert -- AP6/AP7/AP11 (`navigation_dry_run`)
+   sind konfigurations-/strukturseitig fertig, aber nie live gegen
+   echten Nav2-Code getestet.
+2. Keine RealSense-Hardware -- AP2/AP3/AP4/AP5 sind bis zur Prozess-
+   Startgrenze live geprüft, keine echten Sensordaten je verarbeitet.
+3. Holonome Fahrfreigabe beruht auf Quellcode-Review von
+   `naoqi_driver2`, nicht auf einer echten Testfahrt.
+4. Kameraextrinsik bleibt vollständig unvermessen (Platzhalter).
+5. `mapping_active`/`current_interaction_state` nicht live an
+   `gesture_catalog.play()` verdrahtet (kleinere, dokumentierte Lücke).
+6. `navigation_live.launch.py` ist technisch vorbereitet, aber bewusst
+   nie ausgeführt -- Voraussetzungen dafür in
+   `docs/NAVIGATION_SAFETY_ACCEPTANCE.md` überwiegend noch offen.
+
+### Empfehlung für Entwicklungsauftrag 3
+
+Alle in Auftrag 2 selbst gesetzten Ziele (RealSense-only Navigation,
+Mapping, sichere Personenannäherung -- **als Software/Konfiguration**)
+sind erfüllt. Der nächste Auftrag sollte sich auf den **Übergang zu
+echter Hardware** konzentrieren, nicht auf weitere Software-Architektur:
+
+1. **RealSense-Hardware anschließen** und AP2s Diagnose zum ersten Mal
+   gegen echte Daten laufen lassen -- das ist der Schlüssel-Blocker für
+   praktisch alles Weitere (AP4/AP5/AP6 hängen alle daran).
+2. **Kameraextrinsik real vermessen** (`docs/REALSENSE_CALIBRATION.md`)
+   -- ohne das bleibt die gesamte TF-Kette Platzhalter.
+3. **Nav2-Vollstack installieren** (`sudo apt install
+   ros-jazzy-navigation2 ...`, siehe oben) und `navigation_dry_run`
+   zum ersten Mal tatsächlich live gegen den echten Nav2-Code testen.
+4. **Holonome Fahrt einmal einzeln, langsam, beaufsichtigt** gegen den
+   echten Pepper prüfen (bestätigt oder widerlegt den
+   Quellcode-Befund aus AP1/AP7) -- bei Abweichung sofort `vy=0`
+   zurücksetzen (dokumentierter Fallback bereits vorhanden).
+5. **Abdeckungslücke (AP6) schließen oder explizit einhegen** -- der
+   Nachweis, dass eine Kopfkamera nicht reicht, ist kein Kritikpunkt an
+   dieser Sitzung, sondern eine echte offene Sicherheitsfrage für den
+   produktiven Einsatz (zusätzliche Sensorik? reduzierter
+   Geltungsbereich? beide?).
+6. Erst danach: erste **wirklich beaufsichtigte** `navigation_live`-
+   Freigabe, Schritt für Schritt nach der Checkliste in
+   `docs/NAVIGATION_SAFETY_ACCEPTANCE.md`.
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen
