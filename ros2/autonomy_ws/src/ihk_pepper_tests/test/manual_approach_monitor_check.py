@@ -2,25 +2,29 @@
 """
 Manuelle (NICHT von `pytest test/` automatisch eingesammelte -- daher
 "manual_" statt "test_" im Dateinamen) Verifikation, dass ApproachPerson
-eine laufende Annaeherung SOFORT abbricht, wenn die Zielperson waehrend
-der Fahrt verloren geht (Entwicklungsauftrag 2, Abschnitt 13 "AP10").
+eine laufende Annaeherung SOFORT abbricht, wenn WAEHREND der Fahrt
+entweder die Zielperson verloren geht ODER die Sicherheitsfreigabe
+entzogen wird (Entwicklungsauftrag 2, Abschnitt 13 "AP10", Abschnitt 15
+"AP12": "Safety-Verlust waehrend eines Ziels fuehrt zu Cancel und
+Nullgeschwindigkeit").
 
 Warum nicht Teil der schnellen pytest-Suite: startet echte ROS2-Prozesse
 (mock_nav2_server, person_approach_node) per subprocess -- gleiches
 Muster wie manual_e2e_offline_check.py (Entwicklungsauftrag 1).
 
     cd ros2/autonomy_ws && source install/setup.bash
-    python3 src/ihk_pepper_tests/test/manual_approach_monitor_check.py
+    python3 src/ihk_pepper_tests/test/manual_approach_monitor_check.py track_loss
+    python3 src/ihk_pepper_tests/test/manual_approach_monitor_check.py safety_loss
 
-Ablauf: publiziert eine Person (track_id=42, 3m entfernt im base_link-
-Frame) + SafetyState.allow_person_approach=true, sendet ein ApproachPerson-
-Ziel gegen mock_nav2_server (travel_time_s bewusst lang, damit genug Zeit
-zum Eingreifen bleibt), stoppt nach 1.5s das Track-Publishing (simuliert
-Personenverlust WAEHREND der Fahrt) und prueft, dass die Action aktiv
-mit abort_reason="monitor_abort:person_lost" abbricht -- NICHT erst nach
-einem 60s-Timeout. mock_nav2_server published NIEMALS /cmd_vel (siehe
-dessen Moduldocstring), daher ist dieser Test auch ohne echte Hardware
-sicher.
+Ablauf (beide Szenarien): publiziert eine Person (track_id=42, 3m
+entfernt im base_link-Frame) + SafetyState.allow_person_approach=true,
+sendet ein ApproachPerson-Ziel gegen mock_nav2_server (travel_time_s
+bewusst lang, damit genug Zeit zum Eingreifen bleibt). Nach 1.5s je nach
+Szenario entweder das Track-Publishing gestoppt (track_loss) oder
+allow_person_approach auf false gesetzt (safety_loss) -- prueft in
+beiden Faellen, dass die Action AKTIV abbricht (nicht erst nach einem
+60s-Timeout). mock_nav2_server published NIEMALS /cmd_vel (siehe dessen
+Moduldocstring), daher ist dieser Test auch ohne echte Hardware sicher.
 """
 import os
 import signal
@@ -36,16 +40,19 @@ from ihk_pepper_interfaces.action import ApproachPerson
 from ihk_pepper_interfaces.msg import PersonTrack, PersonTrackArray, SafetyState
 
 TRACK_ID = 42
-TRACK_LOSS_AFTER_S = 1.5
+TRIGGER_AFTER_S = 1.5
 RESULT_TIMEOUT_S = 15.0
+VALID_SCENARIOS = ("track_loss", "safety_loss")
 
 
 class MonitorTestDriver(Node):
-    def __init__(self):
+    def __init__(self, scenario: str):
         super().__init__("approach_monitor_test_driver")
+        self.scenario = scenario
         self.tracks_pub = self.create_publisher(PersonTrackArray, "/perception_node/person_tracks", 10)
         self.safety_pub = self.create_publisher(SafetyState, "/safety_state", 10)
         self.publish_tracks = True
+        self.allow_person_approach = True
         self.feedback_log = []
         self.create_timer(0.1, self._publish_mocks)
 
@@ -64,8 +71,8 @@ class MonitorTestDriver(Node):
             self.tracks_pub.publish(array)
 
         safety = SafetyState()
-        safety.allow_person_approach = True
-        safety.reason = "manual_approach_monitor_check"
+        safety.allow_person_approach = self.allow_person_approach
+        safety.reason = "manual_approach_monitor_check" if self.allow_person_approach else "test_triggered_safety_loss"
         self.safety_pub.publish(safety)
 
     def on_feedback(self, fb):
@@ -92,6 +99,12 @@ def _kill_group(p):
 
 
 def main():
+    scenario = sys.argv[1] if len(sys.argv) > 1 else "track_loss"
+    if scenario not in VALID_SCENARIOS:
+        print(f"Unbekanntes Szenario {scenario!r}, erwartet eines von {VALID_SCENARIOS}")
+        return 1
+    print(f"Szenario: {scenario}")
+
     log_dir = "/tmp/approach_monitor_check_logs"
     os.makedirs(log_dir, exist_ok=True)
     procs = [
@@ -105,7 +118,7 @@ def main():
     time.sleep(3.0)  # Discovery/Startzeit
 
     rclpy.init()
-    driver = MonitorTestDriver()
+    driver = MonitorTestDriver(scenario)
     outcome = {"result": None}
 
     try:
@@ -135,14 +148,20 @@ def main():
             print("ERGEBNIS: FEHLGESCHLAGEN -- Ziel nicht akzeptiert")
             return 1
 
-        loss_triggered_at = time.time() + TRACK_LOSS_AFTER_S
+        trigger_at = time.time() + TRIGGER_AFTER_S
+        triggered = False
         result_future = goal_handle.get_result_async()
         deadline = time.time() + RESULT_TIMEOUT_S
         while not result_future.done() and time.time() < deadline:
             rclpy.spin_once(driver, timeout_sec=0.05)
-            if driver.publish_tracks and time.time() >= loss_triggered_at:
-                print(">>> Track-Publishing gestoppt (simuliert Personenverlust waehrend der Fahrt) <<<")
-                driver.publish_tracks = False
+            if not triggered and time.time() >= trigger_at:
+                triggered = True
+                if scenario == "track_loss":
+                    print(">>> Track-Publishing gestoppt (simuliert Personenverlust waehrend der Fahrt) <<<")
+                    driver.publish_tracks = False
+                else:
+                    print(">>> allow_person_approach=false gesetzt (simuliert Sicherheitsverlust waehrend der Fahrt) <<<")
+                    driver.allow_person_approach = False
 
         outcome["result"] = result_future.result()
     finally:
@@ -169,10 +188,12 @@ def main():
     print(f"RESULT: success={success} abort_reason={abort_reason!r}")
 
     if success:
-        print("ERGEBNIS: FEHLGESCHLAGEN -- Annaeherung meldete Erfolg trotz Personenverlust")
+        print("ERGEBNIS: FEHLGESCHLAGEN -- Annaeherung meldete Erfolg trotz Abbruchgrund")
         return 1
-    if not abort_reason.startswith("monitor_abort:person_lost"):
-        print(f"ERGEBNIS: FEHLGESCHLAGEN -- erwartete 'monitor_abort:person_lost*', "
+    expected_prefix = "monitor_abort:person_lost" if scenario == "track_loss" else "monitor_abort:"
+    if not abort_reason.startswith(expected_prefix) or (
+            scenario == "safety_loss" and abort_reason.startswith("monitor_abort:person_lost")):
+        print(f"ERGEBNIS: FEHLGESCHLAGEN -- erwartete '{expected_prefix}*' (nicht person_lost), "
               f"erhalten: {abort_reason!r}")
         return 1
 

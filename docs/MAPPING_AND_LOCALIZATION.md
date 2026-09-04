@@ -54,6 +54,32 @@ Sperrdatei, die nach einem Absturz (`kill -9`, Stromausfall) nicht
 regulär entfernt wurde, muss manuell gelöscht werden -- Pfad steht in
 der Fehlermeldung (`/tmp/ihk_pepper_nav_mode_lock/<modus>.lock`).
 
+## Rosbag-Aufnahme/-Wiedergabe (Entwicklungsauftrag 2, AP12)
+
+Vorbereitet, aber in dieser Session nie tatsächlich aufgenommen (keine
+RealSense-Hardware angeschlossen). Relevante Topics für eine
+deterministische Wiedergabe (z.B. um `realsense_odometry.launch.py`/
+`realsense_mapping.launch.py` ohne angeschlossene Kamera gegen echte
+Daten zu testen):
+
+```bash
+ros2 bag record -o realsense_session \
+  /camera/color/image_raw /camera/color/camera_info \
+  /camera/aligned_depth_to_color/image_raw \
+  /tf /tf_static /joint_states
+```
+
+Wiedergabe (mit `--clock`, damit `use_sim_time` konsistent bleibt, falls
+später genutzt):
+```bash
+ros2 bag play realsense_session --clock
+```
+
+**Große `.bag`-Dateien NIEMALS ins Git-Repository committen** -- die
+CI-Prüfung lehnt `.bag`/`.bag2`-Dateien ohnehin ab
+(`.github/workflows/ci.yml`, "Pruefen, dass keine Datenbanken/grossen
+Modell-Artefakte eingecheckt sind").
+
 ## Zugrundeliegende Odometrie
 
 Beide Launches binden `realsense_odometry.launch.py` (AP4) automatisch

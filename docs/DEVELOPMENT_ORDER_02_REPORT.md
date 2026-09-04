@@ -579,6 +579,55 @@ ohne sie auszuführen.
 Gesamttestzahl nach AP11: **218/218** (unverändert -- reine
 Launch-/Konfigurationsarbeit).
 
+## AP12: Tests -- Zusammenfassung
+
+Der Großteil der von Auftrag Abschnitt 15 geforderten Tests wurde bereits
+begleitend zu AP2--AP10 geschrieben und live verifiziert (siehe die
+jeweiligen Abschnitte oben). Dieser Abschnitt fasst zusammen und
+schließt die letzte offene Lücke.
+
+**Neu in diesem Abschnitt**: `manual_approach_monitor_check.py` (AP10)
+um ein zweites Szenario erweitert (`safety_loss`, per Kommandozeilen-
+Argument wählbar) -- deckt jetzt explizit auch "Safety-Verlust während
+eines Ziels führt zu Cancel" ab (vorher nur Track-Verlust getestet).
+**Beide Szenarien live verifiziert**: `track_loss` →
+`monitor_abort:person_lost`, `safety_loss` →
+`monitor_abort:test_triggered_safety_loss` -- beide brechen aktiv
+während der Fahrt ab, nicht erst nach dem 60s-Timeout.
+
+**Harter /cmd_vel-Grep-Test**: `grep` über alle Testdateien bestätigt,
+kein Testpfad publiziert direkt auf `/cmd_vel` (nur Kommentare/Docstrings
+und ein LLM-Contracts-Test, der genau die ABLEHNUNG eines rohen
+`ros2 topic pub /cmd_vel`-Befehls in einer LLM-Ausgabe prüft). Ergänzt
+die bereits aktive Subskription in `manual_e2e_offline_check.py`
+(Auftrag 1) und die strukturelle Garantie durch `mock_nav2_server`
+(published nie `/cmd_vel`) in beiden manuellen Skripten.
+
+**Rosbag-Vorbereitung**: Aufnahme-/Wiedergabebefehle dokumentiert
+(`docs/MAPPING_AND_LOCALIZATION.md`) -- nie tatsächlich aufgenommen
+(keine RealSense-Hardware).
+
+**Explizit NICHT abgedeckt, ehrlich benannt**:
+- Nav2 akzeptiert eine Testzielpose -- kein Nav2-Vollstack installiert
+  (siehe AP1/AP13), keine echten Nav2-Nodes in dieser Session gestartet.
+- "Keine seitliche Geschwindigkeit bei deaktivierter Holonomie" -- diese
+  Session hat KEINEN eigenen Geschwindigkeits-Clamping-Code geschrieben
+  (Nav2s `velocity_smoother`/`collision_monitor` erzwingen die Grenzen
+  intern über Konfigurationswerte, siehe AP7) -- ein Unit-Test dafür
+  würde fremden, nicht selbst geschriebenen Code prüfen und wurde daher
+  nicht fabriziert.
+
+**Gesamtergebnis über den ganzen Auftrag**: `colcon build
+--symlink-install --packages-skip ihk_pepper_dialog` grün (nach
+Behebung des in AP4 dokumentierten Build-Reihenfolge-Nebenbefunds),
+**218/218 automatisierte Python-Tests grün** (125 Baseline aus Auftrag 1
++ 93 neu in Auftrag 2), `ihk_pepper_behavior_tree`s `colcon test`
+weiterhin 17/0/0/3 (unverändert seit Auftrag 1, keine BT-Knoten in
+Auftrag 2 verändert). Zwei committete manuelle Integrationstests
+(`manual_e2e_offline_check.py`: 3/3 Läufe aus Auftrag 1, weiterhin
+gültig; `manual_approach_monitor_check.py`: neu, 2/2 Szenarien je
+mehrfach erfolgreich).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen
