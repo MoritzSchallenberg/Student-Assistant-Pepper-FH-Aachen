@@ -39,6 +39,7 @@
       <SubTree ID="SafetySubtree"/>
       <SubTree ID="BatterySubtree"/>
       <SubTree ID="GreetAndApproachSubtree"/>
+      <SubTree ID="DialogueSubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
@@ -63,16 +64,30 @@
     </Sequence>
   </BehaviorTree>
 
-  <!-- Dialog laeuft eigenstaendig/reaktiv in ihk_pepper_dialog
-       (dialog_manager_node hoert kontinuierlich auf /audio_node/transcript
-       — kein RunDialogue-Action-Server implementiert, siehe README.md).
-       Dieser Subtree beobachtet daher nur den Zustand, statt Dialog aktiv
-       zu STEUERN — er "gewinnt" im Fallback (SUCCESS), solange ein
-       Gespraech laeuft, damit Praesentation nicht gleichzeitig etwas
-       anderes anfangen. Steht bewusst NACH GreetAndApproach (siehe
-       Kommentar oben an der Wurzel) – waehrend eine Person aktiv
-       begruesst/angefahren wird, "gewinnt" GreetAndApproachSubtree
-       zuerst, auch wenn IsPersonEngaged parallel schon true waere. -->
+  <!-- Entwicklungsauftrag 3, AP11: RunDialogue.action ist jetzt ein
+       echter Action-Server (run_dialogue_action_server.py), der aktiv
+       gestartet wird, sobald CONVERSATION_READY erreicht ist – vorher
+       "gewann" im Fallback nur IsPersonEngaged (SUCCESS bei hohem
+       interest_score allein), OHNE dass je ein Dialog aktiv angestossen
+       wurde (bestaetigte Luecke aus Auftrag 1/2, siehe
+       docs/DEVELOPMENT_ORDER_03_REPORT.md AP11). Steht bewusst NACH
+       GreetAndApproachSubtree (siehe Kommentar an der Wurzel) – eine
+       laufende Begruessung/Annaeherung hat weiterhin Vorrang. Der
+       bestehende passive Transkript-Listener-Modus in
+       dialog_manager_node.py bleibt fuer dialog_only.launch.py
+       erhalten, wird hier aber NICHT gleichzeitig aktiv genutzt. -->
+  <BehaviorTree ID="DialogueSubtree">
+    <Sequence name="Dialogue">
+      <IsConversationReady/>
+      <RunDialogueViaBT session_id="{target_track_id}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- Faengt weiterhin den Fall ab, dass eine Person allein durch einen
+       hohen interest_score als "engagiert" gilt, OHNE dass je
+       CONVERSATION_READY erreicht wurde (z.B. waehrend GreetAndApproach
+       noch laeuft) – verhindert, dass PresentationSubtree/IdleAttractSubtree
+       parallel etwas anderes anfangen. -->
   <BehaviorTree ID="InteractionSubtree">
     <IsPersonEngaged/>
   </BehaviorTree>
@@ -204,6 +219,13 @@
     </Action>
     <Action ID="ClearSelectedPerson">
       <inout_port name="selected_track_id"/>
+    </Action>
+    <Condition ID="IsConversationReady">
+      <description>SUCCESS wenn /interaction_state == CONVERSATION_READY (7). Entwicklungsauftrag 3, AP11.</description>
+    </Condition>
+    <Action ID="RunDialogueViaBT">
+      <input_port name="session_id">int (Track-ID) -- wird in onStart() zu RunDialogue.action's string-Feld session_id umgewandelt.</input_port>
+      <description>Ruft /run_dialogue auf, bricht bei Praeemption (Safety/ReactiveFallback) die laufende Action wirklich ab. Entwicklungsauftrag 3, AP11.</description>
     </Action>
   </TreeNodesModel>
 

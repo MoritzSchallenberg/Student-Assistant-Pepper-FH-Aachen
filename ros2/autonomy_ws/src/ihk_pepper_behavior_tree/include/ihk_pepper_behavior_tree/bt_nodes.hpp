@@ -25,6 +25,7 @@
 #include <ihk_pepper_interfaces/action/play_gesture.hpp>
 #include <ihk_pepper_interfaces/action/play_presentation.hpp>
 #include <ihk_pepper_interfaces/action/approach_person.hpp>
+#include <ihk_pepper_interfaces/action/run_dialogue.hpp>
 #include <ihk_pepper_interfaces/msg/safety_state.hpp>
 #include <ihk_pepper_interfaces/msg/system_health.hpp>
 #include <ihk_pepper_interfaces/msg/person_track_array.hpp>
@@ -111,6 +112,9 @@ constexpr uint8_t INTERACTION_STATE_IDLE = 0;
 constexpr uint8_t INTERACTION_STATE_ATTRACT = 1;
 constexpr uint8_t INTERACTION_STATE_ENGAGED = 2;
 constexpr uint8_t INTERACTION_STATE_NAVIGATING = 4;
+// Entwicklungsauftrag 3, AP11: Zielzustand nach erfolgreicher Mock-
+// Annaeherung (siehe ihk_pepper_interaction/interaction_state.py).
+constexpr uint8_t INTERACTION_STATE_CONVERSATION_READY = 7;
 
 /// SUCCESS nur, wenn /safety_state aktuell (nicht aelter als max_age_s)
 /// UND weder emergency_stop noch compute_power_invalid gemeldet ist.
@@ -348,6 +352,43 @@ private:
   using GoalHandle = rclcpp_action::ClientGoalHandle<ApproachAction>;
   rclcpp::Node::SharedPtr node_;
   rclcpp_action::Client<ApproachAction>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> result_future_;
+  GoalHandle::SharedPtr goal_handle_;
+};
+
+/// Ruft /run_dialogue auf (Entwicklungsauftrag 3, AP11) und wartet auf
+/// das Ergebnis -- startet den Dialog NACHDEM CONVERSATION_READY
+/// erreicht wurde (siehe DialogueSubtree in trees/pepper_main.xml).
+/// onHalted() bricht ein laufendes Gespraech wirklich ab (Safety
+/// praeemptiert ueber die Root-ReactiveFallback jederzeit), GENAU wie
+/// bei ApproachSelectedPerson -- der Action-Server selbst gibt dabei
+/// NIE eine Bewegungsfreigabe frei (siehe run_dialogue_action_server.py).
+class RunDialogueViaBT : public BT::StatefulActionNode
+{
+public:
+  RunDialogueViaBT(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    // int, NICHT string -- track_id auf dem Blackboard (z.B.
+    // "target_track_id") ist als int abgelegt (siehe SelectStablePerson).
+    // Ein direkter getInput<std::string> auf einen int-typisierten
+    // Blackboard-Eintrag ist in BT.CPP 4.x nicht garantiert verlustfrei --
+    // die Umwandlung zu RunDialogue.action's string-Feld session_id
+    // passiert deshalb explizit in onStart(), nicht ueber den Port-Typ.
+    return {BT::InputPort<int>("session_id")};
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  using DialogueAction = ihk_pepper_interfaces::action::RunDialogue;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<DialogueAction>;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client<DialogueAction>::SharedPtr client_;
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;

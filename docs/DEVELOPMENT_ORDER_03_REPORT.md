@@ -349,6 +349,145 @@ wird eingehalten, Segmentstatus für jedes Segment veröffentlicht.
 
 Gesamttestzahl nach AP10: **330/330** (318 + 12 neu).
 
+## AP11: RunDialogue-Action und Behavior-Tree-Integration
+
+Neu: `ihk_pepper_dialog/run_dialogue_action_server.py`. Eigener Node
+statt Erweiterung von `dialog_manager_node.py` (vermeidet Konflikt mit
+dessen bestehendem passiven Transkript-Listener-Modus für
+`dialog_only.launch.py`, der unverändert erhalten bleibt). Implementiert
+den bereits vorhandenen, bis dahin von niemandem umgesetzten
+`RunDialogue.action`-Vertrag als echten Action-Server:
+
+- Drei unabhängig konfigurierbare LLM-Provider (`knowledge_llm_provider`/
+  `gesture_llm_provider`/`response_llm_provider`-Parameter, je
+  `"mock"|"anythingllm"|"openai_compatible"|"offline"`, Default
+  `"offline"`) über `_build_provider()` gebaut -- exakt die im Auftrag
+  geforderte unabhängige Konfigurierbarkeit, auch wenn aktuell alle auf
+  dieselbe lokale AnythingLLM-Instanz zeigen könnten.
+- Ablauf je Sitzung: Personenkontext laden (`GetPersonContext`-Service,
+  nur mit Consent nutzbar) → auf Frage warten (`_wait_for_question()`,
+  Transkript-Topic + hartes Stopp-Wort über das bestehende
+  `cancel_words.py`, `question_timeout_s`) → Pipeline (LLM1 → Retriever
+  → LLM2 → LLM3 → `ResponsePlanValidator.validate()`) → bei ungültigem,
+  aber nicht sicherheitsrelevantem Ergebnis: sicherer Fallback-Plan direkt
+  aus `answer_brief.facts` (`prepare_for_speech`-sanitisiert) → bei
+  `safety_ok=False`: Runde komplett übersprungen, Sprache UND Geste
+  gemeinsam abgebrochen, NIE nur eines von beidem → `ResponsePlanExecutor
+  .execute()` → bei validiertem `memory_summary_candidate` UND bekannter,
+  einwilligender Person: `WriteMemorySummary`-Service → zurück zum
+  Frage-Warten.
+- Abbruchbedingungen exakt wie im Auftrag: Sitzungs-Timeout
+  (`session_timeout_s`), Personenverlust (`_track_alive`,
+  `MAX_TRACK_AGE_S=2.0s`, Muster wie
+  `person_approach_node.py::_validate_target`), Safety-Event
+  (`_safety_ok`: kein `emergency_stop`, kein `bumper_active`), explizites
+  `Action::cancel`. Keine dieser Bedingungen setzt je eine
+  Bewegungsfreigabe -- nur `WAITING_FOR_FOLLOWUP`/`IDLE`-artige
+  Zustandsübergänge, nie `SafetyState`/`motion_capable`/`/cmd_vel`.
+- `FaqCache`/`sentence-transformers` werden in `main()` weiterhin VOR
+  `rclpy.init()` geladen (identische Reihenfolge wie in
+  `dialog_manager_node.py`, siehe dortige Begründung -- sonst
+  `RCLError: rcl node's context is invalid`).
+- Neuer Service `WriteMemorySummary.srv` + Handler in
+  `person_memory_node.py` ergänzt (ruft
+  `VectorMemoryStore.write_validated_summary()`, gibt bei Ablehnung
+  `success=False` mit den konkreten Validierungsfehlern zurück, nie
+  stillen Erfolg vortäuschend).
+
+**Behavior-Tree-Seite** (`ihk_pepper_behavior_tree`): neuer C++-Knoten
+`RunDialogueViaBT` (`StatefulActionNode`, `onStart/onRunning/onHalted`
+1:1 nach dem `ApproachSelectedPerson`-Muster, `onHalted()` ruft
+`async_cancel_goal()` -- bricht bei Präemption die laufende Action
+wirklich ab, erteilt dabei nie eine Bewegungsfreigabe). Der Port
+`session_id` ist bewusst `int` (passend zum blackboard-Typ von
+`target_track_id`), die Umwandlung zum `string`-Feld des Action-Ziels
+passiert explizit in `onStart()`, nicht über den Port-Typ (vermeidet ein
+BT.CPP-4.x-Typkonflikt-Risiko bei Blackboard-Lesezugriffen). Neue
+Condition `IsConversationReady` ist keine eigene Klasse, sondern die
+bestehende `InteractionStateCondition` ein fünftes Mal mit
+`INTERACTION_STATE_CONVERSATION_READY` (=7) registriert -- gleiches
+Muster wie die vier bestehenden Zustandsprüfungen.
+
+Neuer `DialogueSubtree` in `trees/pepper_main.xml`, in die Root-
+`ReactiveFallback` zwischen `GreetAndApproachSubtree` und
+`InteractionSubtree` eingefügt (`IsConversationReady` → `RunDialogueViaBT
+session_id="{target_track_id}"`). Behebt die in der Planung bestätigte
+Lücke: `GreetAndApproachSubtree` endete bisher nach
+`SetInteractionState state_name="CONVERSATION_READY"`, ohne dass je
+etwas darauf reagierte (der nächste Fallback-Zweig prüfte nur `ENGAGED`).
+`InteractionSubtree` bleibt unverändert bestehen -- fängt weiterhin den
+Fall ab, dass `interest_score` allein "engagiert" auslöst, ohne dass
+`CONVERSATION_READY` je erreicht wurde (z.B. während `GreetAndApproach`
+noch läuft).
+
+**Build/Test**: `xmllint`/`python3 -c "ET.parse(...)"` gegen
+`pepper_main.xml` -- zwei neue Kommentare enthielten anfangs
+Doppel-Bindestriche (`--`), identischer Fehlertyp wie in Auftrag 1/2
+schon mehrfach gefunden; korrigiert auf Halbgeviertstrich (`–`), danach
+`XML_OK`. `colcon build --symlink-install --packages-select
+ihk_pepper_interfaces ihk_pepper_behavior_tree` -- fehlerfrei.
+`colcon test --packages-select ihk_pepper_behavior_tree`: unverändert
+**17 Tests, 0 Fehler, 0 Failures, 3 übersprungen** (identisch zum
+Auftrag-2-Ausgangsstand -- keine neuen ament_lint-pflichtigen Dateien
+über die bereits gelinteten hinaus).
+
+**E2E-Live-Test** (`ihk_pepper_tests/test/manual_dialogue_e2e_check.py`,
+Muster wie `manual_e2e_offline_check.py`): startet `bridge_node`
+(dry_run), `person_memory_node`, `run_dialogue_action_server` als echte
+Prozesse (`start_new_session=True` + `killpg`-Cleanup), ein
+`DialogueTestDriver`-Node publiziert synthetische `PersonTrackArray`- und
+`SafetyState`-Nachrichten (0.1s-Timer -- ohne diese wurde die Sitzung
+sofort fälschlich mit `PERSON_LOST` abgebrochen, da `session_id` als
+Track-ID interpretiert wird und ohne veröffentlichten Track sofort als
+"nicht mehr gesehen" gilt). Mock-LLM-Antworten werden über eine
+generierte `--params-file`-YAML statt `-p key:=<json>` übergeben (direkte
+JSON-CLI-Parameter scheiterten an `Unknown YAML event` -- ROS2s
+CLI-Parameter-Parser ist YAML-, nicht JSON-basiert).
+
+Zwei Szenarien, beide **sauber bis `WAITING_FOR_FOLLOWUP` durchgelaufen**:
+
+- `known_person` (`session_id="42"`, Einwilligung erteilt, eine echte
+  FAQ-Zeile vorab über direkten `FaqCache`-Import gesät -- vor
+  `rclpy.init()`, wie oben beschrieben): Pipeline lieferte einen echten,
+  NICHT-Fallback validierten `ResponsePlan` (keine
+  Ablehnungs-/Fallback-Warnung im Log), ausgeführt über Say-/
+  PlayGesture-Mocks. Danach bestätigt per direkter `sqlite3`-Abfrage: ein
+  neuer `memory_entries`-Datensatz `('42', 'Frage zur Ausbildungsdauer
+  beantwortet.', '["Wie lange dauert die Ausbildung?"]')` in
+  `~/.ihk_pepper_memory/vector_memory.db`.
+- `unknown_person` (`session_id="99"`, keine Einwilligung): gleicher
+  Ablauf bis `WAITING_FOR_FOLLOWUP`, aber `identities`-Tabelle enthielt
+  danach ausschließlich weiterhin nur `[('42', 'granted')]` -- **kein**
+  Eintrag für 99 --, und **keine** `memory_entries`-Zeile für Person 99,
+  sowohl über die `GetPersonContext`-Serviceantwort als auch über
+  direkte `sqlite3`-Abfrage bestätigt. Genau das im Auftrag geforderte
+  Verhalten "unbekannte Person ohne Einwilligung → nichts wird dauerhaft
+  gespeichert".
+
+Test-Artefakte (`~/.ihk_pepper_memory/`, `/tmp/dialogue_e2e_check_logs/`,
+`/tmp/dialogue_e2e_faq_cache.sqlite`) nach Abschluss der Verifikation
+entfernt; keine verwaisten Prozesse gefunden (`ps aux` vor der Bereinigung
+geprüft).
+
+**Bekannte, bewusst noch offene Punkte** (nicht Teil von AP11, für
+spätere APs vorgemerkt): mehrere Gesten-YAMLs referenzieren weiterhin
+den ungültigen `InteractionState`-Wert `SPEAKING` in
+`allowed_interaction_states` -- strukturell bestätigter Bug, blockiert
+Gestenwiedergabe während eines echten Gesprächs; Behebung ist explizit
+Teil von AP13. `mapping_active`/`current_interaction_state` sind über
+`ResponsePlanValidator`/`GestureCatalog.play()` bereits korrekt als
+Sperr-Eingaben verdrahtet, aber der Executor selbst liest sie in AP11
+noch nicht aus einer Live-ROS-Quelle, sondern bekommt sie (wie schon in
+AP9/AP10 dokumentiert) über den `PlanContext`, den der Action-Server
+zusammenstellt -- funktional korrekt, aber noch nicht gegen eine echte
+laufende Navigation live erprobt (dafür wäre `navigation_live.launch.py`
+nötig, das laut Auftrag in dieser Sitzung nicht gestartet werden darf).
+
+Gesamttestzahl nach AP11: **330/330** unverändert (keine neuen
+Python-Unit-Tests in diesem AP -- die Verifikation erfolgte über den
+bestehenden BT-Testsatz plus den neuen manuellen E2E-Treiber, der
+bewusst nicht von pytest eingesammelt wird, `manual_`-Präfix).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

@@ -27,6 +27,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SetDisplayName.srv"
   "srv/DeletePerson.srv"
   "srv/GetPersonContext.srv"
+  "srv/WriteMemorySummary.srv"
   "action/Say.action"
   "action/RunDialogue.action"
   "action/PlayPresentation.action"

@@ -91,6 +91,14 @@ int main(int argc, char ** argv)
       return std::make_unique<ihk_pepper_bt::InteractionStateCondition>(
         name, config, node, ihk_pepper_bt::INTERACTION_STATE_NAVIGATING);
     });
+  // Entwicklungsauftrag 3, AP11: neuer DialogueSubtree reagiert auf
+  // CONVERSATION_READY.
+  factory.registerBuilder<ihk_pepper_bt::InteractionStateCondition>(
+    "IsConversationReady",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::InteractionStateCondition>(
+        name, config, node, ihk_pepper_bt::INTERACTION_STATE_CONVERSATION_READY);
+    });
 
   // Entwicklungsauftrag 1, Abschnitt 6: neuer Begruessen-und-Annaehern-Ablauf.
   factory.registerBuilder<ihk_pepper_bt::IsSystemReady>(
@@ -123,6 +131,11 @@ int main(int argc, char ** argv)
     "SetInteractionState",
     [node](const std::string & name, const BT::NodeConfig & config) {
       return std::make_unique<ihk_pepper_bt::SetInteractionState>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::RunDialogueViaBT>(
+    "RunDialogueViaBT",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::RunDialogueViaBT>(name, config, node);
     });
   factory.registerNodeType<ihk_pepper_bt::ClearSelectedPerson>("ClearSelectedPerson");
 

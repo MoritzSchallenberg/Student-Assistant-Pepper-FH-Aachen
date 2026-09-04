@@ -1,0 +1,18 @@
+# Entwicklungsauftrag 3, AP6/AP11. Schreibt EINE bereits geprueft
+# generierte Gespraechszusammenfassung (memory_summary_candidate aus
+# einem validierten ResponsePlan) -- niemals eine rohe LLM-Zwischenausgabe.
+# Wird nur mit dokumentierter Einwilligung tatsaechlich gespeichert
+# (person_memory_node.py ruft dafuer vector_memory.py::validate_memory_write()
+# auf); ohne Einwilligung liefert dieser Service success=false, KEIN
+# stiller Erfolg.
+
+string person_id
+string session_id
+string source
+string[] topics
+string summary
+string[] sources
+string valid_until_iso
+---
+bool success
+string message

@@ -496,6 +496,65 @@ void ApproachSelectedPerson::onHalted()
   }
 }
 
+// ---- RunDialogueViaBT (Entwicklungsauftrag 3, AP11) ----------------------
+
+RunDialogueViaBT::RunDialogueViaBT(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = rclcpp_action::create_client<DialogueAction>(node_, "/run_dialogue");
+}
+
+BT::NodeStatus RunDialogueViaBT::onStart()
+{
+  auto session_id = getInput<int>("session_id");
+  if (!session_id) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->wait_for_action_server(std::chrono::seconds(1))) {
+    RCLCPP_WARN(node_->get_logger(), "RunDialogueViaBT: Action nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  DialogueAction::Goal goal;
+  goal.session_id = std::to_string(session_id.value());
+  goal_handle_.reset();
+  goal_future_ = client_->async_send_goal(goal);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus RunDialogueViaBT::onRunning()
+{
+  if (!goal_handle_) {
+    if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_future_.get();
+    if (!goal_handle_) {
+      return BT::NodeStatus::FAILURE;
+    }
+    result_future_ = client_->async_get_result(goal_handle_);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto result = result_future_.get();
+  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+void RunDialogueViaBT::onHalted()
+{
+  // Safety/Root-ReactiveFallback kann diesen Knoten jederzeit
+  // praeemptieren -- bricht die laufende RunDialogue-Action WIRKLICH ab
+  // (siehe run_dialogue_action_server.py::_cancel_callback). Gibt dabei
+  // NIE eine Bewegungsfreigabe frei -- der Action-Server selbst ruft nie
+  // SetMotionPermission auf.
+  if (goal_handle_) {
+    client_->async_cancel_goal(goal_handle_);
+  }
+}
+
 // ---- SetInteractionState ------------------------------------------------
 
 SetInteractionState::SetInteractionState(

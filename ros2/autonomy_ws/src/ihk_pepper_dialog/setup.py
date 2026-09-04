@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "dialog_manager_node = ihk_pepper_dialog.dialog_manager_node:main",
             "load_faq_seed = ihk_pepper_dialog.load_faq_seed:main",
+            "run_dialogue_action_server = ihk_pepper_dialog.run_dialogue_action_server:main",
         ],
     },
 )
