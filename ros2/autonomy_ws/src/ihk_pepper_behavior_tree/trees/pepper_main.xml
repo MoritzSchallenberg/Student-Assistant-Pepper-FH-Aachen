@@ -1,42 +1,41 @@
 <?xml version="1.0"?>
 <!--
-  Pepper Haupt-Verhaltensbaum (Entwicklungsauftrag Abschnitt 39).
+  Pepper Haupt-Verhaltensbaum.
 
-  Diese Datei kannst du SOFORT in Groot2 oeffnen (Datei -> Open), auch
-  OHNE dass der C++-Ausfuehrungs-Node (bt_executor_node) laeuft — Groot2
+  Diese Datei kannst du in Groot2 oeffnen (Datei -> Open), auch OHNE dass
+  der C++-Ausfuehrungs-Node (bt_executor_node) laeuft — Groot2
   validiert/rendert die Struktur allein anhand des <TreeNodesModel> unten.
   Fuer LIVE-Monitoring (laufende Knoten farbig hervorgehoben) muss
-  zusaetzlich bt_executor_node laufen, siehe README.md in diesem Paket —
-  das braucht `behaviortree_cpp`, das auf diesem Rechner noch NICHT
-  installiert ist (siehe docs/IMPLEMENTATION_REPORT.md).
+  zusaetzlich bt_executor_node laufen (localhost:1667), siehe README.md.
 
-  Aufbau: root ist ein Fallback (= "versuche der Reihe nach, bis einer
-  erfolgreich ist") ueber 6 Subtrees in fester Prioritaet, genau wie im
-  Auftrag Abschnitt 39 benannt: Safety > Battery > Interaction >
-  Presentation > Navigation > IdleAttract.
+  Root ist jetzt ein ReactiveFallback (Entwicklungsauftrag 1, Abschnitt 6)
+  statt eines einfachen Fallback – SafetySubtree wird dadurch JEDEN Tick
+  neu geprueft, auch waehrend eine niedriger priorisierte Aktion gerade
+  RUNNING ist. Loest SafetySubtree in so einem Fall aus, praeempiert
+  ReactiveFallback die laufende Aktion (ruft deren onHalted() auf, das
+  bei allen StatefulActionNodes die laufende ROS2-Action wirklich
+  abbricht) und wechselt zu SafetySubtree.
 
-  WICHTIG: Die eigentliche Sicherheitsfreigabe (motion_capable,
-  SafetyGate) sitzt weiterhin in ihk_pepper_interaction/supervisor_node.py
-  — dieser Baum kann sie NICHT umgehen, er liest sie nur (IsSafetyOk-
-  Bedingung) und ruft ausschliesslich die bereits existierenden, getesteten
-  ROS2-Actions/Services auf (Auftrag 3.4).
+  Prioritaet (unveraendert von Auftrag 39, GreetAndApproach neu):
+  Safety > Battery > Interaction > Presentation > GreetAndApproach > IdleAttract.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
 
   <BehaviorTree ID="MainTree">
-    <Fallback name="PepperTopLevel">
+    <ReactiveFallback name="PepperTopLevel">
       <SubTree ID="SafetySubtree"/>
       <SubTree ID="BatterySubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
-      <SubTree ID="NavigationSubtree"/>
+      <SubTree ID="GreetAndApproachSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
-    </Fallback>
+    </ReactiveFallback>
   </BehaviorTree>
 
   <!-- Hoechste Prioritaet: bei Not-Halt/Bumper/Emergency alles stoppen.
-       SUCCESS hier blockiert (im Fallback) alle niedriger priorisierten
-       Subtrees fuer diesen Tick — genau das ist gewollt. -->
+       SUCCESS hier blockiert (im ReactiveFallback) alle niedriger
+       priorisierten Subtrees fuer diesen Tick UND praeempiert eine
+       gerade laufende Aktion in einem davon — genau das ist gewollt. -->
   <BehaviorTree ID="SafetySubtree">
     <Sequence name="Safety">
       <IsSafetyTriggered/>
@@ -56,7 +55,7 @@
        — kein RunDialogue-Action-Server implementiert, siehe README.md).
        Dieser Subtree beobachtet daher nur den Zustand, statt Dialog aktiv
        zu STEUERN — er "gewinnt" im Fallback (SUCCESS), solange ein
-       Gespraech laeuft, damit Praesentation/Navigation currently nicht
+       Gespraech laeuft, damit Praesentation/GreetAndApproach nicht
        gleichzeitig etwas anderes anfangen. -->
   <BehaviorTree ID="InteractionSubtree">
     <IsPersonEngaged/>
@@ -69,14 +68,36 @@
     </Sequence>
   </BehaviorTree>
 
-  <!-- Noch nicht funktionsfaehig: kein Node waehlt aktuell eine
-       Ziel-Person aus und schreibt sie ins Blackboard (target_track_id).
-       IsNavigationTaskActive wird deshalb in der Praxis nie true liefern.
-       Struktur ist vorbereitet, siehe README.md "Bekannte Luecken". -->
-  <BehaviorTree ID="NavigationSubtree">
-    <Sequence name="Navigation">
-      <IsNavigationTaskActive/>
-      <ApproachTargetPerson track_id="{target_track_id}" target_distance_m="1.0"/>
+  <!-- Entwicklungsauftrag 1, Abschnitt 6: der vollstaendige Ablauf
+       "stabile Person waehlen -> einmal winken -> auf Rueckwinken
+       DERSELBEN track_id warten -> Annaeherung anfragen -> Conversation
+       Ready". Sequence (NICHT reaktiv) merkt sich Fortschritt zwischen
+       Ticks – kein erneutes Winken/keine erneut gesendete Aktion bei
+       jedem Tick, solange ein Schritt noch RUNNING ist.
+
+       Faellt IRGENDEIN Schritt in der inneren Sequence aus (Cooldown
+       nicht abgelaufen, Rueckwink-Timeout, Annaeherung nicht erlaubt,
+       Annaeherungs-Action schlaegt fehl, Zustandswechsel abgelehnt),
+       faengt der aeussere Fallback das ab und raeumt ueber
+       ClearSelectedPerson das Blackboard auf (IMMER SUCCESS) – naechster
+       Tick beginnt wieder frisch bei SelectStablePerson, kein
+       automatischer Wiederanlauf einer bereits abgebrochenen Annaeherung. -->
+  <BehaviorTree ID="GreetAndApproachSubtree">
+    <Sequence name="GreetAndApproach">
+      <IsSystemReady max_age_s="3.0"/>
+      <SelectStablePerson selected_track_id="{target_track_id}"
+                           min_interest_score="0.5" max_track_age_s="2.0"/>
+      <Fallback name="GreetWaveApproachOrCleanup">
+        <Sequence name="GreetWaveApproach">
+          <HasGreetingCooldownExpired track_id="{target_track_id}" cooldown_s="60.0"/>
+          <PlayCatalogGesture gesture_name="wave_right" speed_scale="1.0"/>
+          <WaitForGestureFromTrack track_id="{target_track_id}" timeout_s="8.0"/>
+          <IsApproachAllowed/>
+          <ApproachSelectedPerson track_id="{target_track_id}" target_distance_m="1.0"/>
+          <SetInteractionState state_name="CONVERSATION_READY"/>
+        </Sequence>
+        <ClearSelectedPerson selected_track_id="{target_track_id}"/>
+      </Fallback>
     </Sequence>
   </BehaviorTree>
 
@@ -84,7 +105,7 @@
     <Fallback name="IdleAttract">
       <Sequence name="Attract">
         <IsPersonAttracted/>
-        <WaveGesture gesture_name="wave_right"/>
+        <PlayCatalogGesture gesture_name="wave_right" speed_scale="1.0"/>
       </Sequence>
       <AlwaysSuccessIdle/>
     </Fallback>
@@ -122,21 +143,51 @@
     </Action>
 
     <Condition ID="IsNavigationTaskActive">
-      <description>SUCCESS wenn /interaction_state == NAVIGATING. Aktuell setzt das noch niemand (siehe README.md).</description>
+      <description>SUCCESS wenn /interaction_state == NAVIGATING. Aktuell nirgends genutzt (Ersatz durch GreetAndApproachSubtree), Knotentyp bleibt fuer spaetere Verwendung registriert.</description>
     </Condition>
-    <Action ID="ApproachTargetPerson">
-      <input_port name="track_id">Track-ID der Zielperson (aktuell nicht automatisch befuellt, siehe README.md)</input_port>
-      <input_port name="target_distance_m" default="1.0"/>
-    </Action>
 
     <Condition ID="IsPersonAttracted">
       <description>SUCCESS wenn /interaction_state == ATTRACT.</description>
     </Condition>
-    <Action ID="WaveGesture">
-      <input_port name="gesture_name" default="wave_right"/>
-    </Action>
     <Action ID="AlwaysSuccessIdle">
       <description>No-op, garantiert dass der Fallback immer etwas "erfolgreich" abschliesst (Pepper bleibt einfach ruhig stehen).</description>
+    </Action>
+
+    <Condition ID="IsSystemReady">
+      <input_port name="max_age_s" default="3.0">Maximales Alter der letzten /safety_state-Nachricht</input_port>
+      <description>SUCCESS wenn /safety_state aktuell UND weder emergency_stop noch compute_power_invalid.</description>
+    </Condition>
+    <Condition ID="IsApproachAllowed">
+      <description>SUCCESS wenn /safety_state.allow_person_approach true ist.</description>
+    </Condition>
+    <Action ID="SelectStablePerson">
+      <inout_port name="selected_track_id">Blackboard-Feld fuer die gewaehlte Zielperson (kNoSelectedTrackId=-1 wenn keine)</inout_port>
+      <input_port name="min_interest_score" default="0.5"/>
+      <input_port name="max_track_age_s" default="2.0"/>
+      <description>Waehlt/validiert die stabilste Person mit gueltiger 3D-Position; loescht selbst den Blackboard-Eintrag bei Verlust.</description>
+    </Action>
+    <Condition ID="HasGreetingCooldownExpired">
+      <input_port name="track_id"/>
+      <input_port name="cooldown_s" default="60.0"/>
+    </Condition>
+    <Action ID="PlayCatalogGesture">
+      <input_port name="gesture_name" default="wave_right"/>
+      <input_port name="speed_scale" default="1.0"/>
+    </Action>
+    <Action ID="WaitForGestureFromTrack">
+      <input_port name="track_id"/>
+      <input_port name="timeout_s" default="8.0"/>
+      <description>RUNNING bis wave_confirmed fuer EXAKT diese track_id oder Timeout (-> FAILURE).</description>
+    </Action>
+    <Action ID="ApproachSelectedPerson">
+      <input_port name="track_id"/>
+      <input_port name="target_distance_m" default="1.0"/>
+    </Action>
+    <Action ID="SetInteractionState">
+      <input_port name="state_name">z.B. CONVERSATION_READY – ruft /set_interaction_state (supervisor_node.py entscheidet, ob erlaubt)</input_port>
+    </Action>
+    <Action ID="ClearSelectedPerson">
+      <inout_port name="selected_track_id"/>
     </Action>
   </TreeNodesModel>
 

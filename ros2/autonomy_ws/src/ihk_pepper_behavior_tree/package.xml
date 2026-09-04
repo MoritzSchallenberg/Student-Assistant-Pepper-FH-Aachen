@@ -6,10 +6,10 @@
     Top-Level-Verhaltenssteuerung fuer Pepper als BehaviorTree.CPP-4.x-Baum
     (trees/pepper_main.xml), mit Groot2 oeffenbar/live-beobachtbar.
     Ruft ausschliesslich bereits existierende, getestete ROS2-Actions/
-    Services der anderen ihk_pepper_*-Pakete auf. NICHT KOMPILIERT/GETESTET
-    in dieser Session -- behaviortree_cpp ist auf dem Entwicklungsrechner
-    nicht installiert (kein sudo-Zugriff), siehe README.md und
-    docs/IMPLEMENTATION_REPORT.md.
+    Services der anderen ihk_pepper_*-Pakete auf. Erfolgreich gegen
+    behaviortree_cpp 4.9.0 gebaut und lokal gestartet (kein Pepper/keine
+    RealSense in dieser Session verfuegbar), siehe
+    docs/DEVELOPMENT_ORDER_01_REPORT.md.
   </description>
   <maintainer email="you@example.com">you</maintainer>
   <license>BSD</license>
@@ -22,8 +22,6 @@
   <depend>ihk_pepper_interfaces</depend>
   <depend>action_msgs</depend>
   <depend>std_msgs</depend>
-  <!-- NICHT installiert, siehe Paketbeschreibung oben:
-       sudo apt install ros-jazzy-behaviortree-cpp -->
   <depend>behaviortree_cpp</depend>
 
   <test_depend>ament_lint_auto</test_depend>

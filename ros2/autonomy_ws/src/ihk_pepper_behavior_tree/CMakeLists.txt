@@ -12,9 +12,9 @@ find_package(ament_index_cpp REQUIRED)
 find_package(ihk_pepper_interfaces REQUIRED)
 find_package(action_msgs REQUIRED)
 find_package(std_msgs REQUIRED)
-# NICHT installiert auf dem Entwicklungsrechner dieser Session -- siehe
-# README.md/docs/IMPLEMENTATION_REPORT.md. `sudo apt install
-# ros-jazzy-behaviortree-cpp` noetig, bevor dieses Paket baut.
+# Installation: sudo apt install ros-jazzy-behaviortree-cpp
+# (bzw. per rosdep, siehe package.xml). Erfolgreich gegen 4.9.0 gebaut,
+# siehe docs/DEVELOPMENT_ORDER_01_REPORT.md.
 find_package(behaviortree_cpp REQUIRED)
 
 add_library(ihk_pepper_bt_nodes SHARED
@@ -58,6 +58,23 @@ install(DIRECTORY launch/
 
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
+  # ament_copyright: Copyright-Kopfzeilen sind in diesem Projekt keine
+  # Konvention (keine andere Datei im Repo traegt eine) -- eine erfundene
+  # "Copyright <Jahr> <Besitzer>"-Zeile allein fuer dieses Paket waere
+  # inkonsistent und ohne Auftrag, wessen Copyright das sein soll.
+  #
+  # cpplint: die eingebaute legal/copyright-Kategorie hat denselben
+  # Grund; build/include_order erwartet als erstes einen zur .cpp
+  # passenden Selbst-Header (X.h) -- bt_executor_node.cpp hat bewusst
+  # keinen (nur main(), die eigentliche Logik liegt in bt_nodes.hpp/.cpp),
+  # die Regel passt strukturell nicht auf dieses Paket. cpplint bietet
+  # ueber ament_lint_auto keine Filter-Konfiguration pro Kategorie an,
+  # deshalb bewusst ganz uebersprungen statt eine kollidierende zweite
+  # Testregistrierung zu erzwingen. Echte cpplint-Funde (C-Style-Cast,
+  # Kommentar-Abstaende) wurden gefunden und behoben, siehe
+  # docs/DEVELOPMENT_ORDER_01_REPORT.md.
+  set(ament_cmake_copyright_FOUND TRUE)
+  set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
 endif()
 
