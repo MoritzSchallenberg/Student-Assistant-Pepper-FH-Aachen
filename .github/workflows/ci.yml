@@ -124,7 +124,12 @@ jobs:
             http://packages.ros.org/ros2/ubuntu $(lsb_release -cs) main" | \
             sudo tee /etc/apt/sources.list.d/ros2.list
           sudo apt update
+          # ros-jazzy-behaviortree-cpp: Entwicklungsauftrag 1, AP2 --
+          # ihk_pepper_behavior_tree baut jetzt nachweislich (siehe
+          # docs/DEVELOPMENT_ORDER_01_REPORT.md), deshalb hier direkt
+          # installiert statt weiter --packages-skip zu benutzen.
           sudo apt install -y ros-jazzy-ros-base ros-jazzy-cv-bridge \
+            ros-jazzy-behaviortree-cpp \
             python3-rosdep python3-colcon-common-extensions python3-pip
 
       - name: rosdep initialisieren
@@ -144,9 +149,9 @@ jobs:
         run: |
           source /opt/ros/jazzy/setup.bash
           rosdep install --from-paths ros2/autonomy_ws/src --ignore-src -y \
-            --skip-keys "behaviortree_cpp depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor ament_cmake ament_python"
+            --skip-keys "depthimage_to_laserscan robot_localization slam_toolbox nav2_bringup twist_mux nav2_collision_monitor ament_cmake ament_python"
 
-      - name: Workspace bauen (ausser ihk_pepper_dialog, ihk_pepper_behavior_tree, ihk_pepper_bringup)
+      - name: Workspace bauen (ausser ihk_pepper_dialog, ihk_pepper_bringup)
         run: |
           source /opt/ros/jazzy/setup.bash
           cd ros2/autonomy_ws
@@ -156,16 +161,14 @@ jobs:
           # unten), muss bringup hier ebenfalls ausgelassen werden, sonst
           # schlaegt der Build mit "Failed to find .../package.sh" fehl
           # (per Live-Test auf dem Ziel-NUC gefunden, siehe
-          # docs/GITHUB_DEPLOYMENT_REPORT.md).
-          colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_behavior_tree ihk_pepper_bringup
+          # docs/GITHUB_DEPLOYMENT_REPORT.md). ihk_pepper_behavior_tree wird
+          # seit Entwicklungsauftrag 1 AP2 wieder mitgebaut (behaviortree_cpp
+          # oben direkt installiert, kein Ausschluss mehr noetig).
+          colcon build --symlink-install --packages-skip ihk_pepper_dialog ihk_pepper_bringup
         # ihk_pepper_dialog: braucht das dedizierte venv_dialog (numpy>=2,
         # sentence-transformers) -- in CI aus Zeit-/Ressourcengruenden
         # ausgelassen (haengt vom selben schweren Torch-Download ab, der
-        # auch lokal mehrere Minuten dauert). ihk_pepper_behavior_tree:
-        # braucht behaviortree_cpp, siehe docs/IMPLEMENTATION_REPORT.md/
-        # ihk_pepper_behavior_tree/README.md -- NICHT installierbar ohne
-        # den eigenen ROS2-Jazzy-Kanal hinaus, hier bewusst ausgelassen
-        # statt den Build kuenstlich gruen zu faerben.
+        # auch lokal mehrere Minuten dauert).
 
       - name: pytest-Suite ausfuehren
         run: |
