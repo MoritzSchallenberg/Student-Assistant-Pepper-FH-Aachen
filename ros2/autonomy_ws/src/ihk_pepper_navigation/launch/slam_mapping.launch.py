@@ -1,5 +1,14 @@
 """
-NICHT GETESTET (slam_toolbox nicht installiert, siehe docs/IMPLEMENTATION_REPORT.md).
+NICHT GETESTET (slam_toolbox nicht installiert, siehe
+docs/DEVELOPMENT_ORDER_02_REPORT.md AP1 fuer Install-Befehle).
+
+NICHT MEHR TEIL DES REALSENSE-ONLY-MAPPING-PFADS (Entwicklungsauftrag 2):
+der aktive Mapping-Weg ist seit Auftrag 2 RTAB-Map RGB-D
+(realsense_mapping.launch.py, AP5), NICHT dieser 2D-Laser-basierte
+slam_toolbox-Pfad. Diese Datei bleibt als Alternative bestehen (Peppers
+eigener Laser als unabhaengige Datenquelle, falls RTAB-Map z.B. bei
+schlechten Lichtverhaeltnissen ausfaellt), wird aber von keinem
+Bringup-Modus automatisch gestartet.
 
 Startet slam_toolbox im Mapping-Modus + den laser_filter_node (der IST
 getestet, siehe laser_filter_node.py) + optional robot_localization fuer

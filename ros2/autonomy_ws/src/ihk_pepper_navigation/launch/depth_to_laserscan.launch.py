@@ -1,12 +1,14 @@
 """
 NICHT GETESTET (depthimage_to_laserscan nicht installiert, siehe
-docs/IMPLEMENTATION_REPORT.md). Syntax mit `python3 -c "import ast; ast.parse(...)"`
-geprueft, NICHT mit `ros2 launch` (Paket fehlt).
+docs/DEVELOPMENT_ORDER_02_REPORT.md AP1 fuer die Install-Befehle).
 
-Wandelt ein Tiefenbild in einen LaserScan um. `image_topic`/`camera_info_topic`
-sind Launch-Argumente -- Umschalten zwischen Peppers eingebauter Kamera und
-einer optionalen RealSense ist damit eine reine Parameteraenderung, kein
-Code-Wechsel (Auftrag-Anforderung).
+Wandelt ein Tiefenbild in einen LaserScan um (genutzt von Nav2s
+Costmaps, siehe AP6 in nav2_params.yaml). `image_topic`/`camera_info_topic`
+sind Launch-Argumente. Default seit Entwicklungsauftrag 2 (AP6):
+RealSense-Topics (Auftrag Abschnitt 1: "duerfen keine ... Kamera-... Daten
+von Pepper verwenden" fuer Navigation/Hinderniserkennung) -- Peppers
+eigene Tiefenkamera bleibt als expliziter Override moeglich (Nicht-
+Navigations-Zwecke), ist aber nicht mehr der Standard.
 """
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
@@ -27,12 +29,14 @@ def generate_launch_description():
 
     return LaunchDescription([
         DeclareLaunchArgument(
-            "image_topic", default_value="/camera/depth/image_raw",
-            description="Tiefenbild-Quelle. Fuer eine RealSense z.B. "
-                        "/camera/camera/depth/image_rect_raw",
+            "image_topic", default_value="/camera/aligned_depth_to_color/image_raw",
+            description="Tiefenbild-Quelle, Standard RealSense (Auftrag 2: "
+                        "RealSense-only fuer Navigation). Fuer Peppers "
+                        "eigene Kamera explizit auf /camera/depth/image_raw "
+                        "umbiegen (nicht Navigation-Zweck).",
         ),
         DeclareLaunchArgument(
-            "camera_info_topic", default_value="/camera/depth/camera_info",
+            "camera_info_topic", default_value="/camera/color/camera_info",
         ),
         Node(
             package="depthimage_to_laserscan",

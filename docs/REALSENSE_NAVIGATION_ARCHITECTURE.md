@@ -94,6 +94,33 @@ Motion Guard nie etwas durch, unabhängig von allen anderen Bedingungen.
 Live getestet: Block- und Allow-Pfad beide verifiziert (siehe
 `docs/DEVELOPMENT_ORDER_02_REPORT.md`).
 
+## Costmap und Abdeckungsnachweis (AP6)
+
+`nav2_params.yaml`s `local_costmap`/`global_costmap` (vorher komplett
+gefehlt) nutzen `depthimage_to_laserscan` auf RealSense-Topics als
+Hindernisquelle. `coverage_analysis.py` (rein, Lochkamera-Näherung)
+weist mit Pepper-/RealSense-Referenzwerten **explizit nach, dass eine
+einzelne kopfmontierte Kamera nicht ausreicht** (273° horizontal
+komplett unabgedeckt) -- Livebewegung bleibt deshalb strukturell
+gesperrt (Motion Guard, AP8), der unabhängige Collision-Monitor-
+`BumperStop` und Peppers eigener Laser bleiben als zusätzliche,
+RealSense-unabhängige Nahbereichs-Absicherung.
+
+## Nav2 + holonome Fahrregelung (AP7)
+
+**Architektur-Pivot**: `nav2_bringup.launch.py` startet seit Auftrag 2
+kein `amcl`/`map_server`/`robot_localization` mit Peppers eigener
+Odometrie mehr -- `map -> odom -> base_link` kommt ausschließlich aus
+`realsense_localization.launch.py` (AP5), muss davor separat laufen.
+Die vier in AP1 gefundenen cmd_vel-Verdrahtungsfehler sind behoben (siehe
+`docs/DEVELOPMENT_ORDER_02_REPORT.md`); finale Kette:
+`controller_server -> cmd_vel_raw -> velocity_smoother ->
+cmd_vel_smoothed_raw -> collision_monitor -> cmd_vel_smoothed ->
+Motion Guard -> /cmd_vel`. Twist Mux entfällt, Motion Guard übernimmt
+dessen Rolle. Holonomie (`vy != 0`) freigegeben, basierend auf dem in
+AP1 per Quellcode bestätigten `naoqi_driver2`-Fund -- explizit als
+"quellcode-bestätigt, nicht hardwaregetestet" markiert.
+
 ## Weitere Abschnitte
 
-Werden mit AP6 (Costmap/Abdeckung) und AP7 (Nav2/Holonomie) ergänzt.
+Werden mit AP10 (BT-Integration) und AP11 (Startmodi) ergänzt.

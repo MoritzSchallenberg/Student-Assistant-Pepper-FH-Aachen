@@ -394,6 +394,84 @@ wiederholten Publishern reproduzierbar). 15 neue Unit-Tests
 
 Gesamttestzahl nach AP8: **209/209** (194 + 15 neu).
 
+## AP6 + AP7: Costmap/Abdeckungsnachweis + Nav2/holonome Fahrregelung
+
+Beide zusammen bearbeitet, da sie dieselbe Datei (`nav2_params.yaml`)
+und denselben Launch (`nav2_bringup.launch.py`) grundlegend überarbeiten.
+
+**Architektur-Pivot (wichtigster Einzelschritt)**: `nav2_bringup.launch.py`
+startete bisher `amcl` + `map_server` + `robot_localization`s
+`ekf_filter_node` mit **Peppers eigener Odometrie/IMU** (`/odom`,
+`/imu/base`) -- verboten laut Auftrag 2 Abschnitt 1. Beide Nodes wurden
+entfernt. Die `map -> odom -> base_link`-Kette kommt jetzt ausschließlich
+aus `realsense_localization.launch.py`/`realsense_odometry.launch.py`
+(AP4/AP5, RTAB-Map) -- **muss vor `nav2_bringup.launch.py` separat
+gestartet sein**. `robot_localization.yaml`/`slam_mapping.launch.py`
+bleiben als Dateien erhalten (nicht gelöscht, falls ein späterer,
+ausdrücklich nicht-RealSense-only-Modus sie braucht), werden aber von
+keinem aktuellen Launch mehr eingebunden -- klar im jeweiligen
+Datei-Kopfkommentar dokumentiert.
+
+**AP6 -- Costmaps ergänzt** (vorher komplett gefehlt -- Nav2 hatte damit
+gar keine Hinderniskarte, ein bestätigter Fund aus AP1): neue
+`local_costmap`/`global_costmap`-Sektionen, Hindernisquelle
+`depthimage_to_laserscan` (bereits konfiguriert seit Auftrag 1, jetzt
+auf RealSense-Topics als Standard umgestellt statt Pepper-Kamera,
+`depth_to_laserscan.launch.py`/`depthimage_to_laserscan.yaml`
+entsprechend geändert). Begründung für Scan statt PointCloud2
+dokumentiert: bester getesteter Nav2-Pfad, kein zusätzliches Aktivieren
+von `pointcloud.enable` nötig. Fußabdruck weiterhin auf Basis des
+Hersteller-Datenblatts (0.24 m Basisradius + Sicherheitszuschlag) --
+**nicht** aus den URDF-Kollisionsgeometrien ableitbar (Pepper-URDF nutzt
+Mesh-Kollisionsgeometrie ohne einfache Radius-Primitive, geprüft).
+
+**Echter Abdeckungsnachweis** (Auftrag: "darf nicht schöngeredet
+werden"): neues reines Modul `coverage_analysis.py` -- reine Geometrie
+(Lochkamera-Näherung), berechnet den Nahbereichs-Blindfleck (wie nah
+kann ein Hindernis auf Bodenhöhe an die Kamera heran, bevor es aus dem
+Sichtfeld fällt) und den horizontal komplett unabgedeckten Winkel. Mit
+Pepper-/RealSense-Referenzwerten (Kopfhöhe ~1.2 m, RealSense-D435-
+Datenblatt: horizontal ~87°, vertikal ~58°) **bestätigt der Test explizit
+und reproduzierbar: eine einzelne kopfmontierte RealSense reicht NICHT
+aus** (`test_single_realsense_on_pepper_head_is_not_sufficient_for_live_motion`,
+`uncovered_horizontal_deg=273°`) -- seitlich/hinten bleibt komplett
+unabgedeckt. **Konsequenz, strukturell umgesetzt, nicht nur dokumentiert**:
+Livebewegung bleibt gesperrt (Motion Guard, AP8); der unabhängige
+Collision-Monitor-`BumperStop` (Auftrag 1) und Peppers eigener Laser
+(`laser_filter_node`, weiterhin aktiv, aber NICHT mehr Teil der Costmap)
+bleiben als zusätzliche, RealSense-unabhängige Nahbereichs-Absicherung.
+Beim Implementieren wurde ein echter Geometriefehler in
+`coverage_analysis.py` selbst gefunden und behoben (Tangens bei einem
+Winkel >90° liefert einen negativen statt eines Null-Blindflecks) --
+per Test gefunden (`test_camera_looking_straight_down_has_zero_blind_zone`),
+nicht durch Inspektion.
+
+**AP7 -- cmd_vel-Kette repariert** (die vier in AP1 gefundenen Fehler):
+`controller_server` jetzt explizit auf `cmd_vel_raw` remapped;
+`velocity_smoother` schreibt jetzt eindeutig `cmd_vel_smoothed_raw`
+(vorher identisch zum späteren Collision-Monitor-Ausgang benannt);
+`collision_monitor` liest jetzt tatsächlich `cmd_vel_smoothed_raw` (statt
+parallel vom selben Topic wie der Smoother) und schreibt
+`cmd_vel_smoothed`; Twist Mux **entfällt komplett** -- Motion Guard (AP8)
+übernimmt dessen Rolle als letzte Instanz vor `/cmd_vel` und braucht
+keinen separaten Not-Halt-Brücken-Node mehr (liest `SafetyState`
+direkt). **Holonomie freigegeben**: `collision_monitor.holonomic: true`,
+`velocity_smoother`/`bt_navigator`-`vy`-Grenzen jetzt ungleich 0
+(konservativ klein) -- basierend auf dem in AP1 per Quellcode bestätigten
+Fund (`naoqi_driver2`s `TeleopSubscriber` reicht `linear.y` unverändert
+durch), explizit als "Quellcode-bestätigt, NICHT hardwaregetestet"
+gekennzeichnet, mit dokumentiertem Fallback-Hinweis (`vy=0` zurücksetzen
+falls der erste echte Test anders ausfällt).
+
+**Getestet**: alle drei geänderten Launch-Dateien (`nav2_bringup.launch.py`,
+`depth_to_laserscan.launch.py`, `slam_mapping.launch.py`) per `--show-args`
+syntaktisch verifiziert, `nav2_params.yaml` per `yaml.safe_load()`
+strukturell verifiziert. 9 neue Unit-Tests (`test_coverage_analysis.py`).
+**Nicht getestet**: kein Nav2-Vollstack installiert (siehe AP1) -- keine
+echten Nav2-Nodes live gestartet, keine reale Fahrt.
+
+Gesamttestzahl nach AP6+AP7: **218/218** (209 + 9 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

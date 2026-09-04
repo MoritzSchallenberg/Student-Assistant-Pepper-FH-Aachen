@@ -1,15 +1,24 @@
 # NICHT GETESTET (depthimage_to_laserscan ist auf diesem Entwicklungssystem
-# nicht installiert, siehe package.xml/docs/IMPLEMENTATION_REPORT.md).
-# Install: sudo apt install ros-jazzy-depthimage-to-laserscan
+# nicht installiert, siehe docs/DEVELOPMENT_ORDER_02_REPORT.md AP1 fuer
+# die Install-Befehle).
 #
-# Wandelt ein Tiefenbild (Pepper-Tiefenkamera ODER optional eine
-# RealSense, siehe image_topic weiter unten) in einen LaserScan um, damit
-# Nav2s Costmap eine zweite, dichtere Hinderniserkennung neben dem
-# eingebauten /laser (siehe laser_filter_node.py) bekommt.
+# Wandelt das RealSense-Tiefenbild (Entwicklungsauftrag 2: RealSense-only
+# fuer Navigation, siehe depth_to_laserscan.launch.py) in einen LaserScan
+# um -- einzige Hindernisquelle fuer Nav2s Costmaps (AP6, nav2_params.yaml).
+# Peppers eigenes /laser (laser_filter_node.py) bleibt als unabhaengiges,
+# RealSense-loses Signal fuer den Collision-Monitor-BumperStop bestehen,
+# fliesst aber NICHT mehr in die Costmap ein (Auftrag Abschnitt 1).
 depthimage_to_laserscan:
   ros__parameters:
     scan_height: 10          # Anzahl Pixelzeilen um die Bildmitte, die gemittelt werden
     scan_time: 0.033
-    range_min: 0.35           # Pepper-Tiefenkamera Mindestreichweite (Herstellerangabe, ungeprueft)
+    # RealSense D4xx-Serie: physikalische Mindestmessdistanz laut
+    # Intel-Datenblatt ca. 0.2m (deckt sich mit
+    # ihk_pepper_perception/deprojection.py::DEFAULT_MIN_VALID_DEPTH_M,
+    # Entwicklungsauftrag 1) -- NICHT gegen die konkret angeschlossene
+    # Kamera verifiziert (keine Hardware in dieser Session, siehe AP2).
+    range_min: 0.2
     range_max: 5.0
-    output_frame: camera_depth_frame
+    # aligned_depth_to_color liegt im Farbkamera-optischen-Frame, nicht im
+    # separaten Tiefenkamera-Frame (Entwicklungsauftrag 2 AP6-Korrektur).
+    output_frame: camera_color_optical_frame

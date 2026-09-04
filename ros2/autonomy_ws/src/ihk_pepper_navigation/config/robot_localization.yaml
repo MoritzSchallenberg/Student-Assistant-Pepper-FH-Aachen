@@ -1,11 +1,20 @@
 # NICHT GETESTET (robot_localization ist auf diesem Entwicklungssystem
 # nicht installiert). Install: sudo apt install ros-jazzy-robot-localization
 #
-# EKF fuer eine stabile odom->base_link Transformation aus Peppers
-# eigener Odometrie (naoqi_driver2, Topic /odom) + IMU
-# (/imu/base, optional zusaetzlich eine RealSense-IMU falls verbaut).
-# Alle Frame-Namen sind ueber ROS-Parameter/Launch-Argumente
-# parametrisierbar (siehe nav2_bringup.launch.py), NICHT hier hart codiert.
+# NICHT MEHR TEIL DES REALSENSE-ONLY-NAVIGATIONSPFADS (Entwicklungsauftrag
+# 2, Abschnitt 1: "duerfen keine Odometrie-... Daten von Pepper
+# verwenden"). odom->base_link kommt seit Auftrag 2 stattdessen aus
+# RTAB-Map RGB-D Visual Odometry (realsense_odometry.launch.py, AP4).
+# Diese Datei bleibt bewusst erhalten (nicht geloescht) -- falls ein
+# spaeterer, ausdruecklich NICHT-RealSense-only-Modus (z.B. reiner
+# Pepper-Kopfkamera-Fallback ohne RTAB-Map) sie einmal braucht -- wird
+# aber von KEINEM aktuellen Launch-File mehr eingebunden
+# (nav2_bringup.launch.py startet seit Auftrag 2 keinen ekf_filter_node
+# mehr).
+#
+# Ehemalige Beschreibung (Auftrag 1, nur noch als Referenz): EKF fuer
+# eine stabile odom->base_link Transformation aus Peppers eigener
+# Odometrie (naoqi_driver2, Topic /odom) + IMU (/imu/base).
 ekf_filter_node:
   ros__parameters:
     frequency: 30.0
