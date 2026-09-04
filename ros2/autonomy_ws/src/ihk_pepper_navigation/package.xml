@@ -38,6 +38,13 @@
   <exec_depend>nav2_bringup</exec_depend>
   <exec_depend>twist_mux</exec_depend>
   <exec_depend>nav2_collision_monitor</exec_depend>
+  <!-- Entwicklungsauftrag 1, Abschnitt 3: RealSense-Bringup + statische
+       TF-Kette. realsense2_camera ist auf diesem Entwicklungsrechner
+       bereits installiert (siehe docs/DEVELOPMENT_ORDER_01_REPORT.md),
+       trotzdem als exec_depend (nicht depend), damit ein colcon build
+       dieses Pakets nicht daran haengt, falls es woanders fehlt. -->
+  <exec_depend>realsense2_camera</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

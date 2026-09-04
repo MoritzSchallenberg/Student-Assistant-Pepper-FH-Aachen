@@ -27,6 +27,7 @@ setup(
         "console_scripts": [
             "laser_filter_node = ihk_pepper_navigation.laser_filter_node:main",
             "person_approach_node = ihk_pepper_navigation.person_approach_node:main",
+            "camera_pose_gate_node = ihk_pepper_navigation.camera_pose_gate_node:main",
         ],
     },
 )

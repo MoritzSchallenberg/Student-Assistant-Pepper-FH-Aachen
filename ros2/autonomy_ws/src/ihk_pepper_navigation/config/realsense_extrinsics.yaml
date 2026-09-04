@@ -1,0 +1,18 @@
+# Kalibrierbare Kameramontage: base_link -> realsense_mount_link ->
+# realsense_link (= das Wurzel-Frame, das der realsense2_camera-Treiber
+# selbst unter <camera_name>_link veroeffentlicht -- alles ab dort
+# publiziert der Treiber bereits korrekt, siehe realsense_bringup.launch.py).
+#
+# ALLE Werte unten sind PLATZHALTER (Translation 0, Rotation Identitaet) --
+# NICHT vermessen (Entwicklungsauftrag 1, Abschnitt 3: "keine erfundenen
+# Masse als angeblich kalibrierte Werte"). Solange is_calibrated=false,
+# behandelt camera_pose_gate_node.py (bzw. spaeter ein TF-Plausibilitaets-
+# check) das als Hinweis, dass diese Werte nicht vertrauenswuerdig sind.
+# Siehe docs/REALSENSE_CALIBRATION.md fuer die Vermessungsanleitung.
+realsense_extrinsics:
+  parent_frame: "base_link"
+  mount_frame: "realsense_mount_link"
+  camera_root_frame: "camera_link"   # muss zu camera_name im RealSense-Launch passen
+  translation_m: {x: 0.0, y: 0.0, z: 0.0}
+  rotation_rpy_rad: {roll: 0.0, pitch: 0.0, yaw: 0.0}
+  is_calibrated: false
