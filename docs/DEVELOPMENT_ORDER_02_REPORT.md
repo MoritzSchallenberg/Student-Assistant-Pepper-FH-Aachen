@@ -167,6 +167,50 @@ Zielgeometrie und der TF-Abbruchpfad.
 Gesamttestzahl nach AP9: **144/144** (125 Baseline + 19 neu). Commit
 `de12343`.
 
+## AP2: RealSense-Hardwareprofil und Diagnose
+
+Neues reines Modul `ihk_pepper_navigation/realsense_diagnostics.py`
+(kein ROS): `check_realsense_diagnostics()` sammelt -- anders als
+`head_pose_gate.check_head_pose()` (ein einzelner Gate-Wert) --
+**alle** gleichzeitig zutreffenden Probleme in einer Liste (ein
+Diagnoseknoten soll zeigen, WAS konkret fehlt). Erkennt: fehlende
+RGB-/Depth-/CameraInfo-Topics (und unterscheidet "eine fehlt" von
+"Kamera komplett nicht vorhanden"), veraltete Daten je Topic,
+Zeitstempel-Desynchronisation zwischen Farb- und Tiefenbild, zu
+niedrige Bildrate, zu hohen Anteil ungültiger Tiefenpixel, fehlende TF
+zur Roboterbasis, ungeeignete USB-Verbindung (nur geprüft, wenn der
+USB-Typ tatsächlich bekannt ist -- unbekannt wird nicht bestraft).
+`compute_invalid_depth_fraction()` nutzt dieselben Ungültig-Kriterien
+wie `ihk_pepper_perception/deprojection.py::estimate_patch_depth()`
+(0/NaN/Inf/außerhalb des gültigen Bereichs), hier aber als
+Gesamtbild-Statistik statt Patch-Median.
+
+Neuer dünner ROS-Wrapper `realsense_diagnostics_node.py` (gleiches
+Muster wie `camera_pose_gate_node.py`): abonniert Color-/Depth-/
+CameraInfo-Topics, schätzt die Bildrate über ein 5s-Zeitfenster,
+dekodiert das Tiefenbild per `cv_bridge` (wie `perception_node.py`),
+prüft die TF zur Roboterbasis per `tf2_ros`, publiziert
+`realsense_diagnostics_valid` (Bool) + `realsense_diagnostics/diagnostics`
+(String) mit 2 Hz. Neues `config/realsense_profile.yaml` (konservative
+Defaults, kein Kameramodell vorausgesetzt). In
+`ihk_pepper_bringup/launch/realsense_test.launch.py` ergänzt.
+
+**Getestet**: 20 neue Unit-Tests (`test_realsense_diagnostics.py`).
+**Live-Smoke-Test** (kein echter Kamera-Stream, aber echter ROS2-Node-
+Start): `ros2 run ihk_pepper_navigation realsense_diagnostics_node`
+gestartet, `/realsense_diagnostics/diagnostics` und
+`/realsense_diagnostics_valid` per `ros2 topic echo` gelesen --
+korrektes Ergebnis: `valid=False reasons=rgb_topic_fehlt,depth_topic_fehlt,
+camera_info_topic_fehlt,kamera_nicht_vorhanden,tf_zur_roboterbasis_fehlt`.
+Verhält sich also exakt wie erwartet: sicherer ungültiger Zustand ohne
+angeschlossene Kamera, keine optimistische Annahme.
+`realsense_test.launch.py --show-args` erfolgreich verifiziert (Launch-
+Struktur, keine Syntaxfehler). **Nicht getestet**: echte Kamera-Daten
+(FPS-Messung, Tiefenbild-Dekodierung, Sync-Differenz) -- keine
+RealSense-Hardware in dieser Session angeschlossen.
+
+Gesamttestzahl nach AP2: **164/164** (144 + 20 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

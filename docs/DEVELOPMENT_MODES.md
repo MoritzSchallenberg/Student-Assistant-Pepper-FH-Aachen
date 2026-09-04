@@ -35,12 +35,20 @@ ros2 launch ihk_pepper_bringup realsense_test.launch.py
 
 Echte RealSense-Kamera (`realsense_bringup.launch.py` +
 `realsense_static_tf.launch.py`), `perception_node` mit auf
-RealSense-Topics umgebogenen Parametern, `camera_pose_gate_node`. KEINE
-Bewegung, kein `bridge_node`, kein Nav2/Mock-Nav2.
+RealSense-Topics umgebogenen Parametern, `camera_pose_gate_node`,
+`realsense_diagnostics_node` (Entwicklungsauftrag 2, AP2 -- erkennt
+fehlende Kamera/Topics, veraltete Daten, Zeitstempel-Desync, zu
+niedrige Bildrate, zu hohen ungueltigen Tiefenanteil, fehlende TF).
+KEINE Bewegung, kein `bridge_node`, kein Nav2/Mock-Nav2.
 
 **Nicht live getestet** -- keine RealSense-Hardware in dieser Session
 angeschlossen. Nur Launch-Struktur verifiziert (`--show-args`,
 korrekte Parameterweitergabe an `rs_launch.py`).
+`realsense_diagnostics_node` selbst wurde ohne Kamera gestartet und
+meldet korrekt `valid=False` mit allen erwarteten Gruenden
+(`rgb_topic_fehlt`, `depth_topic_fehlt`, `camera_info_topic_fehlt`,
+`kamera_nicht_vorhanden`, `tf_zur_roboterbasis_fehlt`) -- siehe
+docs/DEVELOPMENT_ORDER_02_REPORT.md.
 
 ## `pepper_gesture_test.launch.py`
 

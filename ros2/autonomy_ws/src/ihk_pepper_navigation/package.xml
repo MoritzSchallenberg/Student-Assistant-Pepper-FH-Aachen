@@ -25,6 +25,11 @@
   <depend>ihk_pepper_interfaces</depend>
   <depend>ament_index_python</depend>
   <depend>python3-yaml</depend>
+  <!-- Entwicklungsauftrag 2, AP2: realsense_diagnostics_node dekodiert
+       Tiefenbilder fuer die Ungueltig-Anteil-Pruefung, gleiches Muster
+       wie ihk_pepper_perception/perception_node.py. Bereits installiert
+       (siehe docs/DEVELOPMENT_ORDER_01_REPORT.md). -->
+  <depend>cv_bridge</depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 

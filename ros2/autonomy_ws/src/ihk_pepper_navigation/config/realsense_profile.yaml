@@ -1,0 +1,34 @@
+# Konservatives RealSense-Profil (Entwicklungsauftrag 2, AP2). Kein
+# Kameramodell wird hier vorausgesetzt -- diese Datei ist ein
+# Startpunkt fuer realsense_diagnostics_node-Parameter, nicht eine
+# Behauptung ueber ein bestimmtes angeschlossenes Geraet. Werte NICHT
+# aus einem Datenblatt uebernehmen, ohne sie gegen die tatsaechlich
+# angeschlossene Kamera zu pruefen (siehe docs/REALSENSE_CALIBRATION.md).
+#
+# NICHT live gegen echte Hardware getestet -- keine RealSense in dieser
+# Session angeschlossen (siehe docs/DEVELOPMENT_ORDER_02_REPORT.md).
+
+realsense_diagnostics:
+  ros__parameters:
+    color_topic: /camera/color/image_raw
+    depth_topic: /camera/aligned_depth_to_color/image_raw
+    camera_info_topic: /camera/color/camera_info
+    camera_optical_frame: camera_color_optical_frame
+    robot_base_frame: base_link
+
+    # Konservativ: lieber zu frueh als ungueltig markieren, als eine
+    # veraltete Aufnahme als aktuell zu behandeln.
+    max_data_age_s: 1.0
+    max_sync_diff_s: 0.1
+    min_fps: 8.0
+
+    # Ein hoher Anteil ungueltiger Tiefenpixel (Reflexionen, zu nah/fern,
+    # Sensorrauschen) ist bei RealSense-D4xx im Innenraum normal --
+    # dieser Schwellwert erkennt einen tatsaechlich AUSGEFALLENEN
+    # Tiefenstrom, nicht normales Bildrauschen.
+    max_invalid_depth_fraction: 0.9
+    depth_scale_to_m: 0.001  # RealSense-Rohwerte typischerweise in mm
+
+    require_usb3: true
+    publish_rate_hz: 2.0
+    tf_lookup_timeout_s: 0.2

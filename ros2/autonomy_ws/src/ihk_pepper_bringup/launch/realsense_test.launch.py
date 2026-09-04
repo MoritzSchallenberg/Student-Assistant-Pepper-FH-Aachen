@@ -6,7 +6,8 @@ Kamera/Wahrnehmung, bevor irgendetwas mit Pepper selbst zusammenspielt.
 
 Startet: RealSense-Treiber (realsense_bringup.launch.py), statische
 Montage-TF (realsense_static_tf.launch.py), perception_node MIT auf
-RealSense-Topics umgebogenen Parametern, camera_pose_gate_node.
+RealSense-Topics umgebogenen Parametern, camera_pose_gate_node,
+realsense_diagnostics_node (Entwicklungsauftrag 2, AP2).
 
 NICHT live getestet -- keine RealSense-Hardware in dieser Session
 angeschlossen (siehe docs/DEVELOPMENT_ORDER_01_REPORT.md).
@@ -58,5 +59,15 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_navigation", executable="camera_pose_gate_node",
             output="screen",
+        ),
+        Node(
+            package="ihk_pepper_navigation", executable="realsense_diagnostics_node",
+            output="screen",
+            parameters=[{
+                "color_topic": ["/", camera_name, "/color/image_raw"],
+                "depth_topic": ["/", camera_name, "/aligned_depth_to_color/image_raw"],
+                "camera_info_topic": ["/", camera_name, "/color/camera_info"],
+                "camera_optical_frame": "camera_color_optical_frame",
+            }],
         ),
     ])

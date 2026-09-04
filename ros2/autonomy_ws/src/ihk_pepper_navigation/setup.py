@@ -29,6 +29,7 @@ setup(
             "person_approach_node = ihk_pepper_navigation.person_approach_node:main",
             "camera_pose_gate_node = ihk_pepper_navigation.camera_pose_gate_node:main",
             "mock_nav2_server = ihk_pepper_navigation.mock_nav2_server:main",
+            "realsense_diagnostics_node = ihk_pepper_navigation.realsense_diagnostics_node:main",
         ],
     },
 )
