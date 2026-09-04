@@ -51,6 +51,17 @@
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
 
+  <!-- Entwicklungsauftrag 2, AP4/AP5: RGB-D-Odometrie/Mapping/Lokalisierung.
+       rtabmap_msgs ist bereits installiert (siehe
+       docs/DEVELOPMENT_ORDER_02_REPORT.md), daher <depend> statt
+       <exec_depend> -- odometry_health_node importiert es direkt.
+       rtabmap_odom/rtabmap_slam werden nur per Launch-File gestartet
+       (kein Python-Import noetig), bleiben aber als exec_depend
+       dokumentiert. -->
+  <depend>rtabmap_msgs</depend>
+  <exec_depend>rtabmap_odom</exec_depend>
+  <exec_depend>rtabmap_slam</exec_depend>
+
   <test_depend>python3-pytest</test_depend>
 
   <export>

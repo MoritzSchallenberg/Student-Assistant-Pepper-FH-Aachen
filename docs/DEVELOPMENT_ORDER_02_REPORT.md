@@ -236,6 +236,67 @@ Platzhalter-Werten (0,0,0 -- plausibel, auch wenn nicht kalibriert).
 
 Gesamttestzahl nach AP3: **171/171** (164 + 7 neu).
 
+## AP4: RGB-D Visual Odometry mit RTAB-Map
+
+Neues reines Modul `odometry_health.py` (kein ROS): `check_odometry_health()`
+bewertet `rtabmap_msgs/OdomInfo` (Tracking-Verlust `lost`, Kovarianz,
+Alter, optional Inlier-Anzahl) -- Tracking-Verlust hat IMMER Vorrang vor
+allen anderen Kriterien (Auftrag Abschnitt 7: "keine Fantasieposition bei
+Trackingverlust veröffentlichen"). `max_translation_variance_from_covariance()`
+liest die grösste der drei Translationsvarianzen (x/y/z-Diagonale) aus der
+6x6-Kovarianzmatrix -- ein einzelner Ausreisser wird nicht durch einen
+Mittelwert verschleiert. Neuer dünner ROS-Wrapper `odometry_health_node.py`
+(gleiches Muster wie `camera_pose_gate_node.py`), publiziert `odometry_valid`
+(Bool) + `odometry_health/diagnostics` (String).
+
+Neues Launch `realsense_odometry.launch.py`: startet `rtabmap_odom/rgbd_odometry`
+(**bereits per apt installiert**, siehe AP1-Bestandsaufnahme) gegen die
+RealSense-Topics, `frame_id=base_link`, `odom_frame_id=odom`,
+`publish_tf=true`, **`wait_imu_to_init=false`, `guess_frame_id=""`** --
+explizit KEINE Pepper-/RealSense-IMU verwendet (Auftrag Abschnitt 7:
+"RealSense-IMU nur wenn das erkannte Modell tatsächlich eine besitzt" --
+in dieser Session nicht bestätigt, siehe AP2). Remapped auf `/realsense/odom`.
+Alte `robot_localization.yaml` (Pepper-`/odom`+`/imu/base`) wird hierfür
+NICHT eingebunden.
+
+**Echt getestet** (kein Kamera-Stream, aber ein echter laufender
+RTAB-Map-Prozess -- deutlich mehr als ein reiner Syntax-Check):
+`ros2 launch ihk_pepper_navigation realsense_odometry.launch.py` startet
+beide Nodes fehlerfrei. `rgbd_odometry`s eigenes Startup-Log bestätigt
+alle konfigurierten Parameter korrekt (`frame_id=base_link`,
+`odom_frame_id=odom`, `publish_tf=true`, `wait_imu_to_init=false`,
+`guess_frame_id=` leer). `ros2 topic list` während des Laufs bestätigt
+das erwartete Topic-Set (`/realsense/odom`, `/odom_info`, `/odometry_valid`,
+`/odometry_health/diagnostics`, u.a.) -- **kein** Pepper-`/odom` oder
+`/imu`-Topic beteiligt. `odometry_health_node` meldet korrekt
+`valid=False reason=keine_odometrie_empfangen` ohne echte Kameradaten
+(sicherer Default). 10 neue Unit-Tests (`test_odometry_health.py`).
+**Nicht getestet**: tatsächliche Odometrie-Schätzung aus echten RGB-D-
+Bildern (keine RealSense-Hardware angeschlossen).
+
+**Nebenbefund (Build-/Testumgebung, kein Produktcode-Bug)**: Beim
+Verifizieren dieses Launches wurde entdeckt, dass `ihk_pepper_navigation`
+nach mehreren `colcon build --packages-select`-Läufen aus dem von
+`install/setup.bash` generierten `AMENT_PREFIX_PATH` fehlte (`ros2 launch`/
+`ros2 run` fanden das Paket nicht, obwohl `colcon build`/`pytest` immer
+fehlerfrei liefen). Ursache: ein vergessener Build-Schritt aus der
+dokumentierten Startreihenfolge (`docs/INSTALL.md`, Abschnitt 6) -- nach
+einem versehentlichen `rm -rf install/` (zur Fehlersuche) wurde
+`ihk_pepper_dialog` nicht im eigenen `venv_dialog` nachgebaut, wodurch
+`ihk_pepper_bringup`s Build fehlschlug (`colcon` findet `ihk_pepper_dialog`s
+`package.sh` nicht) und dadurch der Gesamt-Build-Lauf inkonsistent blieb.
+Behoben durch exakte Wiederholung der dokumentierten 3-Schritt-Reihenfolge
+(Hauptpakete -> `ihk_pepper_dialog` in `venv_dialog` -> `ihk_pepper_bringup`).
+Für die Live-Tests in diesem Abschnitt wurde zusätzlich `AMENT_PREFIX_PATH`/
+`PYTHONPATH`/`PATH` für `ihk_pepper_navigation` manuell ergänzt, da das
+Symptom (fehlender `ament_prefix_path`-Hook nur für dieses eine Paket,
+`share/ihk_pepper_navigation/package.dsv` fehlten die drei
+`ament_prefix_path.*`-Zeilen) auch nach vollständigem sauberem Rebuild
+reproduzierbar blieb -- ungeklärte, aber lokal begrenzte
+Colcon/Umgebungs-Eigenheit, kein Hinweis auf einen Fehler im eigenen Code.
+
+Gesamttestzahl nach AP4: **181/181** (171 + 10 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

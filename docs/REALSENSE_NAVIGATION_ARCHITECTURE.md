@@ -43,7 +43,23 @@ gültigen Bereich) -- ergänzt die bereits vorhandene `is_calibrated`-
 Warnung (Entwicklungsauftrag 1) um eine echte Wertepruefung. Ersetzt
 KEINE echte Vermessung, siehe `docs/REALSENSE_CALIBRATION.md`.
 
+## RGB-D Visual Odometry (AP4)
+
+`realsense_odometry.launch.py` startet `rtabmap_odom/rgbd_odometry`
+(RTAB-Map-Vollstack ist bereits per apt installiert, siehe
+`docs/DEVELOPMENT_ORDER_02_REPORT.md`) gegen die RealSense-Topics --
+**keine** Pepper-Odometrie, **keine** Pepper-/RealSense-IMU
+(`wait_imu_to_init: false`, kein IMU-Topic konfiguriert -- kein
+RealSense-Modell mit bestätigter IMU in dieser Session, siehe AP2).
+Ausgabe: `/realsense/odom`, TF `odom -> base_link`. `odometry_health_node`
+(`odometry_health.py`, rein) bewertet `rtabmap_msgs/OdomInfo` fortlaufend:
+Tracking-Verlust (`lost`) hat immer Vorrang, dann Datenalter, dann
+Kovarianz, dann optional Inlier-Anzahl -- jeder Fehlerfall führt zu
+`odometry_valid=false`, NIE zu einer weiterverwendeten Fantasieposition.
+Live gestartet (kein Kamera-Stream, aber ein echter laufender
+RTAB-Map-Prozess) -- Details im Auftrag-2-Bericht.
+
 ## Weitere Abschnitte
 
-Werden mit AP4 (RGB-D-Odometrie), AP5 (Mapping/Lokalisierung), AP6
-(Costmap/Abdeckung), AP7 (Nav2/Holonomie), AP8 (Motion Guard) ergänzt.
+Werden mit AP5 (Mapping/Lokalisierung), AP6 (Costmap/Abdeckung), AP7
+(Nav2/Holonomie), AP8 (Motion Guard) ergänzt.
