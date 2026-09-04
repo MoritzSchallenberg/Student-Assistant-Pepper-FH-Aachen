@@ -1,0 +1,11 @@
+# Entwicklungsauftrag 3, AP5. Setzt/widerruft die Einwilligung zur
+# dauerhaften Speicherung einer Person. NIE von einem LLM aufgerufen --
+# nur von einem menschlich ausgeloesten Dialogablauf (RunDialogue-Action-
+# Server) oder einem Bedien-/Test-Werkzeug.
+
+string person_id
+string consent_status   # not_asked | granted | denied | withdrawn
+string reason           # Pflichtfeld -- jede Schreiboperation braucht einen Grund
+---
+bool success
+string message

@@ -173,6 +173,76 @@ nur generiert, nie erfunden.
 
 Gesamttestzahl nach AP4: **261/261** (250 + 11 neu).
 
+## AP5 + AP6: Persistente Identity Registry + Vector Memory
+
+Neu: `ihk_pepper_person_memory/identity_registry_db.py` --
+`IdentityRegistryStore` (SQLite, Schema-/Verbindungsmuster wie
+`ihk_pepper_dialog/faq_cache.py`). Tabelle `identities` (`person_id`
+PRIMARY KEY, `display_name`, `consent_status`, `created_at`,
+`last_seen_at`, `last_recognition_confidence`, `retention_deadline`)
++ append-only `identity_audit_log` (jede Schreiboperation braucht
+einen Pflicht-`reason`-String, sonst `ValueError`). `person_id` wird
+NIE aus einer ByteTrack-`track_id` abgeleitet -- die Klasse kennt
+`track_id` überhaupt nicht (strukturell erzwungen, per Test bestätigt:
+`create_or_touch()`s Signatur hat kein `track_id`-Argument).
+`delete()` löscht die Zeile ECHT (kein bloßes Flag). `get_context()`
+liefert `known=False`, sobald keine `granted`-Einwilligung vorliegt --
+auch wenn ein Datensatz existiert.
+
+Neu: `ihk_pepper_person_memory/vector_memory_db.py` +
+`embedding_backend.py` (bewusst eigenständige Kopie des
+`EmbeddingBackend`/`SentenceTransformerBackend`/`DifflibFallbackBackend`-
+Musters aus `faq_cache.py`, NICHT importiert -- vermeidet dieselbe
+zirkuläre-Abhängigkeit-Problematik wie bei `providers.py`s
+`AnythingLLMProvider`, siehe AP2). `VectorMemoryStore.write_validated_summary()`
+ruft zuerst die bestehende `validate_memory_write()` (Auftrag 1) auf,
+schreibt NUR bei `errors == []`. `query_by_topic()`/`query_semantic()`
+geben nie Ergebnisse einer fremden `person_id` zurück (Test bestätigt).
+`MemoryEntry` um `session_id`/`sources` ergänzt (Auftrag-Beispielschema),
+abwärtskompatibel. Strukturell bestätigt: `MemoryEntry` besitzt kein
+Feld für rohe Prompts/Chain-of-Thought -- `text_summary` ist die einzige
+Textquelle.
+
+Neu: `ihk_pepper_person_memory/affect_observation.py` --
+`IdentityObservation` (reiner Datencontainer, nie eine automatische
+Zuordnung), `AffectObservation` (verallgemeinert `mood_signal.py::MoodObservation`
+auf beliebige Quellen, `is_reliable_fact()` immer `False`), `PersonContext`
+(interne, ausführlichere Sicht -- nicht zu verwechseln mit der schlanken
+Pipeline-`PersonContext` in `knowledge_planner.py`, die unverändert bleibt).
+
+5 neue `.srv`-Dateien in `ihk_pepper_interfaces`
+(`LookupPerson`/`SetConsent`/`SetDisplayName`/`DeletePerson`/
+`GetPersonContext`) + neuer Node `person_memory_node.py` (dünner
+ROS-Wrapper, `rclpy`-Depend neu in `package.xml`). DB-Pfade
+konfigurierbar, Default `~/.ihk_pepper_memory/{identity,vector_memory}.db`
+-- außerhalb jedes Git-/Colcon-Baums (gleiches Prinzip wie
+`~/.ihk_pepper_maps/` aus Auftrag 2). Bewusste Design-Entscheidung: kein
+eigener "Person anlegen"-Service (Auftrag: kein LLM darf eine Person
+anlegen) -- die erste `SetConsent`-Anfrage für eine unbekannte `person_id`
+legt den Datensatz implizit an, ausschließlich über diesen von einem
+Menschen/`RunDialogue` ausgelösten Weg.
+
+**Echt getestet** (voller Service-Lebenszyklus, nicht nur Unit-Tests):
+Node gestartet, `set_consent` (neue Person, `granted`) →
+`set_display_name` → `lookup_person` (bestätigt `known=true,
+consent_status=granted, display_name=Max`) → `get_person_context`
+(bestätigt `known=true`) → `delete_person` (meldet
+`identity_geloescht=True, memory_eintraege_geloescht=0`) →
+`lookup_person` erneut (bestätigt wieder `known=false`) -- kompletter
+Lebenszyklus über echte `ros2 service call`-Aufrufe live verifiziert.
+
+**Getestet**: 18 neue Unit-Tests (Identity Registry: unbekannte Person,
+Erstanlage, Consent-Übergänge inkl. ungültiger Werte, Löschung,
+Audit-Pflicht, Kontext nur mit Einwilligung, keine Cross-Person-Leckage,
+Persistenz nach Neustart, keine implizite Track-ID-Nutzung) + 13 neue
+Unit-Tests (Vector Memory: Schreiben nur mit Consent, Themen-/
+Semantiksuche, keine Cross-Person-Leckage, abgelaufene Einträge nicht
+zurückgegeben, Löschung, Persistenz nach Neustart, strukturell kein
+Rohdaten-Feld) + 6 neue Unit-Tests (Affect/Identity-Beobachtungen, immer
+`is_reliable_fact()==False`).
+
+Gesamttestzahl nach AP5+AP6: **298/298** (261 + 37 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

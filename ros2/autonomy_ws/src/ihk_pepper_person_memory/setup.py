@@ -20,4 +20,9 @@ setup(
     ),
     license="BSD",
     tests_require=["pytest"],
+    entry_points={
+        "console_scripts": [
+            "person_memory_node = ihk_pepper_person_memory.person_memory_node:main",
+        ],
+    },
 )

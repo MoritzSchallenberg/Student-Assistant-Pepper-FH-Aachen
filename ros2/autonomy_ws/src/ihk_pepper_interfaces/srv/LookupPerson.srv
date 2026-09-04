@@ -1,0 +1,12 @@
+# Persistente Identity Registry (Entwicklungsauftrag 3, AP5). person_id
+# ist eine bereits entschiedene, stabile ID -- NIEMALS eine rohe
+# ByteTrack-track_id. Ohne bestaetigte Identitaet/Consent bleibt die
+# Person unbekannt (known=false), auch wenn ein Datensatz existiert.
+
+string person_id
+---
+bool known
+string display_name
+string consent_status   # not_asked | granted | denied | withdrawn
+float32 confidence
+string last_seen_iso

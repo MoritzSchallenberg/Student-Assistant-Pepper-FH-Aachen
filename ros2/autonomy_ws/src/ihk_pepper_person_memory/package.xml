@@ -3,15 +3,21 @@
   <name>ihk_pepper_person_memory</name>
   <version>0.1.0</version>
   <description>
-    Versionierte Verträge (Python-Datentypen + Regelvalidatoren) für ein
-    späteres Personen-/Gesprächsgedächtnis (Identity Registry + Vector
-    Memory). Keine echte Gesichtsdatenbank, keine Implementierung eines
-    Speichers -- nur Schnittstellen (Entwicklungsauftrag 1, Abschnitt 9).
+    Verträge (Python-Datentypen + Regelvalidatoren) UND ein echter,
+    persistenter SQLite-Speicherdienst für Identity Registry + Vector
+    Memory (Entwicklungsauftrag 3, AP5/AP6). Keine echte Gesichtsdatenbank,
+    keine automatische Gesichtserkennung -- person_id-Werte kommen in
+    diesem Auftrag ausschließlich von Tests/manuellen Aufrufen. Exponiert
+    5 ROS2-Services (person_memory_node.py) für Nachschlagen/Consent/
+    Anzeigename/Löschen/Personenkontext.
   </description>
   <maintainer email="you@example.com">you</maintainer>
   <license>BSD</license>
 
   <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>ihk_pepper_interfaces</depend>
 
   <test_depend>python3-pytest</test_depend>
 

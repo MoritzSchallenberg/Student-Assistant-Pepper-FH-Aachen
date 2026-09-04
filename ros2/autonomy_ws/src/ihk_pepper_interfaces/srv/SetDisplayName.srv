@@ -1,0 +1,10 @@
+# Entwicklungsauftrag 3, AP5. Setzt einen Anzeigenamen fuer eine bereits
+# bekannte person_id. Ein LLM darf diesen Service NIE aufrufen (keine
+# Namenszuordnung durch ein LLM, siehe docs/PERSON_MEMORY_DESIGN.md).
+
+string person_id
+string display_name
+string reason
+---
+bool success
+string message

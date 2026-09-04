@@ -1,0 +1,10 @@
+# Entwicklungsauftrag 3, AP5. Loescht eine Person ECHT aus der Identity
+# Registry (kein blosses Flag) -- inklusive aller zugehoerigen
+# Vector-Memory-Eintraege (person_memory_node.py raeumt beide Speicher
+# im selben Aufruf auf).
+
+string person_id
+string reason
+---
+bool success
+string message

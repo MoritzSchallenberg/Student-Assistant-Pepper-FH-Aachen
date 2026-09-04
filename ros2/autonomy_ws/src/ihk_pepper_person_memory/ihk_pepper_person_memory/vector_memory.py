@@ -29,6 +29,12 @@ class MemoryEntry:
     text_summary: str = ""
     embedding_ref: Optional[str] = None
     valid_until_iso: Optional[str] = None
+    # Entwicklungsauftrag 3, AP6: ergaenzt um die im Auftrag benannten
+    # Felder session_id/sources. session_id ist rein informativ (welche
+    # Sitzung diese Zusammenfassung erzeugt hat) -- die eigentliche
+    # Zugriffskontrolle laeuft ausschliesslich ueber person_id+Consent.
+    session_id: str = ""
+    sources: list = field(default_factory=list)  # list[str], source_ids aus dem AnswerBrief
 
 
 def validate_memory_write(entry: MemoryEntry, identity: Optional[IdentityRecord]) -> list:
