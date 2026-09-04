@@ -488,6 +488,120 @@ Python-Unit-Tests in diesem AP -- die Verifikation erfolgte über den
 bestehenden BT-Testsatz plus den neuen manuellen E2E-Treiber, der
 bewusst nicht von pytest eingesammelt wird, `manual_`-Präfix).
 
+## AP12: Kinematischer Gestencompiler und ausführbarer Transport
+
+Neu: `ihk_pepper_bridge/motion_transport.py` und
+`ihk_pepper_bridge/kinematic_compiler.py`. Klare Pipeline (Auftrag-Vorgabe):
+`Gesture (Validator, unveraendert) → KinematicCompiler → TrajectoryPlan →
+MotionTransport → Pepper oder Mock`. Betrifft ausschließlich
+`schema_version: 2`-Gesten -- v1 bleibt bewusst sequenziell (bestehende,
+begründete Design-Entscheidung aus Auftrag 1, siehe Moduldoku
+`gesture_catalog.py`).
+
+**`MotionTransport`-ABC** (`prepare/start/poll/cancel/restore`):
+- `MockMotionTransport`: reine Buchführung für Tests, ruft nie Hardware auf.
+- `DryRunMotionTransport`: loggt den vollständigen Plan, ruft NIE eine
+  Hardware-Methode auf -- auch `restore()`/`cancel()` bleiben reine
+  Protokollausgaben.
+- `QicliTrajectoryTransport`: echter Transport über
+  `ThreadSafePepperClient`. `start()` sendet die Trajektorie in einem
+  Hintergrund-Thread (poll()/wait() lesen den Fortschritt, ohne den
+  Aufrufer zu blockieren). `cancel()` hat, ehrlich dokumentiert, KEIN
+  natives Abbruch-Primitiv für eine bereits an NAOqi gesendete synchrone
+  Anfrage -- wartet auf deren Ende und sendet danach sofort eine
+  Halte-Trajektorie (aktuelle Ist-Position, kurze Dauer); kein echtes
+  Mid-Flight-Abbrechen, nicht als solches ausgegeben.
+- `LocalPepperQiHelperTransport`: dokumentierter Platzhalter für eine
+  künftige direkte NAOqi-SDK-Anbindung (statt SSH+qicli) -- in dieser
+  Session ohne verfügbare NAOqi-Python-Bibliothek nicht umsetzbar, jede
+  Methode wirft bewusst `NotImplementedError`, damit sie nie versehentlich
+  als funktionsfähig missverstanden wird.
+
+**Behobener Bug -- Wiederherstellung Gelenk für Gelenk**: `apps/web/pepper/
+qicli.py::restore_joints()` fährt jedes Gelenk in einer Schleife über
+einzelne `set_angle()`-Aufrufe zurück (bestätigt durch Lektüre, siehe
+Zeilen 220-224 dort) -- exakt das im Auftrag benannte Problem. Da diese
+Datei von `apps/web` (Flask-Weboberfläche) mitgenutzt wird, wurde sie NICHT
+verändert (Risiko für unabhängigen Code außerhalb dieses Auftrags);
+stattdessen ruft `QicliTrajectoryTransport.restore()` NIE
+`pepper_client.restore_joints()`, sondern sendet alle wiederherzustellenden
+Gelenke in EINEM synchronen `play_trajectory()`-Aufruf. `gesture_catalog.py
+::_play_v2()` wurde entsprechend umgestellt (nutzt jetzt Compiler+Transport
+statt direkt `pepper_client.play_trajectory()`/`restore_joints()`
+aufzurufen) -- v1-Gesten bleiben unveraendert bei der alten,
+Gelenk-für-Gelenk-Wiederherstellung (dort seit jeher Teil des bewusst
+sequenziellen Designs, keine neu eingeführte Inkonsistenz).
+
+**Behobener Bug -- inkonsistente Zeitachsen je Gelenk**: die alte
+`_play_v2()`-Implementierung baute für jedes Gelenk eine EIGENE
+Zeitliste, indem sie nur die Keyframes filterte, in denen das Gelenk
+explizit vorkam -- zwei Gelenke mit unterschiedlicher Keyframe-Abdeckung
+bekamen dadurch faktisch unterschiedliche Zeitachsen innerhalb
+DESSELBEN `play_trajectory()`-Aufrufs. `KinematicCompiler.compile()`
+füllt zunächst fehlende Gelenkwerte pro Keyframe auf
+(`fill_missing_joint_holds()`, reine Funktion: Haltewert = letzter
+bekannter Wert, oder `start_pose`, falls das Gelenk noch nie vorkam) und
+gibt danach JEDEM Gelenk exakt dieselbe Zeitliste zurück -- durch
+Regressionstest abgesichert (`test_compile_produces_identical_time_axis_for_every_joint`).
+
+**Startzustand**: `compile(gesture, speed_scale, start_pose)` verlangt
+einen expliziten `start_pose` (typischerweise ein
+`pepper_client.snapshot_joints()`-Ergebnis, in `_play_v2()` VOR der
+Kompilierung genommen) oder fällt auf eine hart hinterlegte
+`NEUTRAL_STAND_POSE`-Konstante zurück (0.0 bzw. dokumentierte neutrale
+Werte je Gelenk) -- niemals "aktuelle Ist-Position unbekannt, irgendein
+Wert wird schon passen".
+
+**Neu geprüft -- Beschleunigung**: `gesture_catalog.py` prüfte bisher nur
+Geschwindigkeit zwischen Keyframes (`MAX_JOINT_VELOCITY_RAD_S`).
+`KinematicCompiler` prüft zusätzlich, NACH Anwendung des `speed_scale`,
+die Beschleunigung (finite Differenzen zweiter Ordnung,
+`MAX_JOINT_ACCEL_RAD_S2 = 25.0`, konservativ aus der live getesteten
+`wave_right`-Oszillation hergeleitet, siehe Moduldoku) -- eine Geste, die
+mit `speed_scale=1.0` unauffällig ist, kann bei hohem `speed_scale`
+(Beschleunigung skaliert quadratisch mit dem Zeitfaktor) jetzt korrekt
+abgelehnt werden (Regressionstest
+`test_compile_rejects_excessive_acceleration_after_speed_scaling`).
+
+**Kein stiller Erfolg bei fehlgeschlagener Übertragung**: die alte
+`_play_v2()`-Implementierung fing eine Exception aus `play_trajectory()`
+nur im `finally`-Restore-Pfad ab (die Exception propagierte zwar weiter,
+aber der Kontrollfluss war nicht explizit); die neue Implementierung
+prüft den `TransportStatus` explizit nach `transport.wait()` und wirft
+`transport.last_error`, falls `FAILED` -- kein Pfad kann mehr
+`PlaybackResult(success=True)`-artiges Verhalten vortäuschen (dieses Feld
+existiert zwar nicht auf `PlaybackResult`, aber die Garantie "eine
+Exception in der Übertragung propagiert IMMER" ist jetzt explizit statt
+implizit).
+
+`PlaybackResult.plan` (öffentliche Schnittstelle, von bestehenden Tests
+genutzt) bleibt im bisherigen Listenformat -- eine neue Hilfsfunktion
+`_trajectory_plan_to_legacy_dicts()` wandelt den intern erzeugten
+`TrajectoryPlan` zurück, sodass kein Aufrufer außerhalb von
+`gesture_catalog.py` etwas von der internen Umstellung merkt.
+
+**Getestet**: 10 neue Tests in `test_kinematic_compiler.py` (Haltewerte,
+Startpose-Fallback/-Override, identische Zeitachse, Beschleunigungsgrenze,
+Ablehnung von v1-Gesten, Weitergabe von Breathing-Konfiguration),
+10 neue Tests in `test_motion_transport.py` (Mock-Aufrufreihenfolge,
+Dry-Run rührt nie Hardware an, Qicli-Transport Erfolg/Fehlschlag,
+EIN Restore-Aufruf statt Gelenk-für-Gelenk, Cancel vor/während/nach
+Ausführung). Die drei betroffenen `test_gesture_catalog_v2.py`-Tests
+(`FakePepperClient`-Testdouble sowie die beiden
+Wiederherstellungs-Fehlschlag-Tests) wurden bewusst an die neue,
+korrektere Architektur angepasst (siehe Kommentare dort) -- alle 22
+bestehenden Gestenkatalog-Tests bleiben grün.
+
+Bekannter, vorbestehender Nebenbefund (NICHT durch AP12 verursacht,
+gegengeprüft durch Vergleich mit dem AP11-Abschluss-Commit vor jeder
+Änderung dieses Arbeitspakets): `colcon test --packages-select
+ihk_pepper_bridge` schlägt bereits im Ausgangsstand mit "NO TESTS RAN"
+(exit code 5) fehl -- das Paket hat offenbar keinen eigenen, von colcon
+erkannten Testeintrag (alle echten Tests für dieses Paket laufen über
+`ihk_pepper_tests`). Nicht Teil dieses Auftrags, hier nur dokumentiert.
+
+Gesamttestzahl nach AP12: **350/350** (330 + 20 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Gegeben die Größe dieses Auftrags (14 Arbeitspakete über LLM-Pipeline,

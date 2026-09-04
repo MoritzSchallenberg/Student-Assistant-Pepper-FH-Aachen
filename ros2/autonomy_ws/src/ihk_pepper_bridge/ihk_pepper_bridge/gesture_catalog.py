@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 import yaml
 
 from .joint_limits import ALLOWED_GESTURE_JOINTS, JointLimitError, validate_angle, validate_angle_with_margin
+from .kinematic_compiler import KinematicCompiler
+from .motion_transport import QicliTrajectoryTransport, TransportStatus
 
 MIN_SPEED_SCALE_V1 = 0.1
 MAX_SPEED_SCALE_V1 = 3.0
@@ -80,6 +82,22 @@ class PlaybackResult:
 
 def _clamp(value, lo, hi):
     return max(lo, min(hi, value))
+
+
+def _trajectory_plan_to_legacy_dicts(plan) -> list:
+    """Wandelt einen motion_transport.TrajectoryPlan zurueck in das
+    bisherige PlaybackResult.plan-Format (Liste von {time_from_start_s,
+    joints}) -- haelt die oeffentliche PlaybackResult-Schnittstelle stabil,
+    obwohl _play_v2 seit AP12 intern ueber den KinematicCompiler laeuft."""
+    if not plan.time_lists or not plan.time_lists[0]:
+        return []
+    result = []
+    for i, t in enumerate(plan.time_lists[0]):
+        result.append({
+            "time_from_start_s": t,
+            "joints": {joint: plan.angle_lists[j][i] for j, joint in enumerate(plan.joint_names)},
+        })
+    return result
 
 
 class Gesture:
@@ -311,30 +329,36 @@ class GestureCatalog:
         return PlaybackResult(dry_run=False, schema_version=1, plan=planned)
 
     def _play_v2(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run):
-        planned = [
-            {"time_from_start_s": kf["time_from_start_s"] / speed_scale, "joints": dict(kf["joints"])}
-            for kf in gesture.keyframes
-        ]
+        """Nutzt seit Entwicklungsauftrag 3, AP12 den KinematicCompiler +
+        QicliTrajectoryTransport statt Keyframes direkt in
+        play_trajectory()-Argumente umzurechnen (siehe kinematic_compiler.py-
+        Moduldoku fuer die damit behobenen Schwaechen: fehlende Gelenke pro
+        Keyframe, undefinierter Startzustand, inkonsistente Zeitachsen je
+        Gelenk, fehlende Beschleunigungspruefung, Gelenk-fuer-Gelenk-
+        Wiederherstellung)."""
+        compiler = KinematicCompiler()
+
         if dry_run:
-            return PlaybackResult(dry_run=True, schema_version=2, plan=planned)
+            plan = compiler.compile(gesture, speed_scale=speed_scale)
+            return PlaybackResult(dry_run=True, schema_version=2, plan=_trajectory_plan_to_legacy_dicts(plan))
 
         for part in gesture.disable_breathing:
             pepper_client.set_breathing(False, part)
         snapshot = pepper_client.snapshot_joints(gesture.affected_joints()) if gesture.restore_after else None
+        transport = None
         try:
-            joint_names = sorted({j for kf in planned for j in kf["joints"]})
-            angle_lists, time_lists = [], []
-            for joint in joint_names:
-                angles = [kf["joints"][joint] for kf in planned if joint in kf["joints"]]
-                times = [kf["time_from_start_s"] for kf in planned if joint in kf["joints"]]
-                angle_lists.append(angles)
-                time_lists.append(times)
-            pepper_client.play_trajectory(joint_names, angle_lists, time_lists)
+            plan = compiler.compile(gesture, speed_scale=speed_scale, start_pose=snapshot)
+            transport = QicliTrajectoryTransport(pepper_client)
+            transport.prepare(plan, restore_snapshot=snapshot)
+            transport.start()
+            status = transport.wait()
             if feedback_cb:
                 feedback_cb("trajectory_sent", 1.0)
+            if status == TransportStatus.FAILED:
+                raise transport.last_error
         finally:
-            if snapshot is not None:
-                pepper_client.restore_joints(snapshot)
+            if snapshot is not None and transport is not None:
+                transport.restore()
             for part in gesture.disable_breathing:
                 pepper_client.set_breathing(True, part)
-        return PlaybackResult(dry_run=False, schema_version=2, plan=planned)
+        return PlaybackResult(dry_run=False, schema_version=2, plan=_trajectory_plan_to_legacy_dicts(plan))

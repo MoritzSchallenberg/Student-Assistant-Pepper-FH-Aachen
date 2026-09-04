@@ -23,16 +23,30 @@ class FakePepperClient:
         self.breathing_calls = []
         self.snapshot_taken = None
         self.restored = None
-        self._fail_on = fail_on  # z.B. "set_angle" oder "play_trajectory" -- simuliert Abbruch/Cancel
+        # "set_angle": simuliert Abbruch fuer v1. "play_trajectory": simuliert
+        # Abbruch NUR beim ERSTEN Aufruf (der eigentlichen Gestenbewegung) --
+        # der zweite Aufruf (die Wiederherstellung, siehe AP12: restore()
+        # nutzt seitdem ebenfalls play_trajectory statt einer separaten
+        # restore_joints()-Methode) simuliert damit den realistischen Fall,
+        # dass eine komplexe Mehrgelenk-Trajektorie abgelehnt wird, eine
+        # einfache Ein-Winkel-Wiederherstellung ueber dieselbe Verbindung
+        # aber weiterhin funktioniert.
+        self._fail_on = fail_on
 
     def set_breathing(self, enabled, part=None):
         self.breathing_calls.append((enabled, part))
 
     def snapshot_joints(self, joints):
         self.snapshot_taken = list(joints)
-        return {"snapshot": True}
+        return {j: 0.1 for j in joints}
+
+    def get_angle(self, joint):
+        return 0.1
 
     def restore_joints(self, snapshot, duration=1.5):
+        # Nur noch von der v1-Wiedergabe genutzt (bewusst weiterhin
+        # sequenziell, siehe gesture_catalog.py-Moduldoku) -- v2 nutzt seit
+        # AP12 restore() ueber play_trajectory() (siehe oben).
         self.restored = snapshot
 
     def set_angle(self, joint, angle, duration=1.0):
@@ -41,9 +55,12 @@ class FakePepperClient:
         self.calls.append(("set_angle", joint, angle, duration))
 
     def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute=True):
-        if self._fail_on == "play_trajectory":
-            raise RuntimeError("simulierter Abbruch")
         self.calls.append(("play_trajectory", joint_names, angle_lists, time_lists))
+        is_restore_call = len([c for c in self.calls if c[0] == "play_trajectory"]) > 1
+        if self._fail_on == "play_trajectory" and not is_restore_call:
+            raise RuntimeError("simulierter Abbruch")
+        if is_restore_call:
+            self.restored = dict(zip(joint_names, (a[0] for a in angle_lists)))
 
 
 # ---- Schema-Migration / Fehlermeldungen ----
@@ -231,7 +248,10 @@ def test_failure_mid_playback_still_restores_joints_v2():
     client = FakePepperClient(fail_on="play_trajectory")
     with pytest.raises(RuntimeError):
         catalog.play(client, "test_gesture")
-    assert client.restored == {"snapshot": True}
+    # restore() sendet seit AP12 EINEN play_trajectory()-Aufruf mit den
+    # Snapshot-Winkeln (statt der alten restore_joints()-Methode) --
+    # genau die zwei betroffenen Gelenke, je Snapshot-Winkel 0.1.
+    assert client.restored == {"LShoulderPitch": 0.1, "RShoulderPitch": 0.1}
     assert client.breathing_calls  # Breathing wurde in jedem Fall wieder aktiviert
 
 
@@ -247,7 +267,7 @@ def test_failure_mid_playback_still_restores_joints_v1():
         client = FakePepperClient(fail_on="set_angle")
         with pytest.raises(RuntimeError):
             catalog.play(client, "seq")
-        assert client.restored == {"snapshot": True}
+        assert client.restored == {"HeadYaw": 0.1}
         assert (True, "Arms") in client.breathing_calls
 
 
