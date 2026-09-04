@@ -350,6 +350,50 @@ wurden identifiziert und beendet.
 
 Gesamttestzahl nach AP5: **194/194** (181 + 13 neu).
 
+## AP8: Zentraler Motion Guard (vorgezogen, siehe Reihenfolge unten)
+
+Neues reines Modul `ihk_pepper_interaction/motion_guard.py` (kein ROS,
+gleiches Muster wie `safety_gate.py`): `evaluate_motion_guard()` prüft
+sequenziell (sicherer Default: JEDER einzelne Grund blockiert sofort)
+Bumper, Not-Halt, expliziten Livebewegungsmodus, `SafetyState.allow_motion`,
+RealSense-Diagnose (AP2), Odometrie-Gültigkeit (AP4), Lokalisierungs-
+Gültigkeit (AP5), Hindernisdaten, Kopf-Navigationspose (Auftrag 1),
+aktiven Gestenablauf, Alter des letzten Fahrbefehls. Bewusst **redundant**
+zu `SafetyGate` (Auftrag 1): eine "letzte Instanz" darf sich nicht blind
+auf eine einzelne vorgelagerte Aggregation verlassen -- Bumper/Not-Halt
+werden hier selbst noch einmal geprüft, zusätzlich zu den in `SafetyGate`
+noch nicht verdrahteten neuen Auftrag-2-Signalen.
+
+Neuer Node `motion_guard_node.py`: letztes Glied der Fahrbefehlskette
+(`Nav2 -> Velocity Smoother -> Collision Monitor -> Motion Guard ->
+/cmd_vel`), liest den Kandidaten-Twist von `motion_guard/cmd_vel_in`
+(wird in AP7 auf den tatsächlichen Collision-Monitor-Ausgang remapped),
+publiziert bei `allow=False` **fortlaufend** (10 Hz) eine
+Nullgeschwindigkeit statt nur einmalig -- verwirft den Kandidaten-Befehl
+vollständig. `enable_live_motion` (Parameter, Default `false`) ist der
+"explizite Livebewegungsmodus" aus dem Auftrag -- nur `navigation_live`/
+`navigation_dry_run` (AP11) setzen ihn `true`.
+
+**Ehrlich dokumentierte Lücke**: `gesture_in_progress` wird von keinem
+Node dieser Session tatsächlich publiziert (sicherer Default: gilt als
+`true`/blockierend, bis nie empfangen) -- `bridge_node.py`s
+`PlayGesture`-Handler müsste das noch publizieren, analog zur bereits in
+Auftrag 1 dokumentierten `nav2_moving`/`mapping_active`-Live-Wiring-Lücke.
+
+**Echt getestet** (zwei vollständige Szenarien, kein Nav2 nötig): (1)
+Node ohne jede Eingabe gestartet -- meldet korrekt `allow=False
+reason=bumper_active` (sicherster Default zuerst) und publiziert eine
+reine Nullgeschwindigkeit auf `/cmd_vel`. (2) Alle Bedingungen über
+wiederholte `ros2 topic pub -r 10 ...` erfüllt (Bumper frei, alle
+Validitäts-Flags `true`, `SafetyState.allow_motion=true`,
+`enable_live_motion:=true`) -- Diagnose konvergiert zu `allow=True
+reason=ok`, und der tatsächliche Kandidaten-Twist (`linear.x=0.3`) wird
+unverändert auf `/cmd_vel` durchgereicht (kein `--once`-Race mehr, mit
+wiederholten Publishern reproduzierbar). 15 neue Unit-Tests
+(`test_motion_guard.py`).
+
+Gesamttestzahl nach AP8: **209/209** (194 + 15 neu).
+
 ### Reihenfolge der Umsetzung in diesem Auftrag
 
 Abweichend von der Auftragsnummerierung wird in dieser praktischen

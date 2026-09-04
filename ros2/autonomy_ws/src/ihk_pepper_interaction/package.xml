@@ -10,6 +10,7 @@
 
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
 
   <test_depend>python3-pytest</test_depend>

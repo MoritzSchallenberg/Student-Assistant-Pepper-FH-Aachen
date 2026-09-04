@@ -77,7 +77,23 @@ er PFLICHT und wird vor dem Start auf Existenz geprüft.
 liefert die echte Implementierung dieses seit Auftrag 1 offenen
 Sicherheitseingangs.
 
+## Zentraler Motion Guard (AP8)
+
+Letztes Glied der Fahrbefehlskette: `Nav2 -> Velocity Smoother ->
+Collision Monitor -> Motion Guard -> /cmd_vel -> naoqi_driver2`.
+`motion_guard.py` (rein) prüft sequenziell -- Bumper/Not-Halt zuerst,
+dann Modus/Freigabe, dann Datenqualität (RealSense-Diagnose AP2,
+Odometrie AP4, Lokalisierung AP5, Hindernisdaten, Kopfpose Auftrag 1),
+zuletzt Gestenablauf und Befehlsalter. Bewusst redundant zu `SafetyGate`
+(Auftrag 1) -- Bumper/Not-Halt werden hier noch einmal selbst geprüft,
+kein blindes Vertrauen in eine einzelne vorgelagerte Aggregation. Bei
+jedem Fehlerfall: fortlaufende Nullgeschwindigkeit statt eines einmaligen
+Stopps, Kandidaten-Befehl wird komplett verworfen. `enable_live_motion`
+(Default `false`) ist der explizite Livebewegungsmodus -- ohne ihn lässt
+Motion Guard nie etwas durch, unabhängig von allen anderen Bedingungen.
+Live getestet: Block- und Allow-Pfad beide verifiziert (siehe
+`docs/DEVELOPMENT_ORDER_02_REPORT.md`).
+
 ## Weitere Abschnitte
 
-Werden mit AP6 (Costmap/Abdeckung), AP7 (Nav2/Holonomie), AP8 (Motion
-Guard) ergänzt.
+Werden mit AP6 (Costmap/Abdeckung) und AP7 (Nav2/Holonomie) ergänzt.
