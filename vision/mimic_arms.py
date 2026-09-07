@@ -11,13 +11,34 @@ Spiegel-Mapping.
 Bricht nach --duration Sekunden automatisch ab und faehrt die Arme zurueck
 in die Ausgangsposition.
 """
+import os
 import sys
 import time
 import math
 import argparse
 import threading
 
-sys.path.insert(0, "/home/canvastino/Schreibtisch/Pepper/apps/web")
+
+def _find_flask_wrapper_path() -> str:
+    """PEPPER_FLASK_WRAPPER_PATH hat Vorrang, sonst wird 'apps/web' vom
+    eigenen Verzeichnis aus nach oben gesucht -- kein absoluter
+    Entwicklerpfad im Laufzeitcode (Entwicklungsauftrag 04-B, AP0)."""
+    env_value = os.environ.get("PEPPER_FLASK_WRAPPER_PATH")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        candidate = os.path.join(current, "apps", "web")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "apps", "web")
+
+
+sys.path.insert(0, _find_flask_wrapper_path())
 
 import rclpy
 from rclpy.node import Node

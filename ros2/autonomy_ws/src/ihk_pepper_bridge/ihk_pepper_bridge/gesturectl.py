@@ -38,6 +38,28 @@ def _default_gesture_dir():
         )
 
 
+def _find_robot_model_path() -> str:
+    """PEPPER_ROBOT_MODEL_PATH hat Vorrang, sonst wird 'ros2/robot_model'
+    vom eigenen Verzeichnis aus nach oben gesucht -- kein absoluter
+    Entwicklerpfad im Laufzeitcode (Entwicklungsauftrag 04-B, AP0). Der
+    Aufrufer faengt ein fehlendes sim_qicli.py bereits per ImportError
+    ab, daher bewusst kein harter Absturz hier -- Fallback auf den
+    relativen Pfad, wenn nichts gefunden wird."""
+    env_value = os.environ.get("PEPPER_ROBOT_MODEL_PATH")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(12):
+        candidate = os.path.join(current, "ros2", "robot_model")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return "ros2/robot_model"
+
+
 def _load_catalog(gesture_dir):
     catalog = GestureCatalog(gesture_dir)
     errors = catalog.reload()
@@ -161,9 +183,7 @@ def cmd_preview(args):
         print(str(e), file=sys.stderr)
         return 1
 
-    robot_model_dir = os.environ.get(
-        "PEPPER_ROBOT_MODEL_PATH", "/home/canvastino/Schreibtisch/Pepper/ros2/robot_model",
-    )
+    robot_model_dir = _find_robot_model_path()
     if robot_model_dir not in sys.path:
         sys.path.insert(0, robot_model_dir)
     try:

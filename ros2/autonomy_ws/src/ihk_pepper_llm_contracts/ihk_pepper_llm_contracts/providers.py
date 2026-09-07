@@ -237,6 +237,32 @@ class OfflineFallbackProvider(LLMProvider):
         return True
 
 
+def _find_flask_wrapper_path() -> str:
+    """Siehe ihk_pepper_bridge/pepper_client.py::_find_flask_wrapper_path()
+    -- bewusst eigenstaendige Kopie (kein Cross-Import fuer eine kurze
+    Pfadsuche, gleiches Prinzip wie embedding_backend.py).
+    PEPPER_FLASK_WRAPPER_PATH hat Vorrang, sonst wird 'apps/web' vom
+    eigenen Verzeichnis aus nach oben gesucht (Entwicklungsauftrag 04-B,
+    AP0: keine absoluten Entwicklerpfade im Laufzeitcode)."""
+    env_value = os.environ.get("PEPPER_FLASK_WRAPPER_PATH")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(12):
+        candidate = os.path.join(current, "apps", "web")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    raise RuntimeError(
+        "PEPPER_FLASK_WRAPPER_PATH ist nicht gesetzt und 'apps/web' wurde "
+        "beim automatischen Suchen nicht gefunden -- bei getrennter "
+        "Installation muss PEPPER_FLASK_WRAPPER_PATH explizit gesetzt werden."
+    )
+
+
 class AnythingLLMProvider(LLMProvider):
     """Ruft AnythingLLM direkt ueber apps/web/llm/anythingllm.py auf --
     NICHT ueber ihk_pepper_dialog/anythingllm_client.py::RobustAnythingLLMClient,
@@ -258,10 +284,7 @@ class AnythingLLMProvider(LLMProvider):
     def _ensure_helper(self):
         if self._helper is None:
             import sys
-            flask_wrapper_path = os.environ.get(
-                "PEPPER_FLASK_WRAPPER_PATH",
-                "/home/canvastino/Schreibtisch/Pepper/apps/web",
-            )
+            flask_wrapper_path = _find_flask_wrapper_path()
             if flask_wrapper_path not in sys.path:
                 sys.path.insert(0, flask_wrapper_path)
             from llm.anythingllm import anything_llm_helper

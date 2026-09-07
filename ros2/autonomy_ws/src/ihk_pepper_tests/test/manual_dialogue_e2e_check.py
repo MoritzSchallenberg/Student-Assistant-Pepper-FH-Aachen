@@ -41,6 +41,18 @@ from ihk_pepper_interfaces.action import RunDialogue
 from ihk_pepper_interfaces.msg import PersonTrack, PersonTrackArray, SafetyState
 from ihk_pepper_interfaces.srv import GetPersonContext, SetConsent
 
+def _find_autonomy_ws() -> str:
+    """Dieses Skript liegt immer unter <autonomy_ws>/src/ihk_pepper_tests/
+    test/ (ein manuelles, nicht installiertes Entwicklerwerkzeug) --
+    kein absoluter Entwicklerpfad noetig (Entwicklungsauftrag 04-B,
+    AP0), PEPPER_AUTONOMY_WS als expliziter Override bleibt trotzdem
+    moeglich."""
+    env_value = os.environ.get("PEPPER_AUTONOMY_WS")
+    if env_value:
+        return env_value
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+
+
 VALID_SCENARIOS = ("known_person", "unknown_person")
 # Unterschiedliche IDs je Szenario -- sonst wuerde ein zuvor erteilter
 # Consent aus dem known_person-Lauf einen spaeteren unknown_person-Lauf
@@ -121,14 +133,15 @@ def main():
     session_id = SESSION_IDS[scenario]
     print(f"Szenario: {scenario} (session_id={session_id})")
 
+    autonomy_ws = _find_autonomy_ws()
+    dialog_install = os.path.join(autonomy_ws, "install", "ihk_pepper_dialog")
+
     env = os.environ.copy()
     env["PEPPER_FAQ_DB_PATH"] = "/tmp/dialogue_e2e_faq_cache.sqlite"
-    env["AMENT_PREFIX_PATH"] = (
-        "/home/canvastino/Schreibtisch/Pepper/ros2/autonomy_ws/install/ihk_pepper_dialog:"
-        + env.get("AMENT_PREFIX_PATH", ""))
+    env["AMENT_PREFIX_PATH"] = dialog_install + ":" + env.get("AMENT_PREFIX_PATH", "")
     env["PYTHONPATH"] = (
-        "/home/canvastino/Schreibtisch/Pepper/ros2/autonomy_ws/install/ihk_pepper_dialog/"
-        "lib/python3.12/site-packages:" + env.get("PYTHONPATH", ""))
+        os.path.join(dialog_install, "lib", "python3.12", "site-packages")
+        + ":" + env.get("PYTHONPATH", ""))
 
     log_dir = "/tmp/dialogue_e2e_check_logs"
     os.makedirs(log_dir, exist_ok=True)
@@ -142,8 +155,7 @@ def main():
     # rclpy.init() passieren, siehe run_dialogue_action_server.py::
     # build_faq_cache() -- dasselbe gilt hier, auch wenn dieser Prozess
     # die DB nur schreibt und den Node nicht selbst hostet).
-    sys.path.insert(0, "/home/canvastino/Schreibtisch/Pepper/ros2/autonomy_ws/"
-                        "install/ihk_pepper_dialog/lib/python3.12/site-packages")
+    sys.path.insert(0, os.path.join(dialog_install, "lib", "python3.12", "site-packages"))
     from ihk_pepper_dialog.faq_cache import FaqCache
     faq = FaqCache(env["PEPPER_FAQ_DB_PATH"])
     faq.add_entry(

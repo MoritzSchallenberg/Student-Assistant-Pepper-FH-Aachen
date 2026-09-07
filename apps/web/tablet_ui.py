@@ -22,13 +22,36 @@ tablet_bp = Blueprint(
     "tablet", __name__, url_prefix="/tablet", template_folder="templates"
 )
 
+def _find_autonomy_ws() -> str:
+    """PEPPER_AUTONOMY_WS hat Vorrang, sonst wird 'ros2/autonomy_ws' vom
+    eigenen Verzeichnis aus nach oben gesucht -- kein absoluter
+    Entwicklerpfad im Laufzeitcode (Entwicklungsauftrag 04-B, AP0). Diese
+    Datei wird von app.py importiert, ein harter Absturz beim Import
+    waere fuer eine reine Medienauslieferungs-Fallback-Konstante zu
+    riskant -- bei nicht gefundenem Workspace faellt dies bewusst auf
+    den relativen Pfad 'ros2/autonomy_ws' zurueck (gueltig, wenn die
+    Flask-App wie dokumentiert aus dem Repo-Wurzelverzeichnis gestartet
+    wird), statt den gesamten app.py-Import zum Absturz zu bringen."""
+    env_value = os.environ.get("PEPPER_AUTONOMY_WS")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        candidate = os.path.join(current, "ros2", "autonomy_ws")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    return "ros2/autonomy_ws"
+
+
 # Erlaubte Basisverzeichnisse fuer Video/Untertitel-Auslieferung --
 # feste Liste, kein beliebiger Dateizugriff (Abschnitt 3.4). Deckt sowohl
 # den installierten ROS2-share-Ordner als auch den src-Ordner ab (fuer
 # Entwicklung ohne vorherigen colcon build --symlink-install).
-_WS_ROOT = os.environ.get(
-    "PEPPER_AUTONOMY_WS", "/home/canvastino/Schreibtisch/Pepper/ros2/autonomy_ws"
-)
+_WS_ROOT = _find_autonomy_ws()
 _MEDIA_ROOTS = [
     os.path.join(_WS_ROOT, "install", "ihk_pepper_presentation", "share",
                  "ihk_pepper_presentation", "content"),

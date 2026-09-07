@@ -12,10 +12,34 @@ import sys
 import time
 import logging
 
-_FLASK_WRAPPER_PATH = os.environ.get(
-    "PEPPER_FLASK_WRAPPER_PATH",
-    "/home/canvastino/Schreibtisch/Pepper/apps/web",
-)
+
+def _find_flask_wrapper_path() -> str:
+    """Siehe ihk_pepper_bridge/pepper_client.py::_find_flask_wrapper_path()
+    -- bewusst eigenstaendige Kopie (kein Cross-Import zwischen
+    Paketen fuer eine kurze Pfadsuche, gleiches Prinzip wie
+    embedding_backend.py). PEPPER_FLASK_WRAPPER_PATH hat Vorrang, sonst
+    wird 'apps/web' vom eigenen Verzeichnis aus nach oben gesucht
+    (Entwicklungsauftrag 04-B, AP0)."""
+    env_value = os.environ.get("PEPPER_FLASK_WRAPPER_PATH")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(12):
+        candidate = os.path.join(current, "apps", "web")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    raise RuntimeError(
+        "PEPPER_FLASK_WRAPPER_PATH ist nicht gesetzt und 'apps/web' wurde "
+        "beim automatischen Suchen nicht gefunden -- bei getrennter "
+        "Installation muss PEPPER_FLASK_WRAPPER_PATH explizit gesetzt werden."
+    )
+
+
+_FLASK_WRAPPER_PATH = _find_flask_wrapper_path()
 if _FLASK_WRAPPER_PATH not in sys.path:
     sys.path.insert(0, _FLASK_WRAPPER_PATH)
 

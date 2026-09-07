@@ -19,10 +19,36 @@ import os
 import sys
 import threading
 
-_FLASK_WRAPPER_PATH = os.environ.get(
-    "PEPPER_FLASK_WRAPPER_PATH",
-    "/home/canvastino/Schreibtisch/Pepper/apps/web",
-)
+
+def _find_flask_wrapper_path() -> str:
+    """PEPPER_FLASK_WRAPPER_PATH hat Vorrang. Ohne gesetzte Variable wird
+    'apps/web' beginnend beim eigenen Verzeichnis nach oben gesucht --
+    funktioniert sowohl im src/-Checkout als auch im installierten
+    colcon-Layout (unterschiedliche Verzeichnistiefe), ohne einen
+    absoluten Entwicklerpfad hart zu codieren (Entwicklungsauftrag 04-B,
+    AP0: 'produktive absolute Entwicklerpfade... aus Laufzeitcode...
+    entfernen')."""
+    env_value = os.environ.get("PEPPER_FLASK_WRAPPER_PATH")
+    if env_value:
+        return env_value
+    current = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(12):  # grosszuegige, aber endliche Obergrenze
+        candidate = os.path.join(current, "apps", "web")
+        if os.path.isdir(candidate):
+            return candidate
+        parent = os.path.dirname(current)
+        if parent == current:
+            break
+        current = parent
+    raise RuntimeError(
+        "PEPPER_FLASK_WRAPPER_PATH ist nicht gesetzt und 'apps/web' wurde "
+        "beim automatischen Suchen nicht gefunden -- bei getrennter "
+        "Installation (kein Git-Checkout neben dem colcon-Workspace) muss "
+        "PEPPER_FLASK_WRAPPER_PATH explizit gesetzt werden."
+    )
+
+
+_FLASK_WRAPPER_PATH = _find_flask_wrapper_path()
 if _FLASK_WRAPPER_PATH not in sys.path:
     sys.path.insert(0, _FLASK_WRAPPER_PATH)
 
