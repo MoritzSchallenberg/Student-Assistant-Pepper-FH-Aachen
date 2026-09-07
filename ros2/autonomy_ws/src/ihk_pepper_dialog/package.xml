@@ -13,11 +13,11 @@
   <depend>ihk_pepper_interfaces</depend>
   <!-- Entwicklungsauftrag 3, AP10/AP11: run_dialogue_action_server.py
        nutzt cancel_words.py (Stopp-Wort-Erkennung, bereits als Vertrag
-       genutzt -- ihk_pepper_audio publiziert das vorverarbeitete Ergebnis
+       genutzt – ihk_pepper_audio publiziert das vorverarbeitete Ergebnis
        auf /audio_node/voice_command, hier aber zusaetzlich direkt
        importiert fuer is_hard_stop()) und die ROS-freie
        ihk_pepper_llm_contracts-Pipeline. Keine Rueckabhaengigkeit in die
-       andere Richtung -- kein Zirkel. -->
+       andere Richtung – kein Zirkel. -->
   <depend>ihk_pepper_audio</depend>
   <depend>ihk_pepper_llm_contracts</depend>
 
