@@ -24,6 +24,7 @@ from ihk_pepper_interfaces.msg import SystemHealth
 
 from .pepper_client import ThreadSafePepperClient
 from .gesture_catalog import GestureCatalog, GestureValidationError
+from . import safety_topics
 
 
 def _default_gesture_dir():
@@ -108,22 +109,26 @@ class PepperBridgeNode(Node):
         interval = self.get_parameter("health_publish_interval_s").value
         self.create_timer(interval, self._publish_health)
 
-        # Entwicklungsauftrag 4, AP4: reale Statustopics statt Platzhalter.
-        # Alle unter dem eigenen Node-Namespace (pepper_bridge/...) --
-        # siehe Auftrag Abschnitt "Arbeitspaket 4" fuer die exakt
-        # geforderte Namensliste.
-        self.bumper_pub = self.create_publisher(Bool, "bumper", 10)
-        self.charging_state_pub = self.create_publisher(Bool, "charging_state", 10)
-        self.battery_pub = self.create_publisher(Float32, "battery", 10)
-        self.connection_state_pub = self.create_publisher(String, "connection_state", 10)
-        # gesture_in_progress: bisher dokumentierte, nie geschlossene
-        # Luecke (siehe motion_guard.py-Docstring, Entwicklungsauftrag 2
-        # AP8: "wird von keinem Node dieser Session tatsaechlich
-        # publiziert -- sicherer Default: gilt als true/blockierend, bis
-        # nie empfangen"). Motion Guard behandelt weiterhin "nie
-        # empfangen" als blockierend -- dieses Topic macht daraus jetzt
-        # eine echte, aktuelle Aussage statt eines dauerhaften Defaults.
-        self.gesture_in_progress_pub = self.create_publisher(Bool, "gesture_in_progress", 10)
+        # Entwicklungsauftrag 4, AP4 / Entwicklungsauftrag 04-B, AP2: reale
+        # Statustopics statt Platzhalter. Alle unter dem eigenen Node-
+        # Namespace (pepper_bridge/...) -- Namen jetzt aus der
+        # gemeinsamen safety_topics.py-Konstantendatei (04-B: "zentrale,
+        # dokumentierte Topic-Liste... vermeide leicht abweichende Namen
+        # in mehreren Paketen") statt lokaler String-Literale, die von
+        # den Abonnenten (Supervisor/Motion Guard) unabhaengig
+        # nachgetippt werden mussten -- genau DAS ist bei
+        # gesture_in_progress bereits einmal auseinandergedriftet (siehe
+        # safety_topics.py-Docstring: motion_guard_node.py abonnierte
+        # bisher "/gesture_in_progress" ohne Namespace-Praefix und hat
+        # dieses Topic dadurch NIE empfangen).
+        self.bumper_pub = self.create_publisher(Bool, safety_topics.BUMPER_TOPIC_RELATIVE, 10)
+        self.charging_state_pub = self.create_publisher(
+            Bool, safety_topics.CHARGING_STATE_TOPIC_RELATIVE, 10)
+        self.battery_pub = self.create_publisher(Float32, safety_topics.BATTERY_TOPIC_RELATIVE, 10)
+        self.connection_state_pub = self.create_publisher(
+            String, safety_topics.CONNECTION_STATE_TOPIC_RELATIVE, 10)
+        self.gesture_in_progress_pub = self.create_publisher(
+            Bool, safety_topics.GESTURE_IN_PROGRESS_TOPIC_RELATIVE, 10)
 
         self.get_logger().info("pepper_bridge Node gestartet.")
 
