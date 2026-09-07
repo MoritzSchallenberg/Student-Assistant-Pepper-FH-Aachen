@@ -21,9 +21,13 @@ eigenen Session-Zustand.
 
 LLM-Provider: ueber ROS-Parameter waehlbar
 (knowledge_llm_provider/gesture_llm_provider/response_llm_provider,
-jeweils "mock"|"anythingllm"|"openai_compatible"|"offline", Default
-"offline" -- sicherster Default, kein Netzwerkzugriff noetig). Jede
-Rolle unabhaengig konfigurierbar (ProviderConfig.from_env, siehe AP2).
+jeweils "mock"|"anythingllm"|"openai_compatible"|"kiconnect"|"offline",
+Default "offline" -- sicherster Default, kein Netzwerkzugriff noetig).
+Jede Rolle unabhaengig konfigurierbar (ProviderConfig.from_env, siehe
+AP2). "kiconnect" (Ergaenzungsauftrag 04-A, Abschnitt 1) ist fuer
+response_llm_provider (LLM 3) gedacht -- knowledge_llm_provider/
+gesture_llm_provider bleiben technisch frei waehlbar, u.a. weiterhin
+"offline"/"mock".
 """
 import os
 import threading
@@ -51,6 +55,7 @@ from ihk_pepper_llm_contracts.pipeline import (
 )
 from ihk_pepper_llm_contracts.providers import (
     AnythingLLMProvider,
+    KIConnectProvider,
     MockLLMProvider,
     OfflineFallbackProvider,
     OpenAICompatibleProvider,
@@ -88,6 +93,15 @@ def _build_provider(kind: str, env_prefix: str, mock_fixed_response: str = ""):
         return AnythingLLMProvider(config)
     if kind == "openai_compatible":
         return OpenAICompatibleProvider(config)
+    if kind == "kiconnect":
+        # Ergaenzungsauftrag 04-A, Abschnitt 1.1: LLM 3 ueber FH Aachen
+        # KI:connect. Ein fehlendes RESPONSE_LLM_MODEL ist ein
+        # Konfigurationsfehler (KIConnectProvider.__init__ wirft dann
+        # ValueError) -- das faellt hier bewusst NICHT auf
+        # OfflineFallbackProvider zurueck, sondern propagiert den Fehler
+        # direkt beim Start, damit eine falsche Konfiguration sofort
+        # auffaellt statt erst beim ersten Dialogversuch.
+        return KIConnectProvider(config)
     return OfflineFallbackProvider(config)
 
 

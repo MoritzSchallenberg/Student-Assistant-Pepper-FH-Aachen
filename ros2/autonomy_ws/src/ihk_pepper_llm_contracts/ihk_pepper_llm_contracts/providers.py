@@ -71,6 +71,12 @@ class ProviderConfig:
             ),
             timeout_s=float(os.environ.get(f"{prefix}_TIMEOUT_S", DEFAULT_TIMEOUT_S)),
             max_retries=int(os.environ.get(f"{prefix}_MAX_RETRIES", DEFAULT_MAX_RETRIES)),
+            # Ergaenzungsauftrag 04-A, Abschnitt 1.2: RESPONSE_LLM_MAX_INPUT_CHARS/
+            # RESPONSE_LLM_MAX_OUTPUT_CHARS explizit konfigurierbar --
+            # vorher nur als Dataclass-Default moeglich, nicht aus der
+            # Umgebung lesbar.
+            max_input_chars=int(os.environ.get(f"{prefix}_MAX_INPUT_CHARS", DEFAULT_MAX_INPUT_CHARS)),
+            max_output_chars=int(os.environ.get(f"{prefix}_MAX_OUTPUT_CHARS", DEFAULT_MAX_OUTPUT_CHARS)),
             log_full_prompts=os.environ.get(f"{prefix}_LOG_FULL_PROMPTS", "false").lower() == "true",
         )
 
@@ -339,9 +345,232 @@ class OpenAICompatibleProvider(LLMProvider):
         return ProviderResult(success=True, text=text)
 
     def health_check(self) -> bool:
+        # Ergaenzungsauftrag 04-A, Abschnitt 1.3: "auch der Healthcheck
+        # muss den Bearer-Token mitsenden" -- die urspruengliche Fassung
+        # rief /models komplett unauthentifiziert auf, was gegen jeden
+        # Endpunkt fehlschlaegt, der (wie KI:connect) Auth auch fuer
+        # /models verlangt.
         import requests
+        headers = {}
+        if self.config.api_token:
+            headers["Authorization"] = f"Bearer {self.config.api_token}"
         try:
-            resp = requests.get(f"{self.config.url.rstrip('/')}/models", timeout=3.0)
+            resp = requests.get(
+                f"{self.config.url.rstrip('/')}/models", headers=headers, timeout=3.0
+            )
             return resp.status_code == 200
         except Exception:
             return False
+
+
+# ---------------------------------------------------------------------
+# KI:connect (FH Aachen) -- Ergaenzungsauftrag 04-A, Abschnitt 1.
+# ---------------------------------------------------------------------
+
+class KIConnectAuthError(Exception):
+    """401/403 -- Zugang oder Berechtigung falsch. Wird NICHT wiederholt
+    versucht (ein falscher Token wird durch Wiederholen nicht richtig)."""
+
+
+class KIConnectModelNotFoundError(Exception):
+    """404, oder das konfigurierte Modell fehlt in /models -- Endpunkt
+    oder Modellname falsch. Wird NICHT wiederholt versucht und wechselt
+    NIE automatisch auf ein anderes verfuegbares Modell."""
+
+
+class KIConnectRateLimitedError(Exception):
+    """429 nach Ausschoepfen der Retry-After-Wartezeit(en)."""
+
+
+class KIConnectProvider(OpenAICompatibleProvider):
+    """LLM 3 (Response Composer) ueber die FH-Aachen-KI:connect-Plattform
+    (https://chat.kiconnect.nrw/api/v1), ein OpenAI-kompatibler
+    Chat-Completions-Endpunkt. Baut auf OpenAICompatibleProvider auf,
+    kapselt aber KI:connect-spezifische Anforderungen (Auftrag 1.2):
+    Pflicht-Modellname (kein stilles 'default'), Status-Code-spezifische
+    Fehlerbehandlung (401/403/404/429/5xx unterschiedlich behandelt,
+    nicht ein generisches 'HTTP != 200'), Modellverfuegbarkeitspruefung
+    gegen /models, und ein einzelner JSON-Reparaturversuch, falls das
+    Modell keine native strukturierte Ausgabe liefert.
+
+    Sendet NIEMALS personenbezogene Rohdaten -- der Aufrufer (siehe
+    pipeline.py::run_response_composer) muss den Prompt bereits durch
+    privacy_filter.redact_for_external_llm() geschickt haben; dieser
+    Provider selbst prueft das nicht nochmal (Verantwortung liegt an der
+    Aufrufstelle, siehe deren Docstring), loggt aber unter keinen
+    Umstaenden den vollen Prompt oder den Token (siehe complete() in der
+    Basisklasse: _prompt_log_summary() ist bereits Default)."""
+
+    name = "kiconnect"
+
+    # KI:connect-Antworten, deren Inhalt nicht als JSON geparst werden
+    # kann, bekommen GENAU EINEN Reparaturversuch (Auftrag 1.4) -- kein
+    # unbegrenztes Nachfragen.
+    MAX_JSON_REPAIR_ATTEMPTS = 1
+    # Obergrenze fuer eine einzelne Retry-After-Wartezeit (Sekunden) --
+    # ein Server, der z.B. "Retry-After: 3600" schickt, soll den Dialog
+    # trotzdem nicht stundenlang blockieren (Auftrag: "laufenden Dialog
+    # nicht unbegrenzt blockieren").
+    MAX_RETRY_AFTER_S = 20.0
+
+    def __init__(self, config: ProviderConfig):
+        super().__init__(config)
+        if not self.config.model:
+            # Auftrag 1.2: "Keine Modellnamen hardcodieren und nicht
+            # 'default' als stillen KI:connect-Modellnamen verwenden."
+            # -- ein leerer Modellname ist ein Konfigurationsfehler,
+            # kein Fall fuer einen stillen Fallback.
+            raise ValueError(
+                "KIConnectProvider: RESPONSE_LLM_MODEL ist nicht gesetzt. "
+                "Modellnamen ueber GET /models ermitteln und explizit "
+                "eintragen -- kein stiller 'default'-Fallback erlaubt."
+            )
+
+    def _headers(self) -> dict:
+        if not self.config.api_token:
+            raise KIConnectAuthError(
+                "KIConnectProvider: kein RESPONSE_LLM_API_TOKEN gesetzt."
+            )
+        return {
+            "Authorization": f"Bearer {self.config.api_token}",
+            "Content-Type": "application/json",
+        }
+
+    def list_models(self) -> list:
+        """Rohe Modellliste von /models, authentifiziert. Wirft bei
+        Auth-Fehlern eine KIConnectAuthError statt generisch False
+        zurueckzugeben -- health_check() faengt das ab, andere
+        Aufrufer wollen den Grund kennen."""
+        import requests
+
+        resp = requests.get(
+            f"{self.config.url.rstrip('/')}/models",
+            headers=self._headers(), timeout=self.config.timeout_s,
+        )
+        if resp.status_code in (401, 403):
+            raise KIConnectAuthError(f"KI:connect /models: HTTP {resp.status_code}")
+        if resp.status_code != 200:
+            raise RuntimeError(f"KI:connect /models: HTTP {resp.status_code}")
+        data = resp.json()
+        # Verschiedene OpenAI-kompatible Server liefern entweder
+        # {"data": [{"id": ...}, ...]} oder direkt eine Liste.
+        if isinstance(data, dict) and "data" in data:
+            return [m.get("id") for m in data["data"] if isinstance(m, dict) and "id" in m]
+        if isinstance(data, list):
+            return [m.get("id") if isinstance(m, dict) else m for m in data]
+        return []
+
+    def model_is_available(self) -> bool:
+        """True nur, wenn das konfigurierte Modell tatsaechlich in der
+        Liste steht -- niemals 'irgendein Modell war da, also ok'."""
+        models = self.list_models()
+        available = self.config.model in models
+        # Auftrag 1.3: "verfuegbaren Modellnamen nicht vollstaendig in
+        # normale Logs schreiben, sofern dies unnoetig ist" -- bei
+        # Erfolg reicht eine Ja/Nein-Aussage, die volle Liste nur bei
+        # tatsaechlichem Bedarf (DEBUG-Level).
+        logger.info(f"{self.name}: Modell '{self.config.model}' verfuegbar: {available}")
+        logger.debug(f"{self.name}: vollstaendige /models-Liste: {models}")
+        return available
+
+    def health_check(self) -> bool:
+        try:
+            return self.model_is_available()
+        except KIConnectAuthError:
+            logger.warning(f"{self.name}: Healthcheck fehlgeschlagen -- Authentifizierung abgelehnt.")
+            return False
+        except Exception as e:
+            logger.warning(f"{self.name}: Healthcheck fehlgeschlagen: {type(e).__name__}")
+            return False
+
+    def _post_chat_completion(self, messages: list) -> str:
+        """Ein einzelner POST /chat/completions-Versuch mit
+        statuscode-spezifischer Behandlung (Auftrag 1.5). Gibt den
+        rohen Antworttext zurueck oder wirft eine der KIConnect*-
+        Exceptions bzw. eine generische Exception fuer 5xx (von
+        complete()s bestehendem Circuit Breaker aufgefangen)."""
+        import requests
+
+        last_error: Optional[Exception] = None
+        for attempt in range(self.config.max_retries + 1):
+            try:
+                resp = requests.post(
+                    f"{self.config.url.rstrip('/')}/chat/completions",
+                    headers=self._headers(),
+                    json={"model": self.config.model, "messages": messages},
+                    timeout=self.config.timeout_s,
+                )
+            except requests.exceptions.Timeout as e:
+                last_error = e
+                if attempt < self.config.max_retries:
+                    time.sleep(self.config.backoff_s * (2 ** attempt))
+                    continue
+                raise
+
+            if resp.status_code in (401, 403):
+                # Auftrag 1.5: "nicht wiederholt probieren" -- ein
+                # falscher Token wird durch Warten nicht richtig.
+                raise KIConnectAuthError(f"KI:connect: HTTP {resp.status_code} -- Zugang/Berechtigung pruefen.")
+            if resp.status_code == 404:
+                raise KIConnectModelNotFoundError(
+                    f"KI:connect: HTTP 404 -- Modell '{self.config.model}' oder Endpunkt falsch."
+                )
+            if resp.status_code == 429:
+                retry_after = min(
+                    float(resp.headers.get("Retry-After", self.config.backoff_s)),
+                    self.MAX_RETRY_AFTER_S,
+                )
+                last_error = KIConnectRateLimitedError(f"KI:connect: HTTP 429, Retry-After={retry_after}s")
+                if attempt < self.config.max_retries:
+                    time.sleep(retry_after)
+                    continue
+                raise last_error
+            if 500 <= resp.status_code < 600:
+                last_error = RuntimeError(f"KI:connect: HTTP {resp.status_code} (Serverfehler)")
+                if attempt < self.config.max_retries:
+                    time.sleep(self.config.backoff_s * (2 ** attempt))
+                    continue
+                raise last_error
+            if resp.status_code != 200:
+                raise RuntimeError(f"KI:connect: HTTP {resp.status_code}: {resp.text[:200]}")
+
+            try:
+                data = resp.json()
+                return data["choices"][0]["message"]["content"]
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                # Ungueltige/unerwartete JSON-Antwort selbst (nicht der
+                # LLM-Inhalt) -- kein Wiederholungsversuch sinnvoll,
+                # der Server liefert vermutlich strukturell etwas
+                # anderes als erwartet.
+                raise RuntimeError(f"KI:connect: unerwartete Antwortstruktur ({type(e).__name__})") from e
+        raise last_error or RuntimeError("KI:connect: unbekannter Fehler ohne Antwort")
+
+    def _call(self, prompt: str) -> ProviderResult:
+        import json as _json
+
+        messages = [{"role": "user", "content": prompt}]
+        text = self._post_chat_completion(messages)
+
+        # Auftrag 1.4: "nicht davon ausgehen, dass jedes Modell native
+        # JSON-Schemas unterstuetzt" -- lokal parsen, bei Fehler GENAU
+        # EINEN begrenzten Reparaturversuch, danach an complete()/die
+        # Pipeline den Fallback ueberlassen (raise statt hier selbst
+        # einen Fallback-Text zu erfinden -- das bleibt Aufgabe der
+        # Pipeline-Stufe, nicht des Providers).
+        for _ in range(self.MAX_JSON_REPAIR_ATTEMPTS + 1):
+            try:
+                _json.loads(text)
+                return ProviderResult(success=True, text=text)
+            except ValueError:
+                messages = messages + [
+                    {"role": "assistant", "content": text},
+                    {"role": "user", "content": (
+                        "Deine letzte Antwort war kein gueltiges JSON. "
+                        "Gib AUSSCHLIESSLICH gueltiges JSON zurueck, "
+                        "keinen zusaetzlichen Text davor oder danach."
+                    )},
+                ]
+                text = self._post_chat_completion(messages)
+        # Nach dem Reparaturversuch immer noch kein gueltiges JSON --
+        # als Fehler zurueckgeben, nicht als Erfolg mit kaputtem Text.
+        raise RuntimeError("KI:connect: Antwort blieb auch nach einem Reparaturversuch kein gueltiges JSON.")
