@@ -118,6 +118,18 @@ class RunDialogueActionServer(Node):
         self.declare_parameter("session_timeout_s", DEFAULT_SESSION_TIMEOUT_S)
         self.declare_parameter("question_timeout_s", DEFAULT_QUESTION_TIMEOUT_S)
         self.declare_parameter("post_speech_pause_s", 0.3)
+        # Ergaenzungsauftrag 04-A, "Mhm"-/Denksequenz: erst NACH
+        # thinking_loop_delay_s Wartezeit auf die LLM-Pipeline wird
+        # ueberhaupt eine sichtbare Denkschleife gestartet (bei einer
+        # schnellen Antwort soll gar keine sichtbare Zusatzbewegung
+        # noetig sein). max_repetitions/max_duration_s sind BEIDE
+        # wirksame Obergrenzen (welche zuerst erreicht wird, stoppt die
+        # Schleife) -- siehe thinking_loop_subtle.yaml fuer die
+        # Ein-Zyklus-pro-Aufruf-Bauweise und die "unterbrechbar an
+        # Zyklusgrenzen"-Einschraenkung.
+        self.declare_parameter("thinking_loop_delay_s", 2.0)
+        self.declare_parameter("thinking_loop_max_repetitions", 3)
+        self.declare_parameter("thinking_loop_max_duration_s", 6.0)
 
         self.knowledge_provider = _build_provider(
             self.get_parameter("knowledge_llm_provider").value, "KNOWLEDGE_LLM",
@@ -217,6 +229,19 @@ class RunDialogueActionServer(Node):
             fb.state_name = state_name
             fb.partial_transcript = partial_transcript
             goal_handle.publish_feedback(fb)
+            # Behebt eine bisher bestehende Luecke: dialogue_state_pub
+            # wurde seit seiner Einfuehrung (AP11) angelegt, aber nie
+            # publiziert -- nur die eigene Action-Rueckmeldung war
+            # sichtbar, kein unabhaengiger Topic-Konsument (z.B. eine
+            # spaetere Tablet-Anzeige oder der BT) konnte den
+            # Dialogzustand live mitlesen.
+            ds = DialogueState()
+            ds.header.stamp = self.get_clock().now().to_msg()
+            ds.state = state_value
+            ds.state_name = state_name
+            ds.session_id = session_id
+            ds.last_transcript = partial_transcript
+            self.dialogue_state_pub.publish(ds)
 
         track_id = _try_parse_int(session_id)
         session_start = time.time()
@@ -242,25 +267,25 @@ class RunDialogueActionServer(Node):
                     return result
 
                 if (time.time() - session_start) > self.get_parameter("session_timeout_s").value:
-                    return self._finish(goal_handle, result, "SESSION_TIMEOUT", success=True)
+                    return self._finish(goal_handle, result, "SESSION_TIMEOUT", success=True, feedback=feedback)
 
                 if track_id is not None and not self._track_alive(track_id):
-                    return self._finish(goal_handle, result, "PERSON_LOST", success=True)
+                    return self._finish(goal_handle, result, "PERSON_LOST", success=True, feedback=feedback)
 
                 if not self._safety_ok():
                     return self._finish(goal_handle, result, "SAFETY_EVENT", success=False,
-                                         error="Sicherheitsereignis waehrend des Dialogs")
+                                         error="Sicherheitsereignis waehrend des Dialogs", feedback=feedback)
 
                 feedback(DialogueState.LISTENING, "LISTENING")
                 question = self._wait_for_question(goal_handle)
                 if question is None:
-                    return self._finish(goal_handle, result, "QUESTION_TIMEOUT", success=True)
+                    return self._finish(goal_handle, result, "QUESTION_TIMEOUT", success=True, feedback=feedback)
                 if question == "__STOP__":
                     executor.cancel()
-                    return self._finish(goal_handle, result, "USER_STOP", success=True)
+                    return self._finish(goal_handle, result, "USER_STOP", success=True, feedback=feedback)
 
-                feedback(DialogueState.THINKING, "THINKING", question)
-                plan_context = self._run_pipeline(question, session_id, person_context)
+                plan_context = self._acknowledge_and_run_pipeline(
+                    goal_handle, feedback, question, session_id, person_context)
                 if plan_context is None:
                     continue  # Sicherheitsfehler -- Segment/Runde ueberspringen, Session laeuft weiter
 
@@ -282,7 +307,21 @@ class RunDialogueActionServer(Node):
             goal_handle.abort()
             return result
 
-    def _finish(self, goal_handle, result, final_state, success, error=""):
+    def _finish(self, goal_handle, result, final_state, success, error="", feedback=None):
+        """feedback() MUSS -- falls uebergeben -- vor goal_handle.succeed()/
+        .abort() aufgerufen werden: ein bereits abgeschlossenes Ziel
+        akzeptiert kein publish_feedback() mehr (Ergaenzungsauftrag
+        04-A: PERSON_LOST/ENDING sollen als Live-Feedback sichtbar sein,
+        nicht nur nachtraeglich in result.final_state)."""
+        if feedback is not None:
+            if final_state == "PERSON_LOST":
+                feedback(DialogueState.PERSON_LOST, "PERSON_LOST")
+            elif final_state in ("SESSION_TIMEOUT", "USER_STOP", "QUESTION_TIMEOUT"):
+                # Nur die "geordnet zu Ende gegangenen" Faelle -- ein
+                # SAFETY_EVENT/ERROR/CANCELLED ist kein geordnetes ENDING,
+                # das wuerde eine ruhige Verabschiedung vortaeuschen, die
+                # dort nicht stattfindet.
+                feedback(DialogueState.ENDING, "ENDING")
         result.success = success
         result.final_state = final_state
         result.error_message = error
@@ -328,6 +367,96 @@ class RunDialogueActionServer(Node):
                 return text
             time.sleep(0.05)
         return None
+
+    # ---- "Mhm"-/Denksequenz (Ergaenzungsauftrag 04-A) ----
+
+    def _run_acknowledge_gesture(self):
+        """Fire-and-forget kurzes Bestaetigungsnicken direkt nach dem
+        Empfang einer Frage -- blockiert bewusst NICHT den Beginn der
+        LLM-Pipeline (laeuft in einem eigenen Thread). system_only-Geste
+        (acknowledge_nod_small.yaml), wird NIE von LLM 2 gewaehlt."""
+        try:
+            self._gesture_and_wait("acknowledge_nod_small", 1.0)
+        except Exception as e:
+            self.get_logger().warn(f"acknowledge_nod_small fehlgeschlagen: {e}")
+
+    def _run_thinking_loop(self, stop_event: threading.Event, max_repetitions: int, max_total_duration_s: float):
+        """Spielt thinking_loop_subtle.yaml wiederholt (je EIN Zyklus pro
+        Aufruf, siehe dortiger Docstring), bis stop_event gesetzt ist
+        ODER eine der beiden Obergrenzen erreicht wird. 'Unterbrechbar'
+        heisst hier bewusst: stop_event wird NUR ZWISCHEN zwei Zyklen
+        geprueft, NICHT mitten in einer laufenden Trajektorie --
+        PlayGesture unterstuetzt aktuell keine echte Unterbrechung
+        waehrend der Ausfuehrung (bridge_node.py::_execute_gesture()
+        prueft goal_handle.is_cancel_requested nicht), das wird hier
+        bewusst nicht faelschlich behauptet."""
+        started_at = time.time()
+        repetitions = 0
+        while (
+            not stop_event.is_set()
+            and repetitions < max_repetitions
+            and (time.time() - started_at) < max_total_duration_s
+        ):
+            try:
+                self._gesture_and_wait("thinking_loop_subtle", 1.0)
+            except Exception as e:
+                self.get_logger().warn(f"thinking_loop_subtle fehlgeschlagen: {e}")
+                return
+            repetitions += 1
+
+    def _acknowledge_and_run_pipeline(self, goal_handle, feedback, question, session_id, person_context):
+        """Orchestriert ACKNOWLEDGING -> (optional) WAITING_FOR_RESPONSE
+        um die eigentliche _run_pipeline()-Ausfuehrung herum. Die
+        LLM-Pipeline selbst laeuft dabei in einem eigenen Thread, damit
+        hier parallel auf Zeitueberschreitung (Denkschleife starten) und
+        Abbruch (Denkschleife stoppen) reagiert werden kann -- ein
+        Abbruch waehrend der Pipeline stoppt HIER NUR die sichtbare
+        Zwischen-Geste, NICHT den laufenden LLM-Aufruf selbst (die
+        Pipeline-Stufen haben keinen eigenen Abbruch-Haken, siehe
+        pipeline.py) -- die eigentliche Sitzungsbeendigung erfolgt wie
+        bisher erst am Anfang der naechsten Schleifenrunde in _execute()."""
+        feedback(DialogueState.ACKNOWLEDGING, "ACKNOWLEDGING", question)
+        threading.Thread(target=self._run_acknowledge_gesture, daemon=True).start()
+
+        feedback(DialogueState.THINKING, "THINKING", question)
+        pipeline_result = {}
+        pipeline_done = threading.Event()
+
+        def _run():
+            pipeline_result["value"] = self._run_pipeline(question, session_id, person_context)
+            pipeline_done.set()
+
+        pipeline_thread = threading.Thread(target=_run, daemon=True)
+        pipeline_thread.start()
+
+        thinking_loop_stop = threading.Event()
+        thinking_loop_thread = None
+        loop_started = False
+        deadline = time.time() + self.get_parameter("thinking_loop_delay_s").value
+
+        while not pipeline_done.wait(timeout=0.05):
+            if goal_handle.is_cancel_requested:
+                thinking_loop_stop.set()
+            if not loop_started and time.time() >= deadline:
+                feedback(DialogueState.WAITING_FOR_RESPONSE, "WAITING_FOR_RESPONSE", question)
+                thinking_loop_thread = threading.Thread(
+                    target=self._run_thinking_loop,
+                    args=(
+                        thinking_loop_stop,
+                        self.get_parameter("thinking_loop_max_repetitions").value,
+                        self.get_parameter("thinking_loop_max_duration_s").value,
+                    ),
+                    daemon=True,
+                )
+                thinking_loop_thread.start()
+                loop_started = True
+
+        thinking_loop_stop.set()
+        if thinking_loop_thread is not None:
+            thinking_loop_thread.join(timeout=self.get_parameter("thinking_loop_max_duration_s").value + 2.0)
+        pipeline_thread.join(timeout=1.0)  # sollte durch pipeline_done bereits fertig sein
+
+        return pipeline_result.get("value")
 
     def _run_pipeline(self, question, session_id, person_context):
         """Gibt (ResponsePlan, memory_summary_candidate) zurueck, oder
