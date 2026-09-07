@@ -18,6 +18,9 @@
   <exec_depend>ihk_pepper_interaction</exec_depend>
   <exec_depend>ihk_pepper_presentation</exec_depend>
   <exec_depend>ihk_pepper_navigation</exec_depend>
+  <exec_depend>ihk_pepper_person_memory</exec_depend>
+  <exec_depend>ihk_pepper_gesture_memory</exec_depend>
+  <exec_depend>ihk_pepper_behavior_tree</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

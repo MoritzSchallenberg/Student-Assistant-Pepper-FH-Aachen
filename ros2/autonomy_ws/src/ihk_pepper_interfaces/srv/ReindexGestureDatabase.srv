@@ -1,0 +1,14 @@
+# Baut den Gesten-Suchindex deterministisch aus dem YAML-Gestenkatalog
+# neu auf (Ergaenzungsauftrag 04-A: "nach jeder Aenderung am
+# Gestenkatalog muss die Vektordatenbank neu indiziert werden"). Liest
+# NUR die bereits validierten Gesture-Objekte (gesture_catalog.py) --
+# fehlerhafte YAML-Dateien werden uebersprungen und gezaehlt, nicht der
+# gesamte Reindex-Vorgang abgebrochen.
+
+bool force   # true = auch neu indizieren, wenn sich der Katalog nicht veraendert hat
+---
+bool success
+string message
+int32 indexed_count
+int32 skipped_count
+string embedding_backend

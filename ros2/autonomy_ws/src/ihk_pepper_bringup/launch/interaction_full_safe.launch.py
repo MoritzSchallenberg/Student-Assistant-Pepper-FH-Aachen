@@ -46,7 +46,7 @@ Unterstuetzte Modi (Auftrag AP3):
 
 Startet je nach Modus aus (siehe Knotenliste unten fuer die genaue
 Zuordnung): bridge_node, audio_node, perception_node,
-person_memory_node, supervisor_node, bt_executor_node,
+person_memory_node, gesture_memory_node, supervisor_node, bt_executor_node,
 run_dialogue_action_server, presentation_manager_node, motion_guard_node,
 optional RealSense-/Navigationskomponenten.
 
@@ -199,6 +199,19 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_behavior_tree", executable="bt_executor_node",
             output="screen",
+            condition=IfCondition(PythonExpression(["'", mode, "' != 'pepper_gesture_test'"])),
+        ),
+        # Gesten-Vektordatenbank (Ergaenzungsauftrag 04-A). production_mode
+        # nur in mode=production true -- siehe SearchGestures.srv-Doku:
+        # damit sind ausserhalb von production auch draft-/dry_run_validated-
+        # Gesten suchbar (fuer gesturectl/Entwicklung), production erzwingt
+        # live_validated-only unabhaengig davon, was ein einzelner Aufruf anfordert.
+        Node(
+            package="ihk_pepper_gesture_memory", executable="gesture_memory_node",
+            output="screen",
+            parameters=[{"production_mode": PythonExpression([
+                "'true' if '", mode, "' == 'production' else 'false'"
+            ])}],
             condition=IfCondition(PythonExpression(["'", mode, "' != 'pepper_gesture_test'"])),
         ),
 

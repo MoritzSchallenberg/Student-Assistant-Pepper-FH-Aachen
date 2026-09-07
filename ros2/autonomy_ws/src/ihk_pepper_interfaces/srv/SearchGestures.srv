@@ -1,0 +1,32 @@
+# Semantische Gestensuche gegen die Gesten-Vektordatenbank
+# (Ergaenzungsauftrag 04-A). Harte Filterung VOR jeder Aehnlichkeits-
+# bewertung -- ein Ergebnis, das einen Hartfilter nicht besteht, taucht
+# nie in der Antwort auf, unabhaengig von seiner semantischen Naehe:
+# - tested_status: production_mode=true liefert NUR live_validated,
+#   sonst minimum_tested_status (leer = draft erlaubt).
+# - interaction_state: nur wenn leer ODER in candidate.allowed_interaction_states.
+# - nav2_moving/mapping_active: dieselbe Sperrlogik wie
+#   gesture_catalog.py::GestureCatalog.play() (requires_stationary bzw.
+#   Kopfgelenke).
+# - max_duration_s: 0.0 = keine Obergrenze.
+# - exclude_recent: Cooldown/Wiederholungssperre -- vom Aufrufer
+#   verwaltete Liste kuerzlich gespielter Namen (kein verstecktes,
+#   schwer testbares Timer-State im Service selbst).
+# - include_system_only: default false. LLM-2-Aufrufer MUESSEN false
+#   lassen (system_only-Gesten sind strukturell nie LLM-waehlbar,
+#   selectable_by_llm wird zusaetzlich unabhaengig davon gesetzt).
+
+string query
+string interaction_state
+bool nav2_moving
+bool mapping_active
+bool production_mode
+string minimum_tested_status   # "" = draft erlaubt (nur wirksam wenn production_mode=false)
+float32 max_duration_s         # 0.0 = keine Obergrenze
+string[] exclude_recent
+int32 top_k                    # 0 = Server-Default (5)
+bool include_system_only
+---
+bool success
+string message
+GestureCandidate[] candidates

@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ihk_pepper_gesture_memory</name>
+  <version>0.1.0</version>
+  <description>
+    Gesten-Vektordatenbank (Ergaenzungsauftrag 04-A): SQLite-Suchindex
+    ueber den bestehenden YAML-Gestenkatalog (ihk_pepper_bridge), mit
+    optionalem lokalem Sentence-Transformer-Embedding und Textvergleichs-
+    Fallback. Deterministischer Neuaufbau aus dem Katalog, harte
+    Sicherheits-/Zustands-/Dauer-/Cooldown-Filterung VOR jeder
+    semantischen Bewertung. Liefert ausschliesslich Namen + Metadaten --
+    niemals Gelenkwinkel/Trajektorien.
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>ihk_pepper_interfaces</depend>
+  <depend>ihk_pepper_bridge</depend>
+  <depend>python3-yaml</depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
