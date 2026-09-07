@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 300" font-family="sans-serif">
+  <style>
+    .dyn { fill: #e9f0f6; stroke: #2b6f8f; stroke-width: 2; rx: 8; }
+    .stat { fill: #fdf1e6; stroke: #a3401a; stroke-width: 2; rx: 8; }
+    .lbl { font-size: 14px; fill: #1a1a1a; }
+    .small { font-size: 11px; fill: #444; }
+    .arrow { stroke: #555; stroke-width: 2; fill: none; marker-end: url(#arr3); }
+  </style>
+  <defs>
+    <marker id="arr3" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
+    </marker>
+  </defs>
+  <text x="450" y="26" text-anchor="middle" font-size="17" font-weight="bold">TF-Kette: map -&gt; ... -&gt; camera_link</text>
+
+  <rect class="dyn" x="20" y="80" width="130" height="60"/>
+  <text class="lbl" x="85" y="115" text-anchor="middle">map</text>
+
+  <rect class="dyn" x="200" y="80" width="130" height="60"/>
+  <text class="lbl" x="265" y="108" text-anchor="middle">odom</text>
+  <text class="small" x="265" y="126" text-anchor="middle">RTAB-Map Lokal.</text>
+
+  <rect class="dyn" x="380" y="80" width="130" height="60"/>
+  <text class="lbl" x="445" y="108" text-anchor="middle">base_link</text>
+  <text class="small" x="445" y="126" text-anchor="middle">RTAB-Map Odom.</text>
+
+  <rect class="stat" x="560" y="80" width="150" height="60"/>
+  <text class="lbl" x="635" y="102" text-anchor="middle">realsense_</text>
+  <text class="lbl" x="635" y="118" text-anchor="middle">mount_link</text>
+  <text class="small" x="635" y="134" text-anchor="middle">statisch</text>
+
+  <rect class="stat" x="750" y="80" width="130" height="60"/>
+  <text class="lbl" x="815" y="108" text-anchor="middle">camera_link</text>
+  <text class="small" x="815" y="126" text-anchor="middle">statisch</text>
+
+  <path class="arrow" d="M150,110 L200,110"/>
+  <path class="arrow" d="M330,110 L380,110"/>
+  <path class="arrow" d="M510,110 L560,110"/>
+  <path class="arrow" d="M710,110 L750,110"/>
+
+  <rect x="180" y="180" width="360" height="50" fill="#eaf3ea" stroke="#1f6f4a" stroke-width="1.5" rx="6"/>
+  <text class="small" x="360" y="200" text-anchor="middle">dynamisch: RTAB-Map RGB-D Visual Odometry (map-&gt;odom, odom-&gt;base_link)</text>
+  <text class="small" x="360" y="216" text-anchor="middle">ausschliesslich RealSense-Daten -- KEINE Pepper-Odometrie/-IMU</text>
+
+  <rect x="560" y="180" width="320" height="70" fill="#fdf1e6" stroke="#a3401a" stroke-width="1.5" rx="6"/>
+  <text class="small" x="720" y="200" text-anchor="middle">statisch: feste Kopfpose angenommen</text>
+  <text class="small" x="720" y="216" text-anchor="middle">sicher NUR weil camera_pose_gate_node</text>
+  <text class="small" x="720" y="232" text-anchor="middle">die Freigabe entzieht, sobald der Kopf</text>
+  <text class="small" x="720" y="246" text-anchor="middle">von dieser Pose abweicht</text>
+
+  <text x="450" y="280" text-anchor="middle" class="small">
+    Fehlende/veraltete TF fuehrt an jeder Stelle IMMER zu einem sicheren ungueltigen Zustand, nie zu einer geschaetzten Position.
+  </text>
+</svg>

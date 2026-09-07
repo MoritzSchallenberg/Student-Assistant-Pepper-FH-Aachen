@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" font-family="sans-serif">
+  <style>
+    .box { fill: #eef2f8; stroke: #3a5a8c; stroke-width: 2; rx: 8; }
+    .mock { fill: #efe6f5; stroke: #6b2f7a; stroke-width: 2; rx: 8; }
+    .lbl { font-size: 13px; fill: #1a1a1a; }
+    .small { font-size: 10.5px; fill: #444; }
+    .arrow { stroke: #555; stroke-width: 2; fill: none; marker-end: url(#arr6); }
+  </style>
+  <defs>
+    <marker id="arr6" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
+    </marker>
+  </defs>
+  <text x="450" y="24" text-anchor="middle" font-size="17" font-weight="bold">manual_dialogue_e2e_check.py -- Offline-Testablauf</text>
+
+  <rect class="box" x="20" y="60" width="220" height="70"/>
+  <text class="lbl" x="130" y="85" text-anchor="middle">DialogueTestDriver</text>
+  <text class="small" x="130" y="102" text-anchor="middle">synthetische PersonTrackArray</text>
+  <text class="small" x="130" y="117" text-anchor="middle">+ SafetyState (0.1s Timer)</text>
+
+  <rect class="box" x="280" y="60" width="200" height="70"/>
+  <text class="lbl" x="380" y="85" text-anchor="middle">bridge_node</text>
+  <text class="small" x="380" y="102" text-anchor="middle">dry_run:=true</text>
+  <text class="small" x="380" y="117" text-anchor="middle">kein SSH zu Pepper</text>
+
+  <rect class="box" x="520" y="60" width="200" height="70"/>
+  <text class="lbl" x="620" y="85" text-anchor="middle">person_memory_node</text>
+  <text class="small" x="620" y="102" text-anchor="middle">echte SQLite-Stores</text>
+
+  <rect class="mock" x="270" y="170" width="360" height="70"/>
+  <text class="lbl" x="450" y="195" text-anchor="middle">run_dialogue_action_server</text>
+  <text class="small" x="450" y="212" text-anchor="middle">MockLLMProvider (alle 3 Stufen)</text>
+  <text class="small" x="450" y="227" text-anchor="middle">ueber --params-file YAML konfiguriert</text>
+
+  <path class="arrow" d="M130,130 L130,205 L270,205"/>
+  <path class="arrow" d="M380,130 L380,170"/>
+  <path class="arrow" d="M620,130 L620,170 L630,170"/>
+
+  <rect x="120" y="280" width="300" height="90" fill="#eaf3ea" stroke="#1f6f4a" stroke-width="1.5" rx="6"/>
+  <text class="lbl" x="270" y="302" text-anchor="middle" font-size="13">known_person</text>
+  <text class="small" x="270" y="320" text-anchor="middle">Consent=granted</text>
+  <text class="small" x="270" y="336" text-anchor="middle">-&gt; WAITING_FOR_FOLLOWUP</text>
+  <text class="small" x="270" y="352" text-anchor="middle">-&gt; echter memory_entries-Eintrag</text>
+
+  <rect x="480" y="280" width="300" height="90" fill="#fbeaea" stroke="#8a1f2a" stroke-width="1.5" rx="6"/>
+  <text class="lbl" x="630" y="302" text-anchor="middle" font-size="13">unknown_person</text>
+  <text class="small" x="630" y="320" text-anchor="middle">kein Consent</text>
+  <text class="small" x="630" y="336" text-anchor="middle">-&gt; WAITING_FOR_FOLLOWUP</text>
+  <text class="small" x="630" y="352" text-anchor="middle">-&gt; KEIN Eintrag in irgendeiner Tabelle</text>
+
+  <path class="arrow" d="M400,240 L270,280"/>
+  <path class="arrow" d="M500,240 L630,280"/>
+</svg>

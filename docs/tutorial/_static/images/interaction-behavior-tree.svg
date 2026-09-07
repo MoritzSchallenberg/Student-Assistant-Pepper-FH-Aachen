@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 480" font-family="sans-serif">
+  <style>
+    .root { fill: #eef2f8; stroke: #3a5a8c; stroke-width: 2; rx: 8; }
+    .n1 { fill: #fbeaea; stroke: #8a1f2a; stroke-width: 2; rx: 6; }
+    .n2 { fill: #fdf1e6; stroke: #a3401a; stroke-width: 2; rx: 6; }
+    .n3 { fill: #eaf3ea; stroke: #1f6f4a; stroke-width: 2; rx: 6; }
+    .n4 { fill: #e9f0f6; stroke: #2b6f8f; stroke-width: 2; rx: 6; }
+    .lbl { font-size: 13px; fill: #1a1a1a; }
+    .num { font-size: 12px; fill: #666; }
+    .line { stroke: #888; stroke-width: 1.5; fill: none; }
+  </style>
+  <text x="450" y="26" text-anchor="middle" font-size="18" font-weight="bold">Interaktions-Verhaltensbaum (pepper_main.xml)</text>
+
+  <rect class="root" x="330" y="50" width="240" height="46"/>
+  <text class="lbl" x="450" y="78" text-anchor="middle">ReactiveFallback "PepperTopLevel"</text>
+
+  <!-- 7 children in priority order -->
+  <line class="line" x1="450" y1="96" x2="450" y2="120"/>
+  <line class="line" x1="450" y1="120" x2="90" y2="120"/>
+  <line class="line" x1="450" y1="120" x2="810" y2="120"/>
+  <line class="line" x1="90" y1="120" x2="90" y2="150"/>
+  <line class="line" x1="230" y1="120" x2="230" y2="150"/>
+  <line class="line" x1="370" y1="120" x2="370" y2="150"/>
+  <line class="line" x1="450" y1="120" x2="450" y2="150"/>
+  <line class="line" x1="530" y1="120" x2="530" y2="150"/>
+  <line class="line" x1="670" y1="120" x2="670" y2="150"/>
+  <line class="line" x1="810" y1="120" x2="810" y2="150"/>
+
+  <rect class="n1" x="30" y="150" width="120" height="50"/>
+  <text class="num" x="90" y="166" text-anchor="middle">1</text>
+  <text class="lbl" x="90" y="182" text-anchor="middle">Safety</text>
+
+  <rect class="n2" x="170" y="150" width="120" height="50"/>
+  <text class="num" x="230" y="166" text-anchor="middle">2</text>
+  <text class="lbl" x="230" y="182" text-anchor="middle">Battery</text>
+
+  <rect class="n3" x="310" y="150" width="120" height="50"/>
+  <text class="num" x="370" y="166" text-anchor="middle">3</text>
+  <text class="lbl" x="370" y="182" text-anchor="middle">GreetAndApproach</text>
+
+  <rect class="n4" x="390" y="150" width="120" height="50" transform="translate(80,0)"/>
+  <text class="num" x="530" y="166" text-anchor="middle">4</text>
+  <text class="lbl" x="530" y="182" text-anchor="middle">Dialogue</text>
+
+  <rect class="n4" x="610" y="150" width="120" height="50"/>
+  <text class="num" x="670" y="166" text-anchor="middle">5</text>
+  <text class="lbl" x="670" y="182" text-anchor="middle">Interaction</text>
+
+  <rect class="n4" x="750" y="150" width="120" height="50"/>
+  <text class="num" x="810" y="166" text-anchor="middle">6</text>
+  <text class="lbl" x="810" y="182" text-anchor="middle">Presentation</text>
+
+  <rect class="n4" x="750" y="230" width="120" height="50"/>
+  <text class="num" x="810" y="246" text-anchor="middle">7</text>
+  <text class="lbl" x="810" y="262" text-anchor="middle">IdleAttract</text>
+  <line class="line" x1="810" y1="200" x2="810" y2="230"/>
+
+  <!-- GreetAndApproach detail -->
+  <rect x="230" y="290" width="440" height="160" fill="#fafafa" stroke="#ccc" stroke-width="1" rx="6"/>
+  <text class="lbl" x="450" y="312" text-anchor="middle" font-weight="bold">GreetAndApproachSubtree (Sequence)</text>
+  <text class="small" x="450" y="332" text-anchor="middle" font-size="11">IsSystemReady -&gt; SelectStablePerson -&gt;</text>
+  <text class="small" x="450" y="348" text-anchor="middle" font-size="11">Fallback( Sequence(HasGreetingCooldownExpired -&gt; PlayCatalogGesture(wave_right)</text>
+  <text class="small" x="450" y="364" text-anchor="middle" font-size="11">-&gt; WaitForGestureFromTrack -&gt; IsApproachAllowed -&gt; ApproachSelectedPerson</text>
+  <text class="small" x="450" y="380" text-anchor="middle" font-size="11">-&gt; SetInteractionState(CONVERSATION_READY)),</text>
+  <text class="small" x="450" y="396" text-anchor="middle" font-size="11">ClearSelectedPerson )</text>
+  <text class="small" x="450" y="420" text-anchor="middle" font-size="11" font-style="italic">Jeder Fehlschlag raeumt auf (immer SUCCESS) -- naechster Tick startet frisch.</text>
+
+  <text x="450" y="470" text-anchor="middle" class="small" font-size="12">
+    ReactiveFallback prueft jeden Tick neu -- ein hoeher priorisierter Subtree praeempiert eine laufende, niedriger priorisierte Aktion (onHalted() bricht sie wirklich ab).
+  </text>
+</svg>

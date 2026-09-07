@@ -1,0 +1,107 @@
+/* Pepper Developer Tutorial -- theme layer, badges, light/dark palette.
+   Structural approach (badge classes, light/dark tokens, sidebar/dropdown
+   contrast fixes) follows the same pattern as the ALeRT Advanced Robotics
+   Tutorial template project; colors and content are new for Pepper.
+   All badge colors below are WCAG-AA checked (>=4.5:1) against white
+   text -- see the contrast check kept in the Arbeitspaket-15 report. */
+
+:root {
+  --pdt-accent: #3a5a8c;
+  --pdt-bg: #ffffff;
+  --pdt-text: #1a1a1a;
+}
+
+/* ---- Badges: difficulty ---- */
+.pdt-level { display: inline-block; padding: 0.15em 0.6em; border-radius: 0.3em;
+  font-size: 0.78em; font-weight: 600; color: #fff; letter-spacing: 0.02em; }
+.pdt-level--foundation { background: #1f6f4a; }
+.pdt-level--intermediate { background: #2b6f8f; }
+.pdt-level--advanced { background: #8a5a1f; }
+.pdt-level--research { background: #6b2f7a; }
+
+/* ---- Badges: verification ---- */
+.pdt-badge { display: inline-block; padding: 0.15em 0.6em; border-radius: 0.3em;
+  font-size: 0.78em; font-weight: 600; color: #fff; letter-spacing: 0.02em; }
+.pdt-badge--pepper { background: #3a5a8c; }
+.pdt-badge--documented { background: #3d6b4f; }
+.pdt-badge--offline-tested { background: #4a5a8c; }
+.pdt-badge--simulation-tested { background: #2f7a8a; }
+.pdt-badge--hardware-verified { background: #1f7a3a; }
+.pdt-badge--hw-verification-required { background: #a35a1a; }
+.pdt-badge--experimental { background: #8a3d7a; }
+.pdt-badge--unverified { background: #6b6b3d; }
+.pdt-badge--historical { background: #4a4f57; }
+
+/* ---- Badges: safety level (hardware exercises only) ---- */
+.pdt-safety { display: inline-block; padding: 0.15em 0.6em; border-radius: 0.3em;
+  font-size: 0.78em; font-weight: 700; color: #fff; letter-spacing: 0.02em;
+  border: 1px solid rgba(255,255,255,0.4); }
+.pdt-safety--offline-exercise { background: #3d5a3d; }
+.pdt-safety--readonly-pepper { background: #3d6b8a; }
+.pdt-safety--supervised-gesture { background: #8a6b1f; }
+.pdt-safety--supervised-motion { background: #a3401a; }
+.pdt-safety--nav-blocked { background: #8a1f2a; }
+
+/* ---- CTA link on the landing page ---- */
+a.pdt-cta { display: inline-block; margin: 1em 0; padding: 0.6em 1.3em;
+  background: var(--pdt-accent); color: #fff !important; border-radius: 0.4em;
+  text-decoration: none; font-weight: 600; }
+a.pdt-cta:hover { opacity: 0.9; }
+
+/* ---- Dark mode: explicit toggle (data-theme) and OS preference,
+   matching the light/dark contract used across this project's other
+   sites -- badge text stays white in both modes (all colors already
+   checked against white above), only the page chrome inverts. ---- */
+[data-theme="dark"] { --pdt-bg: #14171c; --pdt-text: #e8e8e8; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) { --pdt-bg: #14171c; --pdt-text: #e8e8e8; }
+}
+
+body { background: var(--pdt-bg); color: var(--pdt-text); }
+
+/* Hard backstop: the page body itself must never scroll horizontally,
+   even if a wide inner element (long code block, wide table) briefly
+   forces its flex/grid ancestor to a larger intrinsic min-content width
+   than the viewport -- individual wide elements still scroll
+   internally via their own overflow-x:auto above. */
+html, body { max-width: 100%; overflow-x: hidden; }
+@media (max-width: 768px) {
+  .wy-nav-content-wrap, .wy-nav-content { max-width: 100vw !important; overflow-x: hidden !important; }
+}
+
+/* On narrow viewports, a code block with several long, unbroken shell
+   commands can still force the layout wider than the viewport even
+   with overflow-x:auto on itself (browsers still size a flex/grid
+   ancestor to the box's intrinsic min-content width). Wrapping instead
+   of scrolling on mobile avoids that containment problem entirely. */
+@media (max-width: 480px) {
+  div.highlight pre { white-space: pre-wrap; word-break: break-word; }
+}
+
+/* Sidebar/dropdown contrast: the stock RTD theme sometimes paints a
+   non-current expanded-branch link with a hardcoded light-gray
+   background that a dark override does not reach -- fixed explicitly
+   rather than left to theme defaults. */
+[data-theme="dark"] .wy-menu-vertical a { background: transparent; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .wy-menu-vertical a { background: transparent; }
+}
+
+/* Code blocks and tables must never force horizontal scroll on the body
+   -- the table itself must stay inside a scrollable wrapper, not just
+   carry overflow-x itself (a <table> with auto width ignores
+   overflow-x on itself and pushes its ancestors wide instead). */
+div.highlight, pre { overflow-x: auto; max-width: 100%; }
+.wy-table-responsive { overflow-x: auto; max-width: 100%; }
+.wy-table-responsive table.docutils { width: auto; max-width: none; }
+/* A table cell's longest unbroken word (long German compound terms are
+   common on this site) otherwise sets the whole table's min-content
+   width, which can force ancestors wider than the viewport even with
+   overflow-x:auto on the wrapper. Breaking long words keeps the
+   table's own natural width close to the viewport on mobile. */
+table.docutils td, table.docutils th { overflow-wrap: break-word; word-break: break-word; }
+
+/* Theme toggle button, injected by js/color-mode.js */
+#pdt-theme-toggle { position: fixed; bottom: 1em; right: 1em; z-index: 1000;
+  padding: 0.5em 0.8em; border-radius: 0.4em; border: none; cursor: pointer;
+  background: var(--pdt-accent); color: #fff; font-size: 0.85em; }

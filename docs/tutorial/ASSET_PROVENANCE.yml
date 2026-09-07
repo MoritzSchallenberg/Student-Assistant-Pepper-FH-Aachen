@@ -1,0 +1,227 @@
+# Bild-Herkunftsnachweis fuer das Pepper Developer Tutorial.
+#
+# Regeln (Arbeitspaket 15, Abschnitt 15.7):
+# - Standardstatus ist candidate.
+# - Nur approved darf im veroeffentlichten Tutorial erscheinen.
+# - Unbekannte Herkunft fuehrt zu recreate oder rejected.
+# - Bilder mit erkennbaren Personen brauchen eine geklaerte
+#   Veroeffentlichungserlaubnis.
+# - Interne Benutzernamen, Pfade, IP-Adressen, Geraeteinformationen
+#   muessen entfernt werden.
+# - Spot- und Kinova-Bilder muessen eindeutig als Fremdplattform
+#   gekennzeichnet sein.
+# - Ein Kinova-Arm darf nicht zur Erklaerung von Peppers Gelenkgrenzen
+#   verwendet werden.
+#
+# Zulaessige decision-Werte: candidate | approved | recreate | rejected
+
+assets:
+
+  # --- Neu erstellte SVG-Diagramme, dieses Tutorial (Arbeitspaket 15) ---
+  # Alle sieben sind Eigenerstellungen fuer dieses Tutorial: keine
+  # externe Quelle, keine Personen, keine internen Informationen. Layout
+  # ist vom ALeRT-Tutorial (Learning-Robotics-Crash-Course) inspiriert
+  # (Kasten-Pfeil-Stil, helle Palette), aber nicht kopiert -- eigener
+  # Inhalt, eigene Struktur, eigene Farben, siehe docs/tutorial/conf.py.
+
+  - id: pepper-system-architecture
+    source_archive: null
+    source_path: docs/tutorial/_static/images/pepper-system-architecture.svg
+    title: "Pepper -- Systemarchitektur (Datenfluss)"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, kein Drittmaterial"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "architecture/system-overview.md"
+    decision: approved
+    attribution: null
+
+  - id: interaction-behavior-tree
+    source_archive: null
+    source_path: docs/tutorial/_static/images/interaction-behavior-tree.svg
+    title: "Interaktions-Verhaltensbaum"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, Inhalt aus trees/pepper_main.xml"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "decision-making/interaction-behavior-tree.md"
+    decision: approved
+    attribution: null
+
+  - id: three-stage-llm-pipeline
+    source_archive: null
+    source_path: docs/tutorial/_static/images/three-stage-llm-pipeline.svg
+    title: "Drei-Stufen-LLM-Pipeline"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, kein Drittmaterial"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "dialogue-memory/three-stage-llm-pipeline.md"
+    decision: approved
+    attribution: null
+
+  - id: pepper-realsense-tf-tree
+    source_archive: null
+    source_path: docs/tutorial/_static/images/pepper-realsense-tf-tree.svg
+    title: "TF-Kette map bis camera_link"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, Inhalt aus REALSENSE_NAVIGATION_ARCHITECTURE.md"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "realsense-frames/tf-chain-and-head-pose.md, realsense-frames/coverage-gap.md"
+    decision: approved
+    attribution: null
+
+  - id: realsense-nav2-dataflow
+    source_archive: null
+    source_path: docs/tutorial/_static/images/realsense-nav2-dataflow.svg
+    title: "RealSense-only Navigationspfad"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung -- zeigt bewusst KEINE entfernten Komponenten (AMCL/EKF/Pepper-eigene Odometrie)"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "mapping-navigation/realsense-only-navigation.md"
+    decision: approved
+    attribution: null
+
+  - id: gesture-validation-flow
+    source_archive: null
+    source_path: docs/tutorial/_static/images/gesture-validation-flow.svg
+    title: "Gesten-Validierungs- und Transport-Fluss"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, Inhalt aus GESTURE_TRANSPORT.md"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "gestures-kinematics/gesture-format.md"
+    decision: approved
+    attribution: null
+
+  - id: dialogue-integration-test-flow
+    source_archive: null
+    source_path: docs/tutorial/_static/images/dialogue-integration-test-flow.svg
+    title: "Offline-Dialog-Integrationstest-Ablauf"
+    creator: "Arbeitspaket 15 (dieses Tutorial)"
+    rights_holder: "IHK Pepper Project"
+    license: "wie das uebrige Repository (siehe LICENSES.md)"
+    permission_reference: "Eigenerstellung, Inhalt aus manual_dialogue_e2e_check.py"
+    contains_people: false
+    contains_internal_information: false
+    platform: pepper
+    intended_use: "integration-testing/offline-dialogue-test.md"
+    decision: approved
+    attribution: null
+
+  # --- Bereits vorher geprueft, aus dem ALeRT-/Spot-Quellarchiv
+  #     (Robotik Tutorial.zip / Learning-Robotics-Crash-Course-Quelle).
+  #     Fuer DIESES Pepper-Tutorial durchgesehen und geprueft (2026-09-07),
+  #     bleiben absichtlich candidate/recreate/rejected -- keines davon
+  #     wird in diesem Tutorial eingebunden. ---
+
+  - id: arm_joints
+    source_archive: "Robotik Tutorial.2.zip (Trash)"
+    source_path: "00-02 Quelle 2 Spot Tutorial/Website Code/Tutorials/06 P4 YOLO and Moveit/.../arm_joints.png"
+    title: "MoveIt-Gelenksteuerung, RViz-Screenshot"
+    creator: unknown
+    rights_holder: unknown
+    license: unknown
+    permission_reference: null
+    contains_people: false
+    contains_internal_information: true  # Fenstertitel zeigt einen lokalen Dateipfad mit einem echten Benutzernamen
+    platform: spot   # zeigt einen Kinova-Arm, montiert auf Boston Dynamics Spot -- NICHT Pepper
+    intended_use: "geprueft fuer gestures-kinematics/gesture-format.md, NICHT verwendet"
+    decision: recreate
+    attribution: null
+    note: >
+      Zeigt Joint-Namen (shoulder_pan, wrist_1_joint, ...) eines
+      Kinova-Arms auf Spot -- strukturell inkompatibel mit Peppers
+      eigenen Gelenknamen (LShoulderPitch, RElbowRoll, ...). Ein
+      Kinova-Arm darf nicht zur Erklaerung von Peppers Gelenkgrenzen
+      verwendet werden (Arbeitspaket 15, Abschnitt 15.7). Eine
+      Pepper-eigene Aufnahme muesste neu erstellt werden, sobald ein
+      Pepper mit laufendem RViz verfuegbar ist.
+
+  - id: nav_architecture
+    source_archive: "Robotik Tutorial.2.zip (Trash)"
+    source_path: "00-02 Quelle 2 Spot Tutorial/Website Code/Tutorials/05 P3 Services and Actions/.../nav_architecture.png"
+    title: "Nav2-Architekturdiagramm (generisch)"
+    creator: unknown  # moeglicherweise aus der offiziellen Nav2-Projektdokumentation uebernommen, nicht als ALeRT-Eigenwerk bestaetigbar
+    rights_holder: unknown
+    license: unknown
+    permission_reference: null
+    contains_people: false
+    contains_internal_information: false
+    platform: other
+    intended_use: "geprueft fuer mapping-navigation/realsense-only-navigation.md, NICHT verwendet"
+    decision: rejected
+    attribution: null
+    note: >
+      Herkunft nicht sicher auf ALeRT zurueckfuehrbar -- sieht nach
+      einer Kopie aus der offiziellen Nav2-Projektdokumentation aus,
+      ohne bestaetigte Lizenz/Erlaubnis. Unabhaengig davon ohnehin
+      generisch statt Pepper-/RealSense-spezifisch. Ersetzt durch die
+      neu erstellte, Pepper-spezifische
+      realsense-nav2-dataflow.svg (siehe oben).
+
+  - id: rviz
+    source_archive: "Robotik Tutorial.2.zip (Trash)"
+    source_path: "00-02 Quelle 2 Spot Tutorial/Website Code/Spot Documentation/08 Spot Startup/.../rviz.png"
+    title: "RViz + rqt Live-Ansicht (Spot-Betrieb)"
+    creator: unknown
+    rights_holder: "ALeRT (RoboCup Rescue Team, FH Aachen) -- vermutlich"
+    license: unknown
+    permission_reference: null
+    contains_people: false
+    contains_internal_information: true  # echte Kamera-Topic-Namen (/kinova_color, /rs_front/...), echte Werkstatt-/Raumaufnahme, echter Akkustand/Zeitstempel eines Live-Einsatzes
+    platform: spot
+    intended_use: "geprueft fuer verschiedene RViz-Referenzen, NICHT verwendet"
+    decision: rejected
+    attribution: null
+    note: >
+      Zeigt einen echten Live-Betriebszustand von ALeRTs Spot
+      (Kamera-Feeds mit Kinova-/RealSense-Topic-Namen, eine reale
+      Werkstatt-Innenaufnahme, echten Akkustand und Zeitstempel) --
+      operative Innenaufnahme, falsche Plattform, keine sinnvolle
+      Wiederverwendung fuer Pepper. Eine Pepper-eigene RViz-Aufnahme
+      muesste komplett neu erstellt werden.
+
+  - id: estop_button
+    source_archive: "Robotik Tutorial.2.zip (Trash)"
+    source_path: "00-02 Quelle 2 Spot Tutorial/Website Code/Spot Documentation/08 Spot Startup/.../estop_button.png"
+    title: "Software-Estop-Schalter (Spot-Steuer-UI)"
+    creator: unknown
+    rights_holder: "ALeRT (RoboCup Rescue Team, FH Aachen) -- vermutlich"
+    license: unknown
+    permission_reference: null
+    contains_people: false
+    contains_internal_information: false
+    platform: spot
+    intended_use: "geprueft fuer pepper-platform/index.md (Sicherheitsmodell), NICHT verwendet"
+    decision: recreate
+    attribution: null
+    note: >
+      Zeigt einen Software-Estop-Umschalter aus Spots eigener
+      Steuer-Oberflaeche -- kein Aequivalent fuer Peppers eigenes
+      Sicherheitsmodell dokumentiert (siehe
+      pepper-platform/capabilities-and-limits.md und
+      architecture/system-overview.md fuer Motion Guard/SafetyGate
+      stattdessen). Falls ein visuelles Pendant fuer Pepper gewuenscht
+      ist, muss es aus Peppers eigener Steuer-/Sicherheitsoberflaeche
+      neu erstellt werden.

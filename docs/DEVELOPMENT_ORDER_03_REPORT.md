@@ -937,3 +937,217 @@ Beides ist unabhängig von der LLM-/Gedächtnis-Laufzeit -- ein möglicher
 dritter, ebenfalls unabhängiger Strang wäre die Anbindung eines echten
 AnythingLLM-Endpunkts (Latenzmessung, Live-Test der drei Provider-Stufen
 gegen echte Modellantworten statt Mocks).
+
+## Arbeitspaket 15: Pepper Developer Tutorial
+
+Ergänzung dieses Berichts um das nachträglich beauftragte
+Sphinx/MyST-Entwicklertutorial unter `docs/tutorial/`, Branch
+`order-15-pepper-developer-tutorial` (von diesem Auftrags-Abschluss-
+Commit erstellt). Keine geschönten Angaben -- dieselbe Regel wie im
+gesamten übrigen Bericht.
+
+### Angelegte Tutorialseiten
+
+13 Themenverzeichnisse, jedes mit `index.md` nach dem in Abschnitt
+15.3 vorgegebenen neunteiligen Muster, plus alle 13 in Abschnitt 15.5
+namentlich geforderten Tiefenseiten:
+
+```text
+architecture/{index,system-overview}.md
+decision-making/{index,interaction-behavior-tree}.md
+dialogue-memory/{index,three-stage-llm-pipeline,person-memory}.md
+gestures-kinematics/{index,gesture-format,gesture-catalog,safe-gesture-development}.md
+perception-interaction/{index,person-engagement}.md
+integration-testing/{index,offline-dialogue-test,gesture-validation}.md
+deployment/{index,development-nuc}.md
+reference/{index,interfaces,status-legend}.md
+getting-started/{index,repository-and-environment}.md
+ros2/{index,package-layout}.md
+pepper-platform/{index,capabilities-and-limits,network-and-access}.md
+realsense-frames/{index,tf-chain-and-head-pose,coverage-gap}.md
+mapping-navigation/{index,realsense-only-navigation}.md
+```
+
+34 Markdown-Seiten insgesamt. Jede technische Behauptung ist gegen
+echten Code oder echte Projektdokumentation in diesem Repository
+zurückverfolgbar (`docs/*.md`, `ros2/autonomy_ws/src/*`) -- keine
+erfundenen Kommandos, Themen oder Fähigkeiten.
+
+### Übernommene Strukturprinzipien (vom ALeRT-Tutorial)
+
+Verifiziert per SHA-256 gegen die im Auftrag genannte Prüfsumme
+(`b7955002...4361044`, `Robotik Tutorial.2.zip`, enthält das Projekt
+Learning-Robotics-Crash-Course): themenorientierte Navigation (13
+Bereiche, ein Sphinx-`toctree` je Bereich), MyST-Karten
+(`{grid-item-card}`) für Unterthemen, das neunteilige
+Übersichtsseiten-Muster, das Prinzip getrennter Schwierigkeits-/
+Verifikations-/Sicherheitsmarker als HTML-Badges über
+`myst_substitutions`, Light/Dark-Mode-Toggle, Copy-Button auf
+Codeblöcken, eine eigene `custom.css` mit denselben strukturellen
+Fixes (Sidebar-Kontrast, responsive Tabellen). Farben, Diagramme und
+aller Inhalt sind eigenständig für Pepper erstellt, nicht kopiert.
+
+### Neu erstellte Diagramme
+
+Alle sieben in Abschnitt 15.6 geforderten SVGs, unter
+`docs/tutorial/_static/images/`, Layout vom ALeRT-Tutorial inspiriert,
+Inhalt vollständig neu: `pepper-system-architecture.svg`,
+`interaction-behavior-tree.svg`, `three-stage-llm-pipeline.svg`,
+`pepper-realsense-tf-tree.svg`, `realsense-nav2-dataflow.svg`,
+`gesture-validation-flow.svg`, `dialogue-integration-test-flow.svg`.
+Der Nav2-Datenfluss zeigt exakt den realen Pfad
+(`RealSense -> statische Kopf-TF -> RTAB-Map -> Nav2 -> Velocity
+Smoother -> Collision Monitor -> Motion Guard -> /cmd_vel ->
+naoqi_driver2`) und markiert explizit, dass `amcl`/`map_server`/
+`robot_localization`-EKF mit Peppers eigener Odometrie bewusst NICHT
+im Bild sind (seit Entwicklungsauftrag 2 entfernt).
+
+### Bildherkunft: geprüfte Kandidaten, tatsächlich freigegebene und abgelehnte Bilder
+
+`docs/tutorial/ASSET_PROVENANCE.yml`, elf Einträge. **Sieben
+freigegeben** (`decision: approved`) -- ausschließlich die selbst
+erstellten SVGs oben, keine Drittbilder. **Vier geprüft, aber
+ausdrücklich NICHT freigegeben**, aus dem ALeRT-/Spot-Quellarchiv
+(`Robotik Tutorial.2.zip`), für dieses Tutorial einzeln geöffnet und
+inhaltlich geprüft (nicht nur dem Dateinamen nach beurteilt):
+
+- **`arm_joints.png`** -- `decision: recreate`. Zeigt einen
+  Kinova-Arm (Gelenknamen `shoulder_pan`, `wrist_1_joint`, ...) auf
+  Boston Dynamics Spot in RViz/MoveIt -- strukturell inkompatibel mit
+  Peppers eigenen Gelenknamen. Enthält zusätzlich einen echten lokalen
+  Dateipfad mit einem Benutzernamen im Fenstertitel (interne
+  Information). Genau der im Auftrag ausgeschlossene Fall ("ein
+  Kinova-Arm darf nicht zur Erklärung von Peppers Gelenkgrenzen
+  verwendet werden").
+- **`nav_architecture.png`** -- `decision: rejected`. Herkunft nicht
+  sicher auf ALeRT zurückführbar (wirkt wie eine Kopie aus der
+  offiziellen Nav2-Projektdokumentation, keine bestätigte Lizenz).
+  Unabhängig davon ohnehin generisch statt Pepper-/RealSense-
+  spezifisch -- ersetzt durch die neu erstellte
+  `realsense-nav2-dataflow.svg`.
+- **`rviz.png`** -- `decision: rejected`. Zeigt einen echten
+  Live-Betriebszustand von ALeRTs Spot: reale Kamera-Topic-Namen
+  (`/kinova_color`, `/rs_front/color/in`), eine reale
+  Werkstatt-Innenaufnahme, echten Akkustand und Zeitstempel eines
+  konkreten Einsatzes -- operative interne Aufnahme, falsche
+  Plattform, keine sinnvolle Wiederverwendung.
+- **`estop_button.png`** -- `decision: recreate`. Software-Estop-
+  Umschalter aus Spots eigener Steueroberfläche, kein Pendant in
+  Peppers eigenem Sicherheitsmodell dokumentiert.
+
+Keine der vier zeigt erkennbare Personen. Keines dieser vier Bilder
+ist im veröffentlichten Tutorial eingebunden -- durch
+`verify_tutorial_structure.py`s Provenienz-Kreuzprüfung automatisiert
+erzwungen (jedes eingebundene Bild braucht einen `approved`-Eintrag).
+
+### Sphinx-Testergebnis
+
+```text
+sphinx-build -E -a -W --keep-going docs/tutorial docs/tutorial/_build/html
+build abgeschlossen. 0 Warnungen, exit 0.
+```
+
+Fünf anfängliche `myst.xref_missing`-Warnungen (Cross-Page-Links auf
+Anker, per einfachem Markdown-Link statt `{ref}` -- derselbe
+Fehlerklasse wie im ALeRT-Tutorial-Projekt bereits bekannt) behoben.
+
+### Link-, Struktur-, Bild- und Geheimnistests
+
+`docs/tutorial/scripts/verify_tutorial_structure.py` (neu, quellbasiert,
+kein Build nötig): 13 Themenverzeichnisse vorhanden, jedes mit
+`index.md`, alle internen Links/Bildreferenzen aufgelöst, jedes
+eingebundene Bild hat einen `approved`-Provenienz-Eintrag, keine
+absoluten Benutzerpfade, keine Zugangsdaten (außer dem Platzhalter
+`<PEPPER_QI_PASSWORD>`), keine Spot-Befehle als Pepper-Befehle --
+**alle Prüfungen bestanden**.
+
+`docs/tutorial/scripts/verify_tutorial_site.py` (neu, Playwright,
+gegen den gebauten und lokal servierten Build): alle 19 stichproben-
+artig geprüften Seiten laden mit Status 200 und ohne Konsolenfehler,
+mobile Darstellung ohne horizontales Scrollen des Seitenkörpers
+(ein reales, gefundenes und behobenes CSS-Problem -- eine breite
+Tabelle zwang trotz eigenem `overflow-x:auto` einen Vorfahren breiter
+als den Viewport; behoben über `overflow-x:hidden` auf `html`/`body`
+plus `word-break` in Tabellenzellen), Light/Dark-Toggle ändert
+tatsächlich `data-theme`, Copy-Button vorhanden, Suche lädt,
+Sidebar zeigt alle 13 Themen -- **44/44 Prüfungen bestanden**.
+
+Zusätzlich real ausgeführt und in den Tutorialseiten selbst mit
+tatsächlichem Terminal-Output dokumentiert (nicht nur behauptet):
+`colcon build` (12/12 Pakete), `pytest` (386/386, zwei mehr als der
+Auftrag-3-Ausgangsstand wegen der beiden neuen Gesten),
+`colcon test --packages-select ihk_pepper_behavior_tree` (17/0/0/3),
+`gesturectl validate`/`dry-run` für beide neuen Gesten.
+
+### Zwei neue Kataloggesten (echte Erweiterung, kein reiner Dokumentationstext)
+
+Um die in Abschnitt 15.8 geforderten zwölf Bewegungen ehrlich
+abzudecken, ohne zwei davon ("auf sich selbst zeigen", "kleine
+Verbeugung") zu erfinden, wurden zwei neue, reale Gesten-YAMLs nach der
+etablierten Checkliste (`docs/GESTURE_AUTHORING.md`) angelegt:
+`config/gestures/point_to_self.yaml`,
+`config/gestures/small_bow.yaml`. Beide `tested_status: draft`, beide
+über `gesturectl validate`/`dry-run` tatsächlich geprüft (siehe
+`gestures-kinematics/safe-gesture-development.md` für die vollen
+Herleitungen). `small_bow` ist die einzige Katalog-Geste, die
+`HipPitch` aktiv nutzt -- **keine** Live-Referenz für dessen
+Vorzeichenrichtung existiert im ganzen Projekt, explizit als offene
+Unsicherheit dokumentiert (Empfehlung: `gesturectl preview` vor jedem
+weiteren Schritt). Gestenkatalog jetzt 22 Einträge (vorher 20).
+
+### Offene Veröffentlichungsrechte
+
+Alle vier geprüften Fremdbilder bleiben ungeklärt (`recreate`/
+`rejected`, siehe oben) -- keine Nachfrage nach Freigabe wurde in
+dieser Sitzung gestellt, keine Berechtigung wird hier behauptet.
+
+### Noch fehlende Pepper-Fotos/-Aufnahmen
+
+Keine einzige Pepper-eigene Foto-/Screenshot-Aufnahme existiert für
+dieses Tutorial -- alle sieben freigegebenen Bilder sind Diagramme,
+keine Fotos/Screenshots. Insbesondere fehlen: ein echtes RViz-
+Screenshot mit Pepper (Ersatz für das abgelehnte `rviz.png`), eine
+echte Aufnahme von Peppers Sicherheits-/Not-Halt-Mechanismus (Ersatz
+für das abgelehnte `estop_button.png` -- Peppers eigenes
+Sicherheitsmodell ist in diesem Projekt ohnehin softwareseitig über
+Motion Guard/SafetyGate gelöst, nicht über einen vergleichbaren
+UI-Schalter, siehe `pepper-platform/capabilities-and-limits.md`).
+
+### Noch notwendige Hardwareverifikation
+
+Durchgängig, für praktisch jede Aussage in diesem Tutorial: kein
+Pepper und keine RealSense-Kamera waren in dieser Sitzung erreichbar.
+Konkret offen:
+
+1. Alle 22 Kataloggesten bis auf `t_pose` bleiben `draft`/
+   `dry_run_validated` -- keine einzige neu hinzugekommene Geste
+   (inklusive der beiden neuen) ist `live_validated`.
+2. `manual_dialogue_e2e_check.py` konnte in dieser Sitzung NICHT
+   erfolgreich reproduziert werden (Umgebungs-Inkompatibilität:
+   `sentence-transformers`/`numpy`-Versionskonflikt in `venv_dialog`,
+   siehe `integration-testing/offline-dialogue-test.md`) -- das
+   historische Auftrag-3-Ergebnis (AP11) gilt als dokumentiert, aber
+   für dieses Tutorial nicht neu bestätigt.
+3. RealSense-Hardwareabnahme (Odometrie, Mapping, Coverage-Nachweis
+   gegen echte Sensordaten) weiterhin komplett offen, wie bereits am
+   Ende von Entwicklungsauftrag 2 empfohlen -- durch dieses Tutorial
+   nicht verändert.
+4. Kein Ansible-Bootstrap/-Deployment wurde gegen einen echten NUC
+   ausgeführt.
+
+### Verifikationsmarker-Disziplin, zusammengefasst
+
+Jede Seite unterscheidet ausdrücklich zwischen {{ documented }}
+(Bericht/Code als Quelle), {{ offlinetested }} (in dieser oder einer
+früheren Sitzung tatsächlich ohne Hardware ausgeführt),
+{{ simulationtested }}, {{ hardwareverified }} (bislang **nur**
+`t_pose`) und {{ hwverificationrequired }}. Kein bestandener Mock-/
+Offline-/Dry-Run-Test wird auf irgendeiner Seite als
+hardwareverifiziert dargestellt.
+
+### Branch/Commit-Status
+
+Branch `order-15-pepper-developer-tutorial`, von
+`order-03-llm-memory-kinematic-gestures` erstellt (dessen
+Abschluss-Commit als Basis). `main` unverändert. Kein Push in dieser
+Sitzung.

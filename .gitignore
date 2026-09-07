@@ -26,8 +26,14 @@ __pycache__/
 venv
 venv_dialog/
 .venv
+.venv-tutorial/
 *.egg-info/
 .pytest_cache/
+
+# Pepper Developer Tutorial (docs/tutorial/, Arbeitspaket 15): Sphinx
+# build output lives nested inside the source tree, same convention as
+# the ALeRT Advanced Robotics Tutorial template project.
+docs/tutorial/_build/
 
 # ROS2 Build-Artefakte
 build/

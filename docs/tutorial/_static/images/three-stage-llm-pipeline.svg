@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 340" font-family="sans-serif">
+  <style>
+    .llm { fill: #efe6f5; stroke: #6b2f7a; stroke-width: 2; rx: 8; }
+    .det { fill: #eaf3ea; stroke: #1f6f4a; stroke-width: 2; rx: 8; }
+    .lbl { font-size: 13px; fill: #1a1a1a; }
+    .small { font-size: 10.5px; fill: #444; }
+    .arrow { stroke: #555; stroke-width: 2; fill: none; marker-end: url(#arr2); }
+  </style>
+  <defs>
+    <marker id="arr2" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
+    </marker>
+  </defs>
+  <text x="450" y="24" text-anchor="middle" font-size="17" font-weight="bold">Drei-Stufen-LLM-Pipeline</text>
+
+  <rect class="det" x="10" y="60" width="110" height="60"/>
+  <text class="lbl" x="65" y="85" text-anchor="middle">Nutzerfrage</text>
+  <text class="small" x="65" y="102" text-anchor="middle">+ PersonContext</text>
+
+  <rect class="llm" x="140" y="60" width="130" height="60"/>
+  <text class="lbl" x="205" y="82" text-anchor="middle">LLM 1</text>
+  <text class="small" x="205" y="98" text-anchor="middle">Knowledge Planner</text>
+  <text class="small" x="205" y="112" text-anchor="middle">nur Suchanfragen</text>
+
+  <rect class="det" x="290" y="60" width="150" height="80">
+  </rect>
+  <text class="lbl" x="365" y="82" text-anchor="middle">Retriever</text>
+  <text class="small" x="365" y="98" text-anchor="middle">FAQ exakt -&gt; semant. -&gt;</text>
+  <text class="small" x="365" y="112" text-anchor="middle">Gedaechtnis (Consent!) -&gt;</text>
+  <text class="small" x="365" y="126" text-anchor="middle">RAG -&gt; sichere Antwort</text>
+
+  <rect class="llm" x="460" y="60" width="130" height="60"/>
+  <text class="lbl" x="525" y="82" text-anchor="middle">LLM 2</text>
+  <text class="small" x="525" y="98" text-anchor="middle">Gesture Planner</text>
+  <text class="small" x="525" y="112" text-anchor="middle">nur Namen (Allowlist)</text>
+
+  <rect class="llm" x="610" y="60" width="130" height="60"/>
+  <text class="lbl" x="675" y="82" text-anchor="middle">LLM 3</text>
+  <text class="small" x="675" y="98" text-anchor="middle">Response Composer</text>
+  <text class="small" x="675" y="112" text-anchor="middle">ResponsePlan</text>
+
+  <rect class="det" x="760" y="60" width="130" height="60"/>
+  <text class="lbl" x="825" y="82" text-anchor="middle">Validator</text>
+  <text class="small" x="825" y="98" text-anchor="middle">deterministisch</text>
+  <text class="small" x="825" y="112" text-anchor="middle">Safety zuerst</text>
+
+  <path class="arrow" d="M120,90 L140,90"/>
+  <path class="arrow" d="M270,90 L290,90"/>
+  <path class="arrow" d="M440,90 L460,90"/>
+  <path class="arrow" d="M590,90 L610,90"/>
+  <path class="arrow" d="M740,90 L760,90"/>
+
+  <rect class="det" x="290" y="200" width="320" height="60"/>
+  <text class="lbl" x="450" y="222" text-anchor="middle">ResponsePlanExecutor</text>
+  <text class="small" x="450" y="240" text-anchor="middle">Say-/PlayGesture-Actions synchronisiert,</text>
+  <text class="small" x="450" y="253" text-anchor="middle">nur validierte Plaene</text>
+
+  <path class="arrow" d="M825,120 L825,170 L450,170 L450,200"/>
+
+  <text x="450" y="300" text-anchor="middle" class="small">
+    Kein LLM darf: SetMotionPermission aufrufen, rohe ROS2-/SSH-Befehle erzeugen, Gelenknamen/-winkel festlegen -- strukturell durch das Schema ausgeschlossen, nicht nur per Prompt.
+  </text>
+</svg>

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 320" font-family="sans-serif">
+  <style>
+    .box { fill: #eef2f8; stroke: #3a5a8c; stroke-width: 2; rx: 8; }
+    .transport { fill: #eaf3ea; stroke: #1f6f4a; stroke-width: 2; rx: 8; }
+    .real { fill: #fdf1e6; stroke: #a3401a; stroke-width: 2; rx: 8; }
+    .lbl { font-size: 13px; fill: #1a1a1a; }
+    .small { font-size: 10.5px; fill: #444; }
+    .arrow { stroke: #555; stroke-width: 2; fill: none; marker-end: url(#arr5); }
+  </style>
+  <defs>
+    <marker id="arr5" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#555"/>
+    </marker>
+  </defs>
+  <text x="450" y="24" text-anchor="middle" font-size="17" font-weight="bold">Gesten-Validierungs- und Transport-Fluss</text>
+
+  <rect class="box" x="20" y="60" width="150" height="60"/>
+  <text class="lbl" x="95" y="82" text-anchor="middle">Gesture (YAML)</text>
+  <text class="small" x="95" y="100" text-anchor="middle">beim Laden validiert</text>
+
+  <rect class="box" x="200" y="60" width="170" height="60"/>
+  <text class="lbl" x="285" y="82" text-anchor="middle">KinematicCompiler</text>
+  <text class="small" x="285" y="100" text-anchor="middle">.compile()</text>
+
+  <rect class="box" x="400" y="60" width="170" height="60"/>
+  <text class="lbl" x="485" y="82" text-anchor="middle">TrajectoryPlan</text>
+  <text class="small" x="485" y="100" text-anchor="middle">1 Zeitachse je Gelenk</text>
+
+  <path class="arrow" d="M170,90 L200,90"/>
+  <path class="arrow" d="M370,90 L400,90"/>
+  <path class="arrow" d="M485,120 L485,150"/>
+
+  <rect class="transport" x="30" y="180" width="200" height="60"/>
+  <text class="lbl" x="130" y="202" text-anchor="middle">MockMotionTransport</text>
+  <text class="small" x="130" y="220" text-anchor="middle">Tests, keine Hardware</text>
+
+  <rect class="transport" x="260" y="180" width="200" height="60"/>
+  <text class="lbl" x="360" y="202" text-anchor="middle">DryRunMotionTransport</text>
+  <text class="small" x="360" y="220" text-anchor="middle">loggt, ruft NIE Hardware</text>
+
+  <rect class="real" x="490" y="180" width="200" height="60"/>
+  <text class="lbl" x="590" y="202" text-anchor="middle">QicliTrajectoryTransport</text>
+  <text class="small" x="590" y="220" text-anchor="middle">echt -&gt; Pepper</text>
+
+  <rect x="720" y="180" width="160" height="60" fill="#f5f5f5" stroke="#999" stroke-width="1.5" stroke-dasharray="5,4" rx="6"/>
+  <text class="lbl" x="800" y="202" text-anchor="middle" font-size="12">LocalPepperQi-</text>
+  <text class="lbl" x="800" y="218" text-anchor="middle" font-size="12">HelperTransport</text>
+  <text class="small" x="800" y="234" text-anchor="middle">NotImplementedError</text>
+
+  <path class="arrow" d="M300,150 L130,180"/>
+  <path class="arrow" d="M400,150 L360,180"/>
+  <path class="arrow" d="M550,150 L590,180"/>
+
+  <rect x="80" y="270" width="740" height="40" fill="#fbeaea" stroke="#8a1f2a" stroke-width="1.5" rx="6"/>
+  <text class="small" x="450" y="294" text-anchor="middle">tested_status wird NIE automatisch auf live_validated gesetzt -- nur ein Mensch traegt das nach einem beaufsichtigten Live-Test manuell ein.</text>
+</svg>

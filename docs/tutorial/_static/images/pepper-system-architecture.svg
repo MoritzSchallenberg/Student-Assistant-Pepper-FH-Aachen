@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 560" font-family="sans-serif">
+  <style>
+    .box { fill: #eef2f8; stroke: #3a5a8c; stroke-width: 2; rx: 8; }
+    .safety { fill: #fbeaea; stroke: #8a1f2a; stroke-width: 2; rx: 8; }
+    .lbl { font-size: 14px; fill: #1a1a1a; }
+    .small { font-size: 11px; fill: #444; }
+    .arrow { stroke: #3a5a8c; stroke-width: 2; fill: none; marker-end: url(#arrow); }
+  </style>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#3a5a8c"/>
+    </marker>
+  </defs>
+
+  <text x="450" y="28" text-anchor="middle" font-size="18" font-weight="bold">Pepper -- Systemarchitektur (Datenfluss)</text>
+
+  <rect class="box" x="30" y="60" width="200" height="60"/>
+  <text class="lbl" x="130" y="85" text-anchor="middle">RealSense-/Pepper-</text>
+  <text class="lbl" x="130" y="103" text-anchor="middle">Kamerabild</text>
+
+  <rect class="box" x="30" y="160" width="200" height="70"/>
+  <text class="lbl" x="130" y="185" text-anchor="middle">ihk_pepper_perception</text>
+  <text class="small" x="130" y="203" text-anchor="middle">Tracking, Interesse,</text>
+  <text class="small" x="130" y="217" text-anchor="middle">Winkgeste</text>
+
+  <rect class="box" x="330" y="160" width="220" height="70"/>
+  <text class="lbl" x="440" y="185" text-anchor="middle">ihk_pepper_behavior_tree</text>
+  <text class="small" x="440" y="203" text-anchor="middle">ReactiveFallback, feste</text>
+  <text class="small" x="440" y="217" text-anchor="middle">Prioritaet (7 Subtrees)</text>
+
+  <rect class="safety" x="330" y="60" width="220" height="60"/>
+  <text class="lbl" x="440" y="85" text-anchor="middle">Motion Guard /</text>
+  <text class="lbl" x="440" y="103" text-anchor="middle">SafetyGate</text>
+
+  <rect class="box" x="330" y="270" width="220" height="70"/>
+  <text class="lbl" x="440" y="295" text-anchor="middle">Drei-LLM-Pipeline</text>
+  <text class="small" x="440" y="313" text-anchor="middle">ihk_pepper_llm_contracts +</text>
+  <text class="small" x="440" y="327" text-anchor="middle">ihk_pepper_dialog</text>
+
+  <rect class="box" x="330" y="380" width="220" height="60"/>
+  <text class="lbl" x="440" y="405" text-anchor="middle">ihk_pepper_person_memory</text>
+  <text class="small" x="440" y="423" text-anchor="middle">einwilligungsgebunden</text>
+
+  <rect class="box" x="650" y="160" width="220" height="70"/>
+  <text class="lbl" x="760" y="185" text-anchor="middle">ihk_pepper_bridge</text>
+  <text class="small" x="760" y="203" text-anchor="middle">Say / PlayGesture</text>
+  <text class="small" x="760" y="217" text-anchor="middle">Gestenkatalog</text>
+
+  <rect class="box" x="30" y="380" width="200" height="70"/>
+  <text class="lbl" x="130" y="405" text-anchor="middle">ihk_pepper_navigation</text>
+  <text class="small" x="130" y="423" text-anchor="middle">RealSense-only Nav</text>
+  <text class="small" x="130" y="437" text-anchor="middle">(separater Pfad)</text>
+
+  <rect class="safety" x="650" y="380" width="220" height="60"/>
+  <text class="lbl" x="760" y="405" text-anchor="middle">Pepper (ALMotion, TTS)</text>
+  <text class="small" x="760" y="423" text-anchor="middle">letzte Stufe, echte Hardware</text>
+
+  <path class="arrow" d="M130,120 L130,160"/>
+  <path class="arrow" d="M230,195 L330,195"/>
+  <path class="arrow" d="M440,120 L440,160"/>
+  <path class="arrow" d="M440,230 L440,270"/>
+  <path class="arrow" d="M440,340 L440,380"/>
+  <path class="arrow" d="M550,195 L650,195"/>
+  <path class="arrow" d="M760,230 L760,380"/>
+  <path class="arrow" d="M130,230 L130,380"/>
+  <path class="arrow" d="M230,415 L330,300" />
+  <text class="small" x="270" y="345" text-anchor="middle">ApproachPerson-Action</text>
+
+  <text x="450" y="530" text-anchor="middle" class="small">
+    Motion Guard ist die letzte, gemeinsame Instanz fuer beide Pfade (Wahrnehmung/Dialog UND Navigation) vor jeder echten Aktion.
+  </text>
+</svg>

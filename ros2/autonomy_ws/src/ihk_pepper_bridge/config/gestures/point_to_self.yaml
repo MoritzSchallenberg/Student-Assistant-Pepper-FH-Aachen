@@ -1,0 +1,35 @@
+schema_version: 2
+name: point_to_self
+description: >
+  Neu fuer das Pepper Developer Tutorial (Arbeitspaket 15), nach der
+  Checkliste in docs/GESTURE_AUTHORING.md: Pepper hat nur 1 Motor pro
+  Hand (auf/zu) -- ein echtes Zeigen mit dem Zeigefinger ist strukturell
+  unmoeglich (siehe docs/CAPABILITIES.md, "Bekannte Einschraenkungen").
+  Dieses "auf sich selbst zeigen" ist deshalb als Hand-zur-eigenen-Brust-
+  Bewegung umgesetzt, nach demselben sicheren Muster wie
+  thinking_symbolic.yaml (RShoulderPitch positiv haelt den Arm TIEF,
+  siehe dortiger Kommentar) und self_hug_symbolic.yaml (Ellbogen zur
+  Koerpermitte). Linker statt rechter Arm gewaehlt (keine funktionale
+  Notwendigkeit, aber Symmetrie zu den bestehenden rechtsseitigen
+  Referenzgesten).
+requires_stationary: true
+allowed_interaction_states: [CONVERSATION_READY]
+speed_scale_default: 0.5
+restore_after: true
+tested_status: draft
+tested_date: null
+test_note: >
+  Keine Live-Referenz vorhanden. Winkel aus thinking_symbolic.yaml
+  (Ellbogenbeugung Richtung Torso, Schulter bleibt tief -- "keine Haende
+  im Gesichtsbereich" strikt eingehalten) und self_hug_symbolic.yaml
+  (Ellbogen-Rotation Richtung Koerpermitte) abgeleitet, nicht neu
+  erfunden. Vor jedem dry-run: mit `gesturectl preview point_to_self`
+  (RViz) visuell pruefen, dass die Hand tatsaechlich in Richtung eigener
+  Brust und NICHT in Richtung Gesicht/Kopf zeigt.
+max_duration_s: 2.5
+on_cancel: restore
+keyframes:
+  - time_from_start_s: 0.0
+    joints: {HeadPitch: -0.05}
+  - time_from_start_s: 1.3
+    joints: {LShoulderPitch: 0.6, LShoulderRoll: 0.2, LElbowRoll: -0.7, LElbowYaw: -0.3}
