@@ -16,7 +16,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from std_msgs.msg import String, Bool
+from std_msgs.msg import String, Bool, Float32
 from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture
@@ -108,6 +108,23 @@ class PepperBridgeNode(Node):
         interval = self.get_parameter("health_publish_interval_s").value
         self.create_timer(interval, self._publish_health)
 
+        # Entwicklungsauftrag 4, AP4: reale Statustopics statt Platzhalter.
+        # Alle unter dem eigenen Node-Namespace (pepper_bridge/...) --
+        # siehe Auftrag Abschnitt "Arbeitspaket 4" fuer die exakt
+        # geforderte Namensliste.
+        self.bumper_pub = self.create_publisher(Bool, "bumper", 10)
+        self.charging_state_pub = self.create_publisher(Bool, "charging_state", 10)
+        self.battery_pub = self.create_publisher(Float32, "battery", 10)
+        self.connection_state_pub = self.create_publisher(String, "connection_state", 10)
+        # gesture_in_progress: bisher dokumentierte, nie geschlossene
+        # Luecke (siehe motion_guard.py-Docstring, Entwicklungsauftrag 2
+        # AP8: "wird von keinem Node dieser Session tatsaechlich
+        # publiziert -- sicherer Default: gilt als true/blockierend, bis
+        # nie empfangen"). Motion Guard behandelt weiterhin "nie
+        # empfangen" als blockierend -- dieses Topic macht daraus jetzt
+        # eine echte, aktuelle Aussage statt eines dauerhaften Defaults.
+        self.gesture_in_progress_pub = self.create_publisher(Bool, "gesture_in_progress", 10)
+
         self.get_logger().info("pepper_bridge Node gestartet.")
 
     # ---- Say ----
@@ -170,6 +187,13 @@ class PepperBridgeNode(Node):
             fb.progress = progress
             goal_handle.publish_feedback(fb)
 
+        # Entwicklungsauftrag 4, AP4/AP13: schliesst die seit Auftrag 2
+        # dokumentierte Luecke -- dieses Topic wurde bisher von KEINEM
+        # Node tatsaechlich publiziert. True fuer die volle Dauer der
+        # Ausfuehrung (auch waehrend eines fehlgeschlagenen Versuchs --
+        # es ist erst "vorbei", wenn play() zurueckkehrt), garantiert per
+        # finally auf False zurueckgesetzt.
+        self.gesture_in_progress_pub.publish(Bool(data=True))
         try:
             self.catalog.play(
                 self.pepper, name, speed, feedback_cb,
@@ -191,6 +215,8 @@ class PepperBridgeNode(Node):
             result.success = False
             result.error_message = str(e)
             goal_handle.abort()
+        finally:
+            self.gesture_in_progress_pub.publish(Bool(data=False))
         return result
 
     # ---- Health ----
@@ -204,14 +230,41 @@ class PepperBridgeNode(Node):
         msg.anythingllm_ok = False  # von ihk_pepper_dialog ueberschrieben
         msg.navigation_ok = False
         msg.perception_ok = False
+
+        # Entwicklungsauftrag 4, AP4: reale Werte statt Platzhalter fuer
+        # bumper/charging_state/battery/connection_state. Bei fehlendem
+        # oder ungueltigem Wert wird bewusst NICHT "false"/0 verwendet
+        # (das waere eine unbegruendete positive Aussage), sondern der
+        # sicherste Wert je Topic -- ein Bumper, dessen Zustand nicht
+        # ermittelt werden konnte, gilt als GEDRUECKT (blockiert), keine
+        # Ladeinfo gilt als LAEDT NICHT (konservativ fuer den
+        # Fahr-Interlock ist das die Annahme, die Fahrt eher zulaesst als
+        # verweigert -- die eigentliche Sicherheitsentscheidung liegt bei
+        # Motion Guard, der bei fehlenden/veralteten Daten ohnehin
+        # blockiert, nicht bei diesem reinen Statustopic).
+        bumper_pressed = None
+        charging = None
+        battery = None
         if reachable:
             try:
+                bumper_pressed = self.pepper.get_bumper_pressed()
+            except Exception as e:
+                self.get_logger().warn(f"get_bumper_pressed() fehlgeschlagen: {e}")
+            try:
+                charging = self.pepper.get_charging_state()
+            except Exception as e:
+                self.get_logger().warn(f"get_charging_state() fehlgeschlagen: {e}")
+            try:
                 battery = self.pepper.get_battery()
-                msg.battery_percent = float(battery) if battery is not None else -1.0
-            except Exception:
-                msg.battery_percent = -1.0
-        else:
-            msg.battery_percent = -1.0
+            except Exception as e:
+                self.get_logger().warn(f"get_battery() fehlgeschlagen: {e}")
+
+        self.bumper_pub.publish(Bool(data=True if bumper_pressed is None else bumper_pressed))
+        self.charging_state_pub.publish(Bool(data=False if charging is None else charging))
+        self.battery_pub.publish(Float32(data=-1.0 if battery is None else float(battery)))
+        self.connection_state_pub.publish(String(data=self.pepper.connection_state))
+
+        msg.battery_percent = -1.0 if battery is None else float(battery)
         msg.current_mode = "unknown"
         msg.active_warnings = [] if reachable else ["pepper_unreachable"]
         self.health_pub.publish(msg)

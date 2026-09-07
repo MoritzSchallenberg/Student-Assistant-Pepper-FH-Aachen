@@ -44,11 +44,36 @@ class ThreadSafePepperClient:
         self._lock = threading.RLock()
         self._client = qicli(self._host, self._user, self._password)
         self._connected = False
+        # Entwicklungsauftrag 4, AP2: "Verbindungszustand als ROS2-Status
+        # veroeffentlichen" -- der Bridge-Node liest dieses Feld in seinem
+        # Health-Timer aus, statt is_reachable() (reiner TCP-Connect-
+        # Check) mit einem tatsaechlich erfolgreichen SSH/qicli-Login zu
+        # verwechseln. last_connection_error bleibt fuer Diagnose stehen,
+        # bis der naechste Verbindungsversuch (egal ob Erfolg oder
+        # Fehler) es aktualisiert.
+        self.last_connection_error = None
 
     def _ensure_connected(self):
         if not self._connected:
-            self._client.connect()
-            self._connected = True
+            try:
+                self._client.connect()
+                self._connected = True
+                self.last_connection_error = None
+            except Exception as e:
+                self._connected = False
+                self.last_connection_error = str(e)
+                raise
+
+    @property
+    def connection_state(self) -> str:
+        """'connected' | 'disconnected' | 'error:<kurze Beschreibung>' --
+        reflektiert den tatsaechlichen SSH/qicli-Verbindungsstand dieses
+        Prozesses, nicht nur TCP-Erreichbarkeit (siehe is_reachable())."""
+        if self._connected:
+            return "connected"
+        if self.last_connection_error:
+            return f"error:{self.last_connection_error[:120]}"
+        return "disconnected"
 
     def is_reachable(self, timeout_s: float = 2.0) -> bool:
         """Nicht-blockierender Erreichbarkeits-Check (fuer Health-Reporting,
@@ -112,6 +137,16 @@ class ThreadSafePepperClient:
         with self._lock:
             self._ensure_connected()
             return self._client.get_battery()
+
+    def get_bumper_pressed(self):
+        with self._lock:
+            self._ensure_connected()
+            return self._client.get_bumper_pressed()
+
+    def get_charging_state(self):
+        with self._lock:
+            self._ensure_connected()
+            return self._client.get_charging_state()
 
     def get_touch_status(self):
         with self._lock:

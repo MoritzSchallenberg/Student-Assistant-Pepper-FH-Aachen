@@ -1,6 +1,50 @@
+import os
+import socket
 import paramiko
 import time
 import json
+
+
+def socket_timeout_errors():
+    """Exception-Typen, die ein haengender SSH-Kanal-Read bei Ueberschreiten
+    des per Channel.settimeout() gesetzten Limits werfen kann. paramiko
+    wirft je nach Version/Codepfad entweder socket.timeout direkt oder
+    seine eigene PipeTimeout-Klasse -- beide hier gefangen, statt sich auf
+    eine einzelne, versionsabhaengige Klasse zu verlassen."""
+    errors = [socket.timeout]
+    try:
+        from paramiko.buffered_pipe import PipeTimeout
+        errors.append(PipeTimeout)
+    except ImportError:
+        pass
+    return tuple(errors)
+
+
+class UnknownHostKeyError(Exception):
+    """Der Pepper-Host-Key ist weder im System- noch im projekteigenen
+    known_hosts hinterlegt -- erste Verbindung zu diesem Host, oder eine
+    falsch konfigurierte known_hosts-Datei. KEIN automatisches Vertrauen
+    (Entwicklungsauftrag 4, Abschnitt AP2: kein AutoAddPolicy)."""
+
+
+class HostKeyChangedError(Exception):
+    """Der von Pepper präsentierte Host-Key weicht vom hinterlegten Key
+    ab -- klassisches MITM-Warnsignal, niemals automatisch akzeptieren.
+    Häufigster harmloser Grund: NAOqi-Neuinstallation/Werksreset hat den
+    Host-Key erneuert -- in dem Fall den alten Eintrag bewusst per Hand
+    aus known_hosts entfernen, nicht durch dieses Skript."""
+
+
+def _known_hosts_paths():
+    """System- und projekteigene known_hosts-Datei, in dieser Reihenfolge
+    geladen. Die projekteigene Datei (Pfad über PEPPER_KNOWN_HOSTS_PATH
+    konfigurierbar, Default apps/web/known_hosts) erlaubt es, Peppers
+    Host-Key einmal bewusst zu pinnen, ohne dass jede Entwicklerin ihn
+    zusätzlich in ihre persönliche ~/.ssh/known_hosts eintragen muss."""
+    project_default = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "known_hosts")
+    project_path = os.environ.get("PEPPER_KNOWN_HOSTS_PATH", project_default)
+    return os.path.expanduser("~/.ssh/known_hosts"), project_path
+
 
 class qicli:
     def __init__(self, ip, username, password, port=22, timeout=10):
@@ -27,10 +71,21 @@ class qicli:
         (no plain 'password' method). Newer paramiko versions no longer fall
         back to keyboard-interactive automatically when password auth is
         rejected, so we do that fallback ourselves here.
+
+        Host-Key-Pruefung (Entwicklungsauftrag 4, AP2): AutoAddPolicy wurde
+        entfernt -- ein unbekannter oder veraenderter Host-Key wird NIE
+        automatisch akzeptiert. Stattdessen wird der Key gegen die
+        System- UND die projekteigene known_hosts-Datei geprueft
+        (RejectPolicy als Standard fuer alles, was dort nicht steht).
         """
+        system_known_hosts, project_known_hosts = _known_hosts_paths()
         try:
             self.client = paramiko.SSHClient()
-            self.client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            if os.path.exists(system_known_hosts):
+                self.client.load_system_host_keys(system_known_hosts)
+            if os.path.exists(project_known_hosts):
+                self.client.load_host_keys(project_known_hosts)
+            self.client.set_missing_host_key_policy(paramiko.RejectPolicy())
             try:
                 self.client.connect(hostname=self.ip,
                                     username=self.username,
@@ -46,23 +101,55 @@ class qicli:
                     return [self.password for _ in prompt_list]
 
                 transport.auth_interactive(self.username, _handler)
+            except paramiko.BadHostKeyException as e:
+                raise HostKeyChangedError(
+                    f"Host-Key von {self.ip} hat sich geaendert (erwartet: {e.expected_key}, "
+                    f"tatsaechlich: {e.key})! Das kann ein Man-in-the-Middle-Angriff sein "
+                    f"ODER eine NAOqi-Neuinstallation/ein Werksreset auf Pepper. Verbindung "
+                    f"ABGEBROCHEN. Erst den Host-Key manuell verifizieren (z.B. direkt an "
+                    f"Pepper pruefen), dann den ALTEN Eintrag bewusst aus "
+                    f"{system_known_hosts} bzw. {project_known_hosts} entfernen -- niemals "
+                    f"automatisch ueberschreiben."
+                ) from e
+            except paramiko.SSHException as e:
+                if "not found in known_hosts" in str(e) or "Server" in str(e) and "not in" in str(e):
+                    raise UnknownHostKeyError(
+                        f"Host-Key von {self.ip} ist weder in {system_known_hosts} noch in "
+                        f"{project_known_hosts} hinterlegt -- erste Verbindung zu diesem Host? "
+                        f"Key bewusst pruefen und erst dann eintragen, z.B.: "
+                        f"ssh-keyscan -p {self.port} {self.ip} >> {project_known_hosts} "
+                        f"(nur nachdem der Fingerprint anderweitig verifiziert wurde)."
+                    ) from e
+                raise
             print(f"Connected to {self.ip}")
+        except (UnknownHostKeyError, HostKeyChangedError):
+            raise
         except Exception as e:
             print(f"Error connecting to {self.ip}: {e}")
             raise
 
-    def exec_command(self, command, use_tmux=False, tmux_session="persistent_session", retries=1):
+    def exec_command(self, command, use_tmux=False, tmux_session="persistent_session",
+                      retries=1, timeout=None):
         """
         Executes a command on the remote host.
-        
+
         :param command: Command to execute.
         :param use_tmux: If True, run the command inside a tmux session.
         :param tmux_session: Name of the tmux session.
         :param retries: Number of retries if command execution fails.
+        :param timeout: Zeitlimit in Sekunden fuer diesen einen Aufruf
+            (Entwicklungsauftrag 4, AP2: "Zeitlimits fuer alle SSH- und
+            qicli-Operationen"). Default self.timeout (Verbindungs-
+            Timeout) falls nicht gesetzt. Wird sowohl als paramiko-
+            Kanal-Timeout (bricht ein haengendes stdout.read() wirklich
+            ab, statt unbegrenzt zu blockieren) als auch als
+            exec_command()-eigenes timeout-Argument gesetzt.
         :return: (output, error) from the command.
         """
         if self.client is None:
             self.connect()
+
+        effective_timeout = timeout if timeout is not None else self.timeout
 
         # If using tmux, prepare the command to either create or use an existing session.
         if use_tmux:
@@ -75,20 +162,48 @@ class qicli:
             )
 
         try:
-            stdin, stdout, stderr = self.client.exec_command(f"{command}")
+            stdin, stdout, stderr = self.client.exec_command(
+                f"{command}", timeout=effective_timeout
+            )
+            # Zusaetzlich zum exec_command()-Timeout (deckt nur das
+            # Aufsetzen des Kanals ab) den Kanal selbst mit einem
+            # Lese-Timeout versehen -- ein Kommando, das auf Pepper
+            # haengt (z.B. wartet auf Eingabe, die nie kommt), wuerde
+            # sonst stdout.read() unbegrenzt blockieren lassen.
+            stdout.channel.settimeout(effective_timeout)
             output = stdout.read().decode().strip()
             error = stderr.read().decode().strip()
             return output, error
+        except socket_timeout_errors():
+            print(f"Timeout ({effective_timeout}s) bei Kommando: {command}")
+            if retries > 0:
+                print("Verbindung wird als moeglicherweise haengend betrachtet -- neu verbinden und wiederholen...")
+                self._force_reconnect()
+                return self.exec_command(command, use_tmux, tmux_session, retries - 1, timeout)
+            raise
         except Exception as e:
             print(f"Error executing command: {e}")
             # Attempt a reconnect if possible and retry.
             if retries > 0:
                 print("Attempting to reconnect and retry the command...")
                 time.sleep(2)  # brief pause before reconnecting
-                self.connect()
-                return self.exec_command(command, use_tmux, tmux_session, retries - 1)
+                self._force_reconnect()
+                return self.exec_command(command, use_tmux, tmux_session, retries - 1, timeout)
             else:
                 raise
+
+    def _force_reconnect(self):
+        """Schliesst eine moeglicherweise haengende/kaputte Verbindung
+        explizit, bevor neu verbunden wird -- ein einfaches erneutes
+        connect() auf einem bereits kaputten self.client wuerde sonst den
+        alten, toten Socket nie freigeben."""
+        if self.client is not None:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        self.client = None
+        self.connect()
 
     
     def say(self, annotated_text):
@@ -288,6 +403,41 @@ class qicli:
             return json.loads(output)
         except (json.JSONDecodeError, TypeError):
             return None
+
+    def get_bumper_pressed(self):
+        """True, wenn irgendein Bumper-Sensor (Name beginnt mit 'Bumper')
+        aktuell gedrueckt ist. None bei Fehler -- Aufrufer muss None als
+        'Status nicht ermittelbar' behandeln, NICHT als 'nicht gedrueckt'
+        (sicherer Default: unbekannt blockiert, siehe motion_guard.py)."""
+        status = self.get_touch_status()
+        if status is None:
+            return None
+        try:
+            return any(
+                str(entry[0]).startswith("Bumper") and bool(entry[1])
+                for entry in status
+            )
+        except (IndexError, TypeError):
+            return None
+
+    def get_charging_state(self):
+        """True/False ob Pepper aktuell laedt (Ladekabel + Ladevorgang
+        aktiv), None bei Fehler.
+
+        UNVERIFIED (Entwicklungsauftrag 4, AP4): ALBattery.isCharging ist
+        eine Standard-NAOqi-Methode, aber in KEINER bisherigen Session
+        gegen den echten Roboter getestet -- anders als get_battery()
+        (ALBattery.getBatteryCharge), das bereits live bestaetigt ist.
+        Vor produktivem Einsatz (insbesondere fuer den Fahr-Interlock,
+        siehe docs/STATUS.md 'Fahren blockiert komplett, solange das
+        Ladekabel dran ist') einmal live gegenpruefen."""
+        output, error = self.exec_command("timeout 8 qicli call ALBattery.isCharging")
+        normalized = output.strip().lower()
+        if normalized in ("true", "1"):
+            return True
+        if normalized in ("false", "0"):
+            return False
+        return None
 
     def get_mood(self):
         """Erkannte Stimmung der Person vor Pepper (valence/attention inkl.

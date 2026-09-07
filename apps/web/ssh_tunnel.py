@@ -44,7 +44,12 @@ def handler(chan, sock):
 
 def main():
     client = paramiko.SSHClient()
-    client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    # Entwicklungsauftrag 4, AP2: kein AutoAddPolicy mehr, auch in dieser
+    # als Sackgasse dokumentierten, nicht produktiv genutzten Datei.
+    known_hosts = os.path.expanduser("~/.ssh/known_hosts")
+    if os.path.exists(known_hosts):
+        client.load_system_host_keys(known_hosts)
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
     try:
         client.connect(hostname=HOST, username=USER, password=PASSWORD, timeout=10)
     except paramiko.ssh_exception.BadAuthenticationType as e:
