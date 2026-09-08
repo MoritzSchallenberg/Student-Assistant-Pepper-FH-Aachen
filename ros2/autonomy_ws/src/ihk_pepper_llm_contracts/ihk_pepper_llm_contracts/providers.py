@@ -80,6 +80,22 @@ class ProviderConfig:
             log_full_prompts=os.environ.get(f"{prefix}_LOG_FULL_PROMPTS", "false").lower() == "true",
         )
 
+    @classmethod
+    def from_env_dedicated_token(cls, prefix: str) -> "ProviderConfig":
+        """Wie from_env(), aber OHNE den Rueckfall auf die geteilte
+        ANYTHINGLLM_API_TOKEN-Variable (Entwicklungsauftrag 04-B,
+        Abschnitt 3: "Kein Token darf zwischen Providern geteilt werden"
+        / "Das System darf niemals automatisch ANYTHINGLLM_API_TOKEN an
+        KI:connect senden"). Fuer Provider, die ein STRIKT eigenes Token
+        brauchen -- aktuell nur KIConnectProvider. Fehlt
+        '<prefix>_API_TOKEN', bleibt api_token bewusst leer statt
+        irgendeinen anderen Wert zu erraten; der Provider selbst muss das
+        dann als Konfigurationsfehler behandeln (siehe
+        KIConnectProvider._headers())."""
+        config = cls.from_env(prefix)
+        config.api_token = os.environ.get(f"{prefix}_API_TOKEN", "")
+        return config
+
 
 class CircuitBreaker:
     """Reiner Zustandsautomat -- schliesst nach `failure_threshold`

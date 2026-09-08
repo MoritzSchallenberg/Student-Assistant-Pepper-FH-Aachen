@@ -406,3 +406,47 @@ def test_models_list_not_fully_logged_at_info_level(monkeypatch, caplog):
     # Auftrag 1.3: volle Modell-Liste nicht unnoetig in normale Logs --
     # bei INFO-Level darf die vollstaendige Liste nicht auftauchen.
     assert "some-other-internal-model-name" not in caplog.text
+
+
+# ---- Entwicklungsauftrag 04-B: kein geteiltes Token mit AnythingLLM ----
+
+def test_from_env_dedicated_token_ignores_anythingllm_fallback(monkeypatch):
+    # ProviderConfig.from_env() faellt (fuer andere Provider gewollt) auf
+    # ANYTHINGLLM_API_TOKEN zurueck, wenn <prefix>_API_TOKEN fehlt --
+    # from_env_dedicated_token() darf das NICHT tun (Auftrag 04-B,
+    # Abschnitt 3: "Kein Token darf zwischen Providern geteilt werden").
+    monkeypatch.setenv("ANYTHINGLLM_API_TOKEN", "internal-anythingllm-token")
+    monkeypatch.delenv("RESPONSE_LLM_API_TOKEN", raising=False)
+    monkeypatch.setenv("RESPONSE_LLM_URL", "https://chat.kiconnect.nrw/api/v1")
+    monkeypatch.setenv("RESPONSE_LLM_MODEL", "test-model")
+
+    shared = ProviderConfig.from_env("RESPONSE_LLM")
+    dedicated = ProviderConfig.from_env_dedicated_token("RESPONSE_LLM")
+
+    assert shared.api_token == "internal-anythingllm-token"  # bestehendes Verhalten unveraendert
+    assert dedicated.api_token == ""  # KEIN stiller Rueckfall
+
+
+def test_from_env_dedicated_token_uses_explicit_token_when_set(monkeypatch):
+    monkeypatch.setenv("ANYTHINGLLM_API_TOKEN", "internal-anythingllm-token")
+    monkeypatch.setenv("RESPONSE_LLM_API_TOKEN", "real-kiconnect-token")
+    monkeypatch.setenv("RESPONSE_LLM_URL", "https://chat.kiconnect.nrw/api/v1")
+    monkeypatch.setenv("RESPONSE_LLM_MODEL", "test-model")
+
+    dedicated = ProviderConfig.from_env_dedicated_token("RESPONSE_LLM")
+    assert dedicated.api_token == "real-kiconnect-token"
+
+
+def test_kiconnect_provider_with_leaked_shared_token_would_authenticate_wrongly(monkeypatch):
+    # Dokumentiert das Risiko, das from_env_dedicated_token() vermeidet:
+    # wuerde ein Aufrufer versehentlich ProviderConfig.from_env() (statt
+    # from_env_dedicated_token()) fuer KIConnectProvider verwenden, würde
+    # der AnythingLLM-Token durchgereicht. _build_provider() in
+    # run_dialogue_action_server.py nutzt deshalb explizit
+    # from_env_dedicated_token() fuer kind=="kiconnect" -- siehe
+    # test_run_dialogue_provider_wiring.py.
+    monkeypatch.setenv("ANYTHINGLLM_API_TOKEN", "internal-anythingllm-token")
+    monkeypatch.delenv("RESPONSE_LLM_API_TOKEN", raising=False)
+    leaked_config = ProviderConfig.from_env("RESPONSE_LLM")
+    provider = KIConnectProvider(_config(api_token=leaked_config.api_token, model="test-model"))
+    assert provider._headers()["Authorization"] == "Bearer internal-anythingllm-token"

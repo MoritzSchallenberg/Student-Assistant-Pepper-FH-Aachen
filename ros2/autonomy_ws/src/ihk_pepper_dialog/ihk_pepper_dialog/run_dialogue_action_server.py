@@ -101,7 +101,15 @@ def _build_provider(kind: str, env_prefix: str, mock_fixed_response: str = ""):
         # OfflineFallbackProvider zurueck, sondern propagiert den Fehler
         # direkt beim Start, damit eine falsche Konfiguration sofort
         # auffaellt statt erst beim ersten Dialogversuch.
-        return KIConnectProvider(config)
+        #
+        # Entwicklungsauftrag 04-B, Abschnitt 3: KI:connect MUSS ein
+        # eigenes Token verwenden, niemals automatisch ANYTHINGLLM_API_TOKEN
+        # geteilt bekommen. config (oben via from_env()) kann diesen
+        # geteilten Fallback bereits enthalten -- deshalb hier eine EIGENE
+        # Konfiguration ohne Fallback aufbauen, statt der oben schon
+        # aufgeloesten config zu vertrauen.
+        kiconnect_config = ProviderConfig.from_env_dedicated_token(env_prefix)
+        return KIConnectProvider(kiconnect_config)
     return OfflineFallbackProvider(config)
 
 
