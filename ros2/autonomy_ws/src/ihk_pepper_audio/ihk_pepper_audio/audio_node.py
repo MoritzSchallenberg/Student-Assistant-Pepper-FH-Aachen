@@ -16,14 +16,16 @@ docs/IMPLEMENTATION_REPORT.md.
 import queue
 import threading
 import time
+import uuid
 
 import rclpy
 from builtin_interfaces.msg import Time as TimeMsg
 from rclpy.node import Node
 from std_msgs.msg import String, Bool, Float32, UInt8
 
+from ihk_pepper_interaction import codeword_config
 from ihk_pepper_interaction.interaction_state import InteractionState
-from ihk_pepper_interfaces.msg import AudioFocusState, SoundDirection, WakewordEvent
+from ihk_pepper_interfaces.msg import AudioFocusState, InteractionCommand, SoundDirection, WakewordEvent
 
 from .audio_source import create_source, AudioSourceError, CHUNK_MS
 from .direction_sample_buffer import DirectionSampleBuffer, TimedDirectionSample
@@ -109,6 +111,8 @@ class AudioNode(Node):
         # (Transformation nach base_link passiert erst im separaten
         # sound_direction_transform_node.py, siehe AP6.1 Commit 3).
         self.declare_parameter("respeaker_frame_id", "respeaker_link")
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 12/13.
+        self.declare_parameter("codewords_config_path", codeword_config.default_codewords_path())
 
         # Entwicklungsauftrag 04-B, AP6, Abschnitt 5: ReSpeaker-Core-v2.0-
         # Konfiguration, nur relevant wenn source_kind=respeaker_core_v2.
@@ -190,6 +194,13 @@ class AudioNode(Node):
         # BT/audio_focus_node.py duerfen NUR die kanonischen abonnieren.
         self.sound_direction_pub = self.create_publisher(SoundDirection, "/audio/sound_direction_raw", 10)
         self.wakeword_event_pub = self.create_publisher(WakewordEvent, "/audio/wakeword_event_raw", 10)
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: RAW-Codewort-
+        # Ereignisse (immer frame_id=respeaker_frame_id, wie oben) --
+        # sound_direction_transform_node.py transformiert sie nach
+        # /interaction/command (kanonisch, base_link), command_router_node.py
+        # trifft darauf die eigentliche Rollen-/Autorisierungsentscheidung.
+        self.interaction_command_raw_pub = self.create_publisher(
+            InteractionCommand, "/interaction/command_raw", 10)
 
         self.create_subscription(Bool, "/pepper_bridge/speaking", self._on_speaking, 10)
         self.half_duplex = HalfDuplexController(resume_delay_s=0.5)
@@ -229,6 +240,17 @@ class AudioNode(Node):
         self.wakeword_gate = WakewordGate(
             cooldown_s=self.get_parameter("wakeword_cooldown_s").value)
         self._session_active_until = None  # None = keine aktive Sitzung
+
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 12/13: konfigurierbare
+        # Codewoerter ("Eisenbahn" etc.) -- laufen auf JEDEM transkribierten
+        # Satz (auch waehrend eines laufenden Gespraechs, siehe
+        # _conversation_confirmed_active() oben), unabhaengig vom
+        # LLM. Ladefehler sind NICHT fatal (leeres Regelwerk -> nie ein
+        # Codewort erkannt, kein Absturz des ganzen Audio-Pfads dafuer).
+        self._codeword_rules, codeword_errors = codeword_config.load_codewords(
+            self.get_parameter("codewords_config_path").value)
+        for e in codeword_errors:
+            self.get_logger().error(f"codewords.yaml ungueltig: {e}")
         # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: ersetzt die
         # vorherige einzelne "letzte Richtung"-Variable durch einen
         # zeitindizierten Puffer -- siehe direction_sample_buffer.py.
@@ -323,6 +345,33 @@ class AudioNode(Node):
             return False
         return time.monotonic() < self._session_active_until
 
+    def _conversation_confirmed_active(self) -> bool:
+        """Entwicklungsauftrag 04-B, AP7, Abschnitt 12: bestaetigter Fund
+        -- run_dialogue_action_server.py bezieht seine Transkripte
+        AUSSCHLIESSLICH von diesem Node (/audio_node/transcript), aber
+        _session_active() lief bislang als FESTES Zeitfenster
+        (session_active_timeout_s, Standard 20s) ab dem Wakeword-
+        Zeitpunkt ab -- eine laenger laufende Unterhaltung waere nach
+        Ablauf still NICHT MEHR transkribiert worden, ein Codewort wie
+        "Eisenbahn" (Auftrag Abschnitt 12: "soll auch waehrend einer
+        laufenden Unterhaltung erkannt werden") haette dann gar nicht
+        mehr ankommen koennen.
+
+        Im Unterschied zu _conversation_active_for_gate() (das bei
+        unbekanntem/veraltetem Zustand ABSICHTLICH fail-closed auf
+        "koennte aktiv sein" faellt, um ein NEUES Wakeword-Ereignis eher
+        zu blockieren) braucht DIESE Pruefung eine ECHTE, FRISCHE
+        Bestaetigung -- sonst wuerde ein fehlender/verzoegerter
+        Supervisor die Sitzung ungewollt endlos offen halten (derselbe
+        Fail-Open-Fehler wie der urspruengliche
+        wakeword.enabled-Kurzschluss, nur ueber einen anderen Pfad)."""
+        if self._interaction_state_received_at is None:
+            return False
+        max_age = self.get_parameter("interaction_state_max_age_s").value
+        if (time.monotonic() - self._interaction_state_received_at) > max_age:
+            return False
+        return self._interaction_state_value != InteractionState.IDLE
+
     def _should_process_utterance(self) -> bool:
         """Ersetzt die bisherige, direkt an self.wakeword.enabled gekoppelte
         Kurzschluss-Logik (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.4/13):
@@ -340,7 +389,12 @@ class AudioNode(Node):
         # also darf auch nie transkribiert werden.
         if not self.wakeword.enabled:
             return False
-        return self._session_active()
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 12: das feste
+        # Wakeword-Zeitfenster ALLEIN wuerde eine laenger laufende
+        # Unterhaltung stumm abschneiden -- eine ECHTE, frische
+        # Bestaetigung eines laufenden Gespraechs haelt die Sitzung
+        # zusaetzlich offen (siehe _conversation_confirmed_active()).
+        return self._session_active() or self._conversation_confirmed_active()
 
     def _build_microphone_geometry(self):
         """None, wenn die drei parallelen Arrays nicht UEBEREINSTIMMEND
@@ -669,7 +723,58 @@ class AudioNode(Node):
                         "(ihk_pepper_interaction laeuft noch nicht?)"
                     )
 
+        self._publish_codeword_command_if_matched(text, now_s, duration_s)
+
         self.transcript_pub.publish(String(data=text))
+
+    def _publish_codeword_command_if_matched(self, text: str, utterance_end_monotonic_s: float,
+                                              duration_s: float):
+        """Entwicklungsauftrag 04-B, AP7, Abschnitt 12/13: laeuft auf
+        JEDEM transkribierten Satz (auch waehrend eines laufenden
+        Gespraechs, siehe _conversation_confirmed_active()) -- NICHT nur
+        im Wakeword-Fenster. Nutzt dieselbe Zeitfenster-Auswahl aus dem
+        Richtungspuffer wie _try_wakeword_activation(), damit auch ein
+        Codewort seine ECHTE Schallrichtung bekommt, statt sie zu
+        erfinden."""
+        rule = codeword_config.detect_codeword(text, self._codeword_rules)
+        if rule is None:
+            return
+
+        margin_s = self.get_parameter("direction_window_margin_s").value
+        utterance_start_monotonic_s = utterance_end_monotonic_s - duration_s
+        with self._direction_lock:
+            direction_sample = self._direction_buffer.select_for_window(
+                utterance_start_monotonic_s - margin_s, utterance_end_monotonic_s + margin_s,
+                min_confidence=self.get_parameter("direction_min_confidence_for_wakeword").value,
+            )
+
+        msg = InteractionCommand()
+        if direction_sample is not None:
+            msg.header.stamp = _ns_to_stamp(direction_sample.ros_stamp_ns)
+            msg.direction_azimuth_rad_base = direction_sample.azimuth_rad
+            msg.direction_valid = True
+        else:
+            # Keine passende Probe im Aeusserungsfenster -- ehrlich als
+            # ungueltig melden, NIE eine Richtung erfinden (gleiches
+            # Prinzip wie _try_wakeword_activation()).
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.direction_azimuth_rad_base = 0.0
+            msg.direction_valid = False
+        msg.header.frame_id = self.get_parameter("respeaker_frame_id").value
+        msg.event_id = str(uuid.uuid4())
+        msg.command = rule.command
+        msg.raw_transcript = text  # NUR fluechtig gedacht, siehe InteractionCommand.msg-Doku
+        msg.track_id = -1  # dieser Node kennt keine RealSense-Tracks
+        msg.person_id = ""
+        msg.role = ""
+        msg.confidence = 1.0
+        # authorization_status/priority werden von command_router_node.py
+        # entschieden, NICHT hier -- dieser Node kennt weder Rollen noch
+        # Identitaeten.
+        msg.authorization_status = "pending"
+        msg.priority = 0
+        msg.reason = ""
+        self.interaction_command_raw_pub.publish(msg)
 
     def destroy_node(self):
         self._stop_event.set()

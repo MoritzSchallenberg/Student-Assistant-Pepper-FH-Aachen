@@ -34,13 +34,20 @@ Fallback auf eine erfundene Identitaets-Transformation.
 NICHT live gegen echte Hardware getestet -- kein ReSpeaker Core v2.0
 in dieser Session angeschlossen, siehe
 docs/DEVELOPMENT_ORDER_04_B_REPORT.md, AP6.1-Abschnitt.
-"""
+
+Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: transformiert seit
+diesem Auftrag zusaetzlich die Schallrichtung von Codewort-Ereignissen
+(/interaction/command_raw -> /interaction/command, gleiches Prinzip
+wie WakewordEvent) -- audio_node.py erkennt Codewoerter wie "Eisenbahn"
+auf JEDEM transkribierten Satz, dieser Node transformiert nur deren
+Richtung, command_router_node.py trifft die Rollen-/
+Autorisierungsentscheidung."""
 import rclpy
 import rclpy.duration
 import tf2_ros
 from rclpy.node import Node
 
-from ihk_pepper_interfaces.msg import SoundDirection, WakewordEvent
+from ihk_pepper_interfaces.msg import InteractionCommand, SoundDirection, WakewordEvent
 
 from .sound_ray_transform import is_measurement_too_old, transform_direction
 
@@ -71,10 +78,19 @@ class SoundDirectionTransformNode(Node):
         self.wakeword_event_pub = self.create_publisher(
             WakewordEvent, "/audio/wakeword_event", 10)
 
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: gleiches Prinzip
+        # fuer Codewort-Ereignisse (command_router_node.py trifft darauf
+        # die eigentliche Rollen-/Autorisierungsentscheidung, NICHT
+        # dieser Node).
+        self.interaction_command_pub = self.create_publisher(
+            InteractionCommand, "/interaction/command", 10)
+
         self.create_subscription(
             SoundDirection, "/audio/sound_direction_raw", self._on_sound_direction_raw, 10)
         self.create_subscription(
             WakewordEvent, "/audio/wakeword_event_raw", self._on_wakeword_event_raw, 10)
+        self.create_subscription(
+            InteractionCommand, "/interaction/command_raw", self._on_interaction_command_raw, 10)
 
     def _tf_lookup_fn(self, target_frame, source_frame, stamp):
         timeout = rclpy.duration.Duration(
@@ -166,6 +182,57 @@ class SoundDirectionTransformNode(Node):
                 f"WakewordEvent {msg.event_id}: Richtung nicht transformierbar "
                 f"({msg.header.frame_id!r}->{base_frame!r}): {result.reason}")
         self.wakeword_event_pub.publish(out)
+
+
+    def _on_interaction_command_raw(self, msg: InteractionCommand):
+        """Transformiert NUR die Schallrichtung (direction_azimuth_rad_base/
+        direction_valid) -- alle anderen Felder (event_id/command/
+        raw_transcript/...) werden unveraendert durchgereicht.
+        authorization_status/priority bleiben bewusst UNVERAENDERT
+        (Platzhalter "pending"/0 aus audio_node.py) -- die eigentliche
+        Entscheidung trifft command_router_node.py, nicht dieser Node."""
+        base_frame = self.get_parameter("base_frame").value
+        out = InteractionCommand()
+        out.header.stamp = msg.header.stamp
+        out.header.frame_id = base_frame
+        out.event_id = msg.event_id
+        out.command = msg.command
+        out.raw_transcript = msg.raw_transcript
+        out.track_id = msg.track_id
+        out.person_id = msg.person_id
+        out.role = msg.role
+        out.confidence = msg.confidence
+        out.authorization_status = msg.authorization_status
+        out.priority = msg.priority
+        out.direction_azimuth_rad_base = 0.0
+        out.direction_valid = False
+
+        if not msg.direction_valid:
+            out.reason = msg.reason or "quelle_bereits_ungueltig"
+            self.interaction_command_pub.publish(out)
+            return
+
+        if self._too_old(msg.header.stamp):
+            out.reason = "messung_zu_alt"
+            self.interaction_command_pub.publish(out)
+            return
+
+        result = transform_direction(
+            azimuth_rad=msg.direction_azimuth_rad_base,
+            confidence=msg.confidence,
+            source_frame=msg.header.frame_id,
+            target_frame=base_frame,
+            stamp=msg.header.stamp,
+            tf_lookup_fn=self._tf_lookup_fn,
+        )
+        out.direction_valid = result.valid
+        out.direction_azimuth_rad_base = result.azimuth_rad
+        out.reason = result.reason
+        if not result.valid:
+            self.get_logger().warn(
+                f"InteractionCommand {msg.event_id}: Richtung nicht transformierbar "
+                f"({msg.header.frame_id!r}->{base_frame!r}): {result.reason}")
+        self.interaction_command_pub.publish(out)
 
 
 def main(args=None):

@@ -14,7 +14,7 @@ import pytest
 from geometry_msgs.msg import TransformStamped
 
 from ihk_pepper_audio.sound_direction_transform_node import SoundDirectionTransformNode
-from ihk_pepper_interfaces.msg import SoundDirection, WakewordEvent
+from ihk_pepper_interfaces.msg import InteractionCommand, SoundDirection, WakewordEvent
 
 
 class _FakeParam:
@@ -70,6 +70,7 @@ def _yaw_transform(yaw_rad):
 class _FakeNode:
     _on_sound_direction_raw = SoundDirectionTransformNode._on_sound_direction_raw
     _on_wakeword_event_raw = SoundDirectionTransformNode._on_wakeword_event_raw
+    _on_interaction_command_raw = SoundDirectionTransformNode._on_interaction_command_raw
     _too_old = SoundDirectionTransformNode._too_old
 
     def __init__(self, base_frame="base_link", max_measurement_age_s=2.0,
@@ -81,6 +82,7 @@ class _FakeNode:
         }
         self.sound_direction_pub = _FakePublisher()
         self.wakeword_event_pub = _FakePublisher()
+        self.interaction_command_pub = _FakePublisher()
         self._now_ns = now_ns
         self._tf_lookup_fn = tf_lookup_fn or (lambda target, source, stamp: _identity_transform())
 
@@ -234,3 +236,79 @@ def test_wakeword_event_stale_measurement_rejected():
     node._on_wakeword_event_raw(_wakeword_event(stamp_ns=old_stamp_ns))
     out = node.wakeword_event_pub.messages[0]
     assert out.direction_valid is False
+
+
+# ---- InteractionCommand (Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12) ----
+
+def _interaction_command(azimuth_rad=0.3, direction_valid=True, frame_id="respeaker_link",
+                          stamp_ns=1000 * 10**9, event_id="evt-1", command="interrupt_and_look",
+                          raw_transcript="Eisenbahn", track_id=-1):
+    msg = InteractionCommand()
+    msg.header.frame_id = frame_id
+    msg.header.stamp.sec = int(stamp_ns // 10**9)
+    msg.header.stamp.nanosec = int(stamp_ns % 10**9)
+    msg.event_id = event_id
+    msg.command = command
+    msg.raw_transcript = raw_transcript
+    msg.direction_azimuth_rad_base = azimuth_rad
+    msg.direction_valid = direction_valid
+    msg.track_id = track_id
+    msg.authorization_status = "pending"
+    return msg
+
+
+def test_interaction_command_direction_is_transformed_and_republished_as_canonical():
+    node = _FakeNode(tf_lookup_fn=lambda t, s, st: _yaw_transform(math.pi / 2))
+    node._on_interaction_command_raw(_interaction_command(azimuth_rad=0.0))
+    assert len(node.interaction_command_pub.messages) == 1
+    out = node.interaction_command_pub.messages[0]
+    assert out.direction_valid is True
+    assert out.header.frame_id == "base_link"
+    assert out.direction_azimuth_rad_base == pytest.approx(math.pi / 2, abs=1e-5)
+
+
+def test_interaction_command_preserves_event_id_command_and_transcript():
+    node = _FakeNode()
+    node._on_interaction_command_raw(
+        _interaction_command(event_id="evt-99", command="follow_speaker",
+                              raw_transcript="Pepper komm mal mit", track_id=5))
+    out = node.interaction_command_pub.messages[0]
+    assert out.event_id == "evt-99"
+    assert out.command == "follow_speaker"
+    assert out.raw_transcript == "Pepper komm mal mit"
+    assert out.track_id == 5
+
+
+def test_interaction_command_with_invalid_direction_stays_invalid_without_transform_attempt():
+    calls = []
+
+    def _tf(t, s, st):
+        calls.append(1)
+        return _identity_transform()
+
+    node = _FakeNode(tf_lookup_fn=_tf)
+    node._on_interaction_command_raw(_interaction_command(direction_valid=False))
+    out = node.interaction_command_pub.messages[0]
+    assert out.direction_valid is False
+    assert calls == []
+
+
+def test_interaction_command_tf_error_is_fail_closed():
+    def _raising(t, s, st):
+        raise LookupError("keine TF")
+
+    node = _FakeNode(tf_lookup_fn=_raising)
+    node._on_interaction_command_raw(_interaction_command())
+    out = node.interaction_command_pub.messages[0]
+    assert out.direction_valid is False
+    assert out.reason.startswith("tf_fehler_")
+
+
+def test_interaction_command_stale_measurement_rejected():
+    now_ns = 5000 * 10**9
+    old_stamp_ns = now_ns - int(10.0 * 1e9)
+    node = _FakeNode(now_ns=now_ns, max_measurement_age_s=2.0)
+    node._on_interaction_command_raw(_interaction_command(stamp_ns=old_stamp_ns))
+    out = node.interaction_command_pub.messages[0]
+    assert out.direction_valid is False
+    assert out.reason == "messung_zu_alt"

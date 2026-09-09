@@ -28,6 +28,7 @@ setup(
             "motion_guard_node = ihk_pepper_interaction.motion_guard_node:main",
             "actuator_arbiter_node = ihk_pepper_interaction.actuator_arbiter_node:main",
             "orient_to_sound_node = ihk_pepper_interaction.orient_to_sound_node:main",
+            "command_router_node = ihk_pepper_interaction.command_router_node:main",
         ],
     },
 )
