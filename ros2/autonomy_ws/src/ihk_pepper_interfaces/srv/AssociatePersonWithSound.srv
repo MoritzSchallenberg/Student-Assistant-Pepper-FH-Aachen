@@ -1,0 +1,16 @@
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 13: ordnet eine gemessene
+# Schallrichtung (bereits nach base_link transformiert) genau EINER
+# Person aus den aktuellen RealSense-Personentracks zu -- oder KEINER,
+# wenn die Zuordnung mehrdeutig/nicht eindeutig genug ist. Es wird KEINE
+# Gesichtserkennung verwendet, um eine mehrdeutige Richtungszuordnung zu
+# "erraten" (Auftrag: explizit verboten).
+
+float32 sound_azimuth_rad
+builtin_interfaces/Time measured_at
+float32 max_measurement_age_s
+---
+bool valid
+int32 selected_track_id
+string reason
+float32 angular_error_deg
+float32 ambiguity_margin_deg
