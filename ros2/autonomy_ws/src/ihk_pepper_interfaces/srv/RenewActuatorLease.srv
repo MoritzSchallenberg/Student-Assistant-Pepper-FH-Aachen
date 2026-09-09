@@ -1,0 +1,10 @@
+# Entwicklungsauftrag 04-B, AP5B: verlaengert eine bestehende Lease
+# (z.B. waehrend einer laengeren Navigation, siehe Abschnitt 14).
+# Idempotent-sicher: eine unbekannte/bereits abgelaufene lease_id liefert
+# success=false, wirft nie einen Fehler.
+
+string lease_id
+float32 ttl_s
+---
+bool success
+string reason

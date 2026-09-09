@@ -26,6 +26,7 @@ setup(
             "supervisor_node = ihk_pepper_interaction.supervisor_node:main",
             "compute_health_mock_node = ihk_pepper_interaction.compute_health_mock_node:main",
             "motion_guard_node = ihk_pepper_interaction.motion_guard_node:main",
+            "actuator_arbiter_node = ihk_pepper_interaction.actuator_arbiter_node:main",
         ],
     },
 )

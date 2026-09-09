@@ -1,0 +1,7 @@
+# Entwicklungsauftrag 04-B, AP5B: gibt eine Lease frei. Idempotent --
+# mehrfaches Freigeben oder eine unbekannte lease_id liefert einfach
+# success=false, wirft nie einen Fehler (Auftrag Abschnitt 5).
+
+string lease_id
+---
+bool success

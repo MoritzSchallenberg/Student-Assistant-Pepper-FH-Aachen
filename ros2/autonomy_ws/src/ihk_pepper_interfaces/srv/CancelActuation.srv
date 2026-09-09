@@ -1,0 +1,17 @@
+# Entwicklungsauftrag 04-B, AP5B: fordert den Abbruch einer laufenden
+# Aktuation an -- ueber lease_id ODER goal_id (mindestens eines muss
+# gesetzt sein). Widerruft die Lease sofort im Arbiter; der eigentliche
+# Besitzer (z.B. pepper_bridge) bemerkt das ueber sein eigenes Polling
+# von /actuator_arbiter/state (bzw. eine direkte Statusabfrage) und
+# leitet den Abbruch an den Transport weiter -- dieser Service selbst
+# bestaetigt NUR den Arbiter-seitigen Widerruf, NICHT den tatsaechlichen
+# Hardware-Stopp (siehe docs/ACTION_CANCELLATION.md fuer den
+# Unterschied zwischen ROS-Cancel und bestaetigtem Hardware-Stopp).
+
+string lease_id
+string goal_id
+string reason
+---
+bool found
+bool already_inactive
+string message

@@ -1,0 +1,18 @@
+# Entwicklungsauftrag 04-B, AP5B: Ressourcenanfrage an den zentralen
+# Aktuator-Arbiter. priority wird vom AUFRUFER gesetzt, aber der
+# Arbiter-Node validiert sie serverseitig gegen eine feste, pro
+# Owner-Typ erlaubte Obergrenze (siehe actuator_arbiter_node.py) -- ein
+# LLM/ein frei befuellbares Feld kann NIE eine Notfallprioritaet
+# beanspruchen (Auftrag Abschnitt 3).
+
+string owner_id
+string[] resources
+string purpose
+uint8 priority
+float32 ttl_s
+string goal_id
+---
+bool granted
+string lease_id
+string reason
+string[] conflicting_owners
