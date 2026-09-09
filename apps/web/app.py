@@ -38,6 +38,40 @@ except Exception as e:
 anyllm = anything_llm_helper(_cfg.API_BASE_URL,_cfg.API_TOKEN)
 qicli = qicli(_cfg.QI_HOST, _cfg.QI_USER, _cfg.QI_PW)
 
+# Entwicklungsauftrag 04-B, AP5B, Abschnitt 15: app.py ist ein manuelles
+# Entwicklerwerkzeug aus einer FRUEHEN Projektphase -- jede Route, die
+# qicli direkt anspricht, umgeht die gesamte Bridge-/Aktuator-Arbiter-
+# Sicherheitskette (Lease/Cancel/tts_guard, siehe
+# ihk_pepper_bridge/bridge_node.py). Sicherer Default: gesperrt (siehe
+# _hardware_test_guard() unten und config.py). NIE automatisch als Teil
+# eines Produktions-/Live-Starts aktivieren.
+if _cfg.WEB_HARDWARE_TEST_ENABLED:
+    print(
+        "WARNUNG: PEPPER_WEB_HARDWARE_TEST_ENABLED=true -- app.py kann Pepper "
+        "DIREKT ansteuern, an Bridge/Aktuator-Arbiter vorbei. Nur fuer einen "
+        "bewusst beaufsichtigten Hardwaretest verwenden."
+    )
+else:
+    print(
+        "app.py: direkte Hardwareaktionen sind gesperrt "
+        "(PEPPER_WEB_HARDWARE_TEST_ENABLED=false, Standard)."
+    )
+
+
+def _hardware_test_guard():
+    """Gibt (payload, 403) zurueck, wenn direkte Hardwareaktionen gesperrt
+    sind, sonst None. JEDE Route, die qicli anspricht, ruft das zuerst auf."""
+    if _cfg.WEB_HARDWARE_TEST_ENABLED:
+        return None
+    return {
+        "error": (
+            "Direkte Hardwareaktionen sind in app.py per Default gesperrt "
+            "(manuelles Entwicklerwerkzeug, umgeht Bridge/Aktuator-Arbiter). "
+            "Nur mit PEPPER_WEB_HARDWARE_TEST_ENABLED=true in einem bewusst "
+            "beaufsichtigten Hardwaretest aktivierbar."
+        )
+    }, 403
+
 
 
 #qicli.setAutonomousLife(False)
@@ -60,6 +94,11 @@ def execute():
     func_name = request.form.get("function")
     result = None
     error = None
+
+    guard = _hardware_test_guard()
+    if guard is not None:
+        error = guard[0]["error"]
+        return render_template('result.html', function=func_name, result=result, error=error), 403
 
     try:
         if func_name == "say":
@@ -113,6 +152,9 @@ def publish_message():
 @app.route('/al/<enable>', methods=['GET', 'POST'])
 def alenable(enable):
 #    ros2_node.publish_message(text)
+    guard = _hardware_test_guard()
+    if guard is not None:
+        return guard
     if enable:
         output, error = qicli.setAutonomousLife(True)
     else:
@@ -122,6 +164,9 @@ def alenable(enable):
 @app.route('/logo', methods=['GET', 'POST'])
 def showLogo():
 #    ros2_node.publish_message(text)
+    guard = _hardware_test_guard()
+    if guard is not None:
+        return guard
     output, error = qicli.showImage(f"http://{_cfg.PC_IP}:5000/static/images/spotai.jpg")
     return{}
 
@@ -130,6 +175,9 @@ def showLogo():
 @app.route('/say/<text>', methods=['GET', 'POST'])
 def say(text):
 #    ros2_node.publish_message(text)
+    guard = _hardware_test_guard()
+    if guard is not None:
+        return guard
     output, error = qicli.say(text)
     return{}
 

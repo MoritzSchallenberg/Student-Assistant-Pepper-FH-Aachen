@@ -37,6 +37,18 @@ QI_HOST = _require("PEPPER_QI_HOST", "192.168.100.50")
 QI_USER = _require("PEPPER_QI_USER", "nao")
 QI_PW = _require("PEPPER_QI_PASSWORD")
 
+# Entwicklungsauftrag 04-B, AP5B, Abschnitt 15: app.py ist ein manuelles
+# Entwicklerwerkzeug aus einer FRUEHEN Projektphase -- es spricht qicli
+# DIREKT an, an der ihk_pepper_bridge/Aktuator-Arbiter-Sicherheitskette
+# (Lease/Cancel/tts_guard) VORBEI. Sicherer Default "false": jede
+# tatsaechliche Hardwareaktion ueber app.py bleibt gesperrt, bis diese
+# Variable explizit gesetzt wird -- verhindert eine zweite, unkoordinierte
+# SSH-Aktuator-Verbindung parallel zur Bridge in Produktion (Auftrag:
+# "keine unkoordinierte zweite SSH-Aktuator-Verbindung parallel zur
+# Bridge").
+WEB_HARDWARE_TEST_ENABLED = os.environ.get(
+    "PEPPER_WEB_HARDWARE_TEST_ENABLED", "false").strip().lower() == "true"
+
 # AnythingLLM Settings
 API_BASE_URL = os.environ.get("ANYTHINGLLM_API_BASE_URL", "http://localhost:3001/api/v1")
 API_TOKEN = _require("ANYTHINGLLM_API_TOKEN")

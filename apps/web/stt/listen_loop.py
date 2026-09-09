@@ -13,6 +13,17 @@ Antwort per qicli.say() aussprechen -> voller Kreis.
 Nutzung:
     source venv/bin/activate
     python3 stt/listen_loop.py --window 3 --model small --lang de
+
+MANUELLES ENTWICKLERWERKZEUG (Entwicklungsauftrag 04-B, AP5B, Abschnitt
+15): wird von KEINER anderen Datei importiert/automatisch gestartet --
+nur per direktem "python3 stt/listen_loop.py"-Aufruf. Baut eine EIGENE,
+von ihk_pepper_bridge UNABHAENGIGE SSH-Verbindung zu Pepper auf (rein
+lesend/Audioaufnahme -- kein say()/moveTo(), keine Aktuation). Trotzdem
+NICHT gleichzeitig mit der Bridge in Produktion betreiben, um zwei
+parallele, unkoordinierte SSH-Sitzungen zu vermeiden. Der geplante
+Ersatz ist das Kopf-Mikrofon (siehe ihk_pepper_audio/audio_source.py,
+Entwicklungsauftrag 04-B, AP15) -- dieser Pfad bleibt bis dahin als
+manueller Fallback erhalten.
 """
 import os
 import sys
@@ -35,6 +46,12 @@ def main():
     parser.add_argument("--password", default=_cfg.QI_PW)
     args = parser.parse_args()
 
+    print(
+        "MANUELLES ENTWICKLERWERKZEUG -- oeffnet eine EIGENE, von "
+        "ihk_pepper_bridge unabhaengige SSH-Verbindung zu Pepper (nur "
+        "Audioaufnahme, keine Aktuation). Nicht parallel zur Bridge in "
+        "Produktion betreiben."
+    )
     print(f"Lade Whisper-Modell '{args.model}' (CPU, int8) ...")
     model = WhisperModel(args.model, device="cpu", compute_type="int8")
     print("Modell geladen.")

@@ -159,6 +159,22 @@ def main():
     parser.add_argument("--conf", type=float, default=0.4)
     args = parser.parse_args()
 
+    # Entwicklungsauftrag 04-B, AP5B, Abschnitt 15: dieses Skript bewegt
+    # Peppers Arme ueber ROHE qicli-Shellbefehle (ALMotion.angleInterpolation)
+    # -- KOMPLETT an Motion Guard/Aktuator-Arbiter/Gestenkatalog vorbei,
+    # keine der dortigen Sicherheitspruefungen greift hier. Nie automatisch
+    # gestartet (kein Launch-/Startskript ruft dieses Modul auf), zusaetzlich
+    # jetzt auch fuer den manuellen Start gesperrt, ausser bewusst per
+    # Umgebungsvariable freigegeben (gleicher Schalter wie apps/web/app.py).
+    if not _cfg.WEB_HARDWARE_TEST_ENABLED:
+        print(
+            "ABGEBROCHEN: mimic_arms.py bewegt Pepper direkt per qicli, an "
+            "Motion Guard/Aktuator-Arbiter/Gestenkatalog vorbei. Nur mit "
+            "PEPPER_WEB_HARDWARE_TEST_ENABLED=true in einem bewusst "
+            "beaufsichtigten Hardwaretest ausfuehrbar (siehe .env.example)."
+        )
+        sys.exit(1)
+
     rclpy.init()
     node = MimicNode(duration_s=args.duration, conf=args.conf)
     try:
