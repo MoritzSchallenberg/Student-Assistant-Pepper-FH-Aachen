@@ -280,7 +280,11 @@ BT::NodeStatus SpeakText::onRunning()
 void SpeakText::onHalted()
 {
   if (goal_handle_) {
-    client_->async_cancel_goal(goal_handle_);
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "SpeakText");
+  } else {
+    last_halt_cancel_confirmed_ = false;
   }
 }
 
@@ -332,7 +336,11 @@ BT::NodeStatus PlayCatalogGesture::onRunning()
 void PlayCatalogGesture::onHalted()
 {
   if (goal_handle_) {
-    client_->async_cancel_goal(goal_handle_);
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "PlayCatalogGesture");
+  } else {
+    last_halt_cancel_confirmed_ = false;
   }
 }
 
@@ -383,7 +391,11 @@ BT::NodeStatus PlayDailyPresentation::onRunning()
 void PlayDailyPresentation::onHalted()
 {
   if (goal_handle_) {
-    client_->async_cancel_goal(goal_handle_);
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "PlayDailyPresentation");
+  } else {
+    last_halt_cancel_confirmed_ = false;
   }
 }
 
@@ -492,7 +504,11 @@ BT::NodeStatus ApproachSelectedPerson::onRunning()
 void ApproachSelectedPerson::onHalted()
 {
   if (goal_handle_) {
-    client_->async_cancel_goal(goal_handle_);
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "ApproachSelectedPerson");
+  } else {
+    last_halt_cancel_confirmed_ = false;
   }
 }
 
@@ -551,7 +567,11 @@ void RunDialogueViaBT::onHalted()
   // NIE eine Bewegungsfreigabe frei -- der Action-Server selbst ruft nie
   // SetMotionPermission auf.
   if (goal_handle_) {
-    client_->async_cancel_goal(goal_handle_);
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "RunDialogueViaBT");
+  } else {
+    last_halt_cancel_confirmed_ = false;
   }
 }
 

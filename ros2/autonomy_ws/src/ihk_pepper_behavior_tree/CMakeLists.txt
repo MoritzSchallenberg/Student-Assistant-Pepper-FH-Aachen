@@ -57,6 +57,19 @@ install(DIRECTORY launch/
 )
 
 if(BUILD_TESTING)
+  # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: rein logischer Test der
+  # begrenzten Cancel-Bestaetigung (waitForBoundedCancelConfirmation()),
+  # ohne rclcpp_action/echten Action-Server -- siehe
+  # test/test_bt_cancel_confirmation.cpp.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_bt_cancel_confirmation test/test_bt_cancel_confirmation.cpp)
+  target_include_directories(test_bt_cancel_confirmation PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  ament_target_dependencies(test_bt_cancel_confirmation
+    rclcpp rclcpp_action ihk_pepper_interfaces action_msgs std_msgs behaviortree_cpp
+  )
+
   find_package(ament_lint_auto REQUIRED)
   # ament_copyright: Copyright-Kopfzeilen sind in diesem Projekt keine
   # Konvention (keine andere Datei im Repo traegt eine) -- eine erfundene

@@ -113,6 +113,14 @@ class PresentationManagerNode(Node):
         self._progress_seconds = 0.0
         self._paused = threading.Event()
         self._repeat_requested = threading.Event()
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: das gerade laufende
+        # Say-Ziel (falls vorhanden) -- _cancel_callback() bricht es SOFORT
+        # aktiv ab, statt nur auf die naechste _check_cancel()-Pruefung
+        # zwischen zwei Schritten zu warten (vorher konnte ein Abbruch
+        # waehrend einer laufenden Anmoderation/Zusammenfassung erst NACH
+        # deren natuerlichem Ende bemerkt werden).
+        self._active_say_goal_handle = None
+        self._active_say_lock = threading.Lock()
 
         cb_group = ReentrantCallbackGroup()
 
@@ -220,6 +228,8 @@ class PresentationManagerNode(Node):
                 outcome["success"] = result.success
             except Exception as e:
                 self.get_logger().warn(f"Say-Ergebnis nicht abrufbar: {e}")
+            with self._active_say_lock:
+                self._active_say_goal_handle = None
             done.set()
 
         def on_goal_response(fut):
@@ -227,6 +237,8 @@ class PresentationManagerNode(Node):
             if not gh.accepted:
                 done.set()
                 return
+            with self._active_say_lock:
+                self._active_say_goal_handle = gh
             rf = gh.get_result_async()
             rf.add_done_callback(on_result)
 
@@ -249,7 +261,22 @@ class PresentationManagerNode(Node):
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle):
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: ein Abbruch der
+        # Praesentation beendet nicht nur die _execute()-Schleife (die den
+        # Abbruch erst an der naechsten _check_cancel()-Stelle bemerkt),
+        # sondern bricht ein GERADE LAUFENDES Say-Ziel sofort aktiv ab.
+        self._cancel_active_say()
         return CancelResponse.ACCEPT
+
+    def _cancel_active_say(self):
+        with self._active_say_lock:
+            gh = self._active_say_goal_handle
+        if gh is None:
+            return
+        try:
+            gh.cancel_goal_async()
+        except Exception as e:
+            self.get_logger().warn(f"Aktives Say-Ziel konnte nicht abgebrochen werden: {e}")
 
     def _check_cancel(self, goal_handle):
         if goal_handle.is_cancel_requested:

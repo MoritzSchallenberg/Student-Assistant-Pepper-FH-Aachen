@@ -203,6 +203,12 @@ class RunDialogueActionServer(Node):
         # von _gesture_and_wait() unmittelbar vor jeder Action gelesen
         # (Abschnitt 8) -- None ausserhalb eines Turns/fuer Systemgesten.
         self._current_gesture_recheck_context = None
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: der jeweils
+        # AKTUELL laufende Say-/PlayGesture-Goal-Handle -- ermoeglicht
+        # _cancel_active_actions(), eine bereits laufende Action aktiv
+        # abzubrechen (nicht nur zwischen zwei Segmenten zu pruefen).
+        self._active_say_goal_handle = None
+        self._active_gesture_goal_handle = None
 
         cb_group = ReentrantCallbackGroup()
 
@@ -355,6 +361,7 @@ class RunDialogueActionServer(Node):
             segment_status_cb=lambda seg_id, status: self.get_logger().debug(
                 f"Segment {seg_id}: {status}"),
             post_speech_pause_s=self.get_parameter("post_speech_pause_s").value,
+            cancel_active_fn=self._cancel_active_actions,
         )
         # Entwicklungsauftrag 04-B, AP5A, Abschnitt 7: Wiederholungsschutz
         # gilt NUR pro Sitzung (lokale Variable, nicht Node-weit -- zurueckgesetzt
@@ -405,7 +412,39 @@ class RunDialogueActionServer(Node):
                 # Aktuator-Arbiter (AP5B).
                 self._current_gesture_recheck_context = gesture_recheck_context
                 feedback(DialogueState.SPEAKING, "SPEAKING")
-                exec_result = executor.execute(response_plan)
+                # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: laeuft in
+                # einem Hintergrund-Thread, damit ein waehrenddessen
+                # eintreffender RunDialogue-Cancel TATSAECHLICH bemerkt
+                # und an executor.cancel() (-> _cancel_active_actions())
+                # durchgereicht wird -- vorher blockierte
+                # executor.execute() den Hauptthread komplett, ein
+                # Cancel waehrend des Sprechens/Gestikulierens wurde erst
+                # nach dem natuerlichen Ende ueberhaupt bemerkt.
+                exec_done = threading.Event()
+                exec_result_holder = {}
+
+                def _run_exec():
+                    exec_result_holder["value"] = executor.execute(response_plan)
+                    exec_done.set()
+
+                exec_thread = threading.Thread(target=_run_exec, daemon=True)
+                exec_thread.start()
+                while not exec_done.wait(timeout=0.1):
+                    if goal_handle.is_cancel_requested:
+                        self.get_logger().info("RunDialogue-Cancel waehrend der Ausfuehrung -- "
+                                                "aktive Say-/Gesture-Ziele werden abgebrochen.")
+                        executor.cancel()
+                        exec_done.wait(5.0)
+                        break
+                exec_result = exec_result_holder.get("value")
+                if exec_result is None:
+                    # Selbst nach der Cancel-Kulanzzeit noch nicht fertig --
+                    # ehrlich als nicht bestaetigt behandeln, keine neuen
+                    # Segmente/keine Erinnerung auf Basis eines unsicheren
+                    # Zustands.
+                    self.get_logger().warning(
+                        "ResponsePlanExecutor nach Cancel nicht rechtzeitig bestaetigt.")
+                    continue
                 if not exec_result.success and not exec_result.cancelled:
                     self.get_logger().warn("ResponsePlanExecutor meldete einen Fehlschlag.")
 
@@ -858,7 +897,8 @@ class RunDialogueActionServer(Node):
         goal.text = spoken
         goal.allow_interrupt = True
         goal.max_duration_s = 0.0
-        return self._send_goal_and_wait(self.say_client, goal, timeout_s=30.0)
+        return self._send_goal_and_wait(
+            self.say_client, goal, timeout_s=30.0, active_goal_attr="_active_say_goal_handle")
 
     def _gesture_and_wait(self, gesture_name: str, speed_scale: float) -> bool:
         if not self._recheck_before_gesture(gesture_name):
@@ -869,11 +909,19 @@ class RunDialogueActionServer(Node):
         goal = PlayGesture.Goal()
         goal.gesture_name = gesture_name
         goal.speed_scale = speed_scale
-        return self._send_goal_and_wait(self.gesture_client, goal, timeout_s=15.0)
+        return self._send_goal_and_wait(
+            self.gesture_client, goal, timeout_s=15.0, active_goal_attr="_active_gesture_goal_handle")
 
-    def _send_goal_and_wait(self, client, goal, timeout_s: float) -> bool:
+    def _send_goal_and_wait(self, client, goal, timeout_s: float, active_goal_attr: str = None) -> bool:
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: speichert den
+        angenommenen Goal-Handle (active_goal_attr, falls angegeben --
+        siehe _cancel_active_actions()) und ruft bei EIGENEM Timeout
+        tatsaechlich cancel_goal_async() auf, statt das Ziel einfach
+        unbeaufsichtigt weiterlaufen zu lassen. Wartet danach begrenzt
+        (nicht unbegrenzt) auf eine Cancel-Bestaetigung."""
         done = threading.Event()
         outcome = {"success": False}
+        goal_state = {"handle": None}
 
         def on_result(fut):
             try:
@@ -887,15 +935,44 @@ class RunDialogueActionServer(Node):
             if not gh.accepted:
                 done.set()
                 return
+            goal_state["handle"] = gh
+            if active_goal_attr:
+                setattr(self, active_goal_attr, gh)
             rf = gh.get_result_async()
             rf.add_done_callback(on_result)
 
         send_future = client.send_goal_async(goal)
         send_future.add_done_callback(on_goal_response)
-        if not done.wait(timeout_s):
-            self.get_logger().warn("Action-Aufruf hat das Timeout ueberschritten.")
+        try:
+            if done.wait(timeout_s):
+                return outcome["success"]
+            self.get_logger().warn(
+                "Action-Aufruf hat das Timeout ueberschritten -- Cancel wird angefordert.")
+            gh = goal_state["handle"]
+            if gh is not None:
+                try:
+                    gh.cancel_goal_async()
+                except Exception:
+                    self.get_logger().warning("cancel_goal_async() fehlgeschlagen.", exc_info=True)
+                # Begrenzt auf eine Cancel-Bestaetigung warten -- kein
+                # unbegrenztes Blockieren mehr.
+                done.wait(2.0)
             return False
-        return outcome["success"]
+        finally:
+            if active_goal_attr:
+                setattr(self, active_goal_attr, None)
+
+    def _cancel_active_actions(self):
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: von
+        ResponsePlanExecutor.cancel() SOFORT aufgerufen -- bricht das
+        GERADE LAUFENDE Say-/PlayGesture-Ziel aktiv ab, statt passiv auf
+        die naechste Segmentgrenze zu warten."""
+        for gh in (self._active_say_goal_handle, self._active_gesture_goal_handle):
+            if gh is not None:
+                try:
+                    gh.cancel_goal_async()
+                except Exception:
+                    self.get_logger().warning("Aktives Ziel konnte nicht abgebrochen werden.", exc_info=True)
 
 
 def _try_parse_int(value):

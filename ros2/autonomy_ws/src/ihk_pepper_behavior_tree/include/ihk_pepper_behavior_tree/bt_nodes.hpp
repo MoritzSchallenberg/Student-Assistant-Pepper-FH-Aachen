@@ -42,6 +42,48 @@ namespace ihk_pepper_bt
 // Zielperson ausgewaehlt" im Blackboard-Feld target_track_id.
 constexpr int kNoSelectedTrackId = -1;
 
+// Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: onHalted() darf eine
+// laufende Action nie nur "fire-and-forget" abbrechen (kein Feedback,
+// keine Bestaetigung), aber auch NIE unbegrenzt auf eine Bestaetigung
+// warten -- das wuerde den BT-Tick blockieren. 250ms ist bewusst kurz
+// gehalten: dieser Future wird bereits fertig, sobald der Action-Server
+// die Cancel-Anfrage per CancelGoal-Service ANGENOMMEN hat (nicht erst,
+// wenn die physische Bewegung tatsaechlich steht) -- ein schneller,
+// lokaler ROS2-Vorgang, kein Warten auf Hardware.
+constexpr std::chrono::milliseconds kHaltCancelConfirmTimeout{250};
+
+/// Wartet BEGRENZT auf die Bestaetigung eines zuvor gestellten
+/// Cancel-Requests und gibt ehrliches Feedback zurueck (true = Server hat
+/// die Cancel-Anfrage innerhalb der Frist angenommen, false = noch
+/// ausstehend -- wird NIE stillschweigend als "erledigt" behandelt).
+/// Bewusst nur ueber std::future/std::shared_future's wait_for()-
+/// Schnittstelle formuliert (kein rclcpp_action-Typ im Signaturkopf) --
+/// dasselbe "Logik von ROS trennen"-Muster wie ueberall sonst im Projekt
+/// (z.B. ihk_pepper_navigation/approach_pose.py): so bleibt die Funktion
+/// per einfachem std::promise/std::future in einem reinen Gtest ohne
+/// ROS2-Action-Infrastruktur testbar, siehe test/test_bt_cancel_confirmation.cpp.
+template<typename FutureT>
+bool waitForBoundedCancelConfirmation(
+  FutureT & cancel_future,
+  std::chrono::milliseconds timeout,
+  const rclcpp::Logger & logger,
+  const std::string & node_label)
+{
+  if (cancel_future.wait_for(timeout) == std::future_status::ready) {
+    RCLCPP_INFO(
+      logger, "%s: Cancel-Anfrage vom Action-Server bestaetigt (innerhalb von %ldms)",
+      node_label.c_str(), static_cast<long>(timeout.count()));
+    return true;
+  }
+  RCLCPP_WARN(
+    logger,
+    "%s: Cancel-Bestaetigung nach %ldms noch nicht eingetroffen -- Abbruch bleibt "
+    "angefordert, wird aber NICHT als bestaetigt behandelt (Best-Effort, siehe "
+    "docs/ACTION_CANCELLATION.md)",
+    node_label.c_str(), static_cast<long>(timeout.count()));
+  return false;
+}
+
 // ---- Bedingungen (lesen nur, keine Seiteneffekte) ----------------------
 
 /// Basisklasse fuer Bedingungen, die einen einzelnen Topic-Wert
@@ -225,6 +267,11 @@ public:
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
+  /// Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: nachvollziehbares
+  /// Cancel-Feedback -- true nur, wenn der letzte onHalted()-Aufruf eine
+  /// laufende Action hatte UND deren Cancel-Anfrage innerhalb der
+  /// Frist bestaetigt wurde.
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
 
 private:
   using SayAction = ihk_pepper_interfaces::action::Say;
@@ -234,6 +281,7 @@ private:
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
 };
 
 /// Ruft /pepper_bridge/play_gesture mit einem Namen aus dem Gestenkatalog
@@ -256,6 +304,7 @@ public:
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
 
 private:
   using GestureAction = ihk_pepper_interfaces::action::PlayGesture;
@@ -265,6 +314,7 @@ private:
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
 };
 
 /// Ruft /play_presentation auf (ihk_pepper_presentation).
@@ -284,6 +334,7 @@ public:
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
 
 private:
   using PresentationAction = ihk_pepper_interfaces::action::PlayPresentation;
@@ -293,6 +344,7 @@ private:
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
 };
 
 /// Wartet, bis fuer EXAKT die uebergebene track_id ein
@@ -346,6 +398,7 @@ public:
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
 
 private:
   using ApproachAction = ihk_pepper_interfaces::action::ApproachPerson;
@@ -355,6 +408,7 @@ private:
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
 };
 
 /// Ruft /run_dialogue auf (Entwicklungsauftrag 3, AP11) und wartet auf
@@ -383,6 +437,7 @@ public:
   BT::NodeStatus onStart() override;
   BT::NodeStatus onRunning() override;
   void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
 
 private:
   using DialogueAction = ihk_pepper_interfaces::action::RunDialogue;
@@ -392,6 +447,7 @@ private:
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
 };
 
 /// Ruft /set_interaction_state auf (neuer Service, behandelt von

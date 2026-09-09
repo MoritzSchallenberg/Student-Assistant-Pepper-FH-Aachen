@@ -54,20 +54,32 @@ class ResponsePlanExecutor:
         set_speaking_fn: Optional[Callable[[bool], None]] = None,
         segment_status_cb: Optional[Callable[[str, str], None]] = None,
         post_speech_pause_s: float = 0.3,
+        cancel_active_fn: Optional[Callable[[], None]] = None,
     ):
         """say_fn(text) -> bool, gesture_fn(name, speed_scale) -> bool --
         BEIDE blockierend, kehren erst zurueck, wenn die jeweilige Action
-        WIRKLICH fertig ist (Erfolg oder Fehlschlag), nie nur "gestartet"."""
+        WIRKLICH fertig ist (Erfolg oder Fehlschlag), nie nur "gestartet".
+
+        cancel_active_fn (Entwicklungsauftrag 04-B, AP5B, Abschnitt 13):
+        wird von cancel() SOFORT aufgerufen, zusaetzlich zum bisherigen
+        Flag (das nur zwischen zwei Segmenten geprueft wird). Der reale
+        ROS-Wrapper (run_dialogue_action_server.py) bindet hier einen
+        Aufruf, der das GERADE LAUFENDE Say-/PlayGesture-Ziel aktiv per
+        cancel_goal_async() abbricht -- vorher wartete cancel() rein
+        passiv auf die naechste Segmentgrenze, eine bereits laufende
+        Action wurde nie aktiv benachrichtigt."""
         self._say_fn = say_fn
         self._gesture_fn = gesture_fn
         self._set_speaking_fn = set_speaking_fn or (lambda _flag: None)
         self._segment_status_cb = segment_status_cb or (lambda *_a: None)
         self.post_speech_pause_s = post_speech_pause_s
+        self._cancel_active_fn = cancel_active_fn or (lambda: None)
         self._cancel_requested = threading.Event()
         self._busy = False
 
     def cancel(self) -> None:
         self._cancel_requested.set()
+        self._cancel_active_fn()
 
     def is_busy(self) -> bool:
         return self._busy

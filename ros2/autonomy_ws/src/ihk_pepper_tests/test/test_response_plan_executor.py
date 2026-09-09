@@ -205,3 +205,21 @@ def test_is_busy_reflects_state():
     plan = _Plan(segments=[_Segment(segment_id="a", text="Hallo.")])
     executor.execute(plan)
     assert executor.is_busy() is False  # nach Abschluss wieder frei
+
+
+def test_cancel_calls_cancel_active_fn_immediately():
+    # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: cancel() muss NICHT
+    # nur ein Flag setzen, sondern sofort den injizierten Hook aufrufen,
+    # der eine GERADE LAUFENDE Action aktiv abbricht.
+    calls = []
+    executor = ResponsePlanExecutor(
+        say_fn=lambda text: True, gesture_fn=lambda name, speed: True,
+        cancel_active_fn=lambda: calls.append("cancelled"),
+    )
+    executor.cancel()
+    assert calls == ["cancelled"]
+
+
+def test_cancel_active_fn_is_optional_backward_compatible():
+    executor = ResponsePlanExecutor(say_fn=lambda text: True, gesture_fn=lambda name, speed: True)
+    executor.cancel()  # darf nicht crashen ohne cancel_active_fn
