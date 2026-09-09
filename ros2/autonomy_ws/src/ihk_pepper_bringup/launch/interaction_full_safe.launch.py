@@ -353,6 +353,18 @@ def generate_launch_description():
             }],
             condition=_cond(1),
         ),
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.1/4/12: EINZIGER
+        # Publisher der kanonischen /audio/sound_direction(+_event)-Topics
+        # -- transformiert audio_node.py's RAW-Topics (_raw-Suffix, immer
+        # frame_id=respeaker_link) nach base_link. Gleiche Bedingung wie
+        # audio_node (laeuft harmlos mit, auch wenn die aktive Audioquelle
+        # in diesem Modus gar keine Richtung schaetzt -- dann kommen
+        # einfach nie RAW-Nachrichten an).
+        Node(
+            package="ihk_pepper_audio", executable="sound_direction_transform_node",
+            output="screen",
+            condition=_cond(1),
+        ),
         # Entwicklungsauftrag 04-B, AP6: laufen nur dort sinnvoll, wo
         # Audio ueberhaupt aktiv ist (gleiche Bedingung wie audio_node).
         Node(

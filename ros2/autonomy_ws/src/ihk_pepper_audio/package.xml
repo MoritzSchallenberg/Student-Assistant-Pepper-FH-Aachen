@@ -16,6 +16,12 @@
        darf nicht mehr allein vom lokalen _session_active-Flag
        abhaengen). -->
   <depend>ihk_pepper_interaction</depend>
+  <!-- Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.1/12:
+       sound_direction_transform_node.py transformiert den Schallrichtungs-
+       VEKTOR (nicht Punkt) vom respeaker_link- in den base_frame. -->
+  <depend>tf2_ros</depend>
+  <depend>tf2_geometry_msgs</depend>
+  <depend>geometry_msgs</depend>
 
   <test_depend>python3-pytest</test_depend>
 

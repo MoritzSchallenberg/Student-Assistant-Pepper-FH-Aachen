@@ -144,8 +144,14 @@ class AudioNode(Node):
         self.command_pub = self.create_publisher(String, "voice_command", 10)
         self.source_ok_pub = self.create_publisher(Bool, "source_ok", 10)
         self.segment_duration_pub = self.create_publisher(Float32, "last_segment_duration", 10)
-        self.sound_direction_pub = self.create_publisher(SoundDirection, "/audio/sound_direction", 10)
-        self.wakeword_event_pub = self.create_publisher(WakewordEvent, "/audio/wakeword_event", 10)
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 4/12: strikte Trennung
+        # RAW (dieser Node, IMMER frame_id=respeaker_frame_id, roh relativ
+        # zum Mikrofonarray) vs. KANONISCH (nur sound_direction_transform_node.py
+        # publiziert das, IMMER frame_id=base_frame, siehe dort) -- kein
+        # anderer Node darf je auf die kanonischen Topics publizieren, und
+        # BT/audio_focus_node.py duerfen NUR die kanonischen abonnieren.
+        self.sound_direction_pub = self.create_publisher(SoundDirection, "/audio/sound_direction_raw", 10)
+        self.wakeword_event_pub = self.create_publisher(WakewordEvent, "/audio/wakeword_event_raw", 10)
 
         self.create_subscription(Bool, "/pepper_bridge/speaking", self._on_speaking, 10)
         self.half_duplex = HalfDuplexController(resume_delay_s=0.5)

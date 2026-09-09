@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "audio_node = ihk_pepper_audio.audio_node:main",
             "audio_focus_node = ihk_pepper_audio.audio_focus_node:main",
+            "sound_direction_transform_node = ihk_pepper_audio.sound_direction_transform_node:main",
         ],
     },
 )
