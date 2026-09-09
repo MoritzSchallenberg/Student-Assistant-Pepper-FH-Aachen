@@ -1,0 +1,31 @@
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 7: sicherer Hardware-
+# Grenzpunkt fuer JEDE Kopfbewegung -- ausschliesslich HeadYaw/HeadPitch,
+# NIEMALS die Basis. Erwirbt vor jeder Bewegung eine HEAD-Lease vom
+# Aktuator-Arbiter (siehe docs/ACTUATOR_ARBITER.md), erneuert sie bei
+# Bedarf und gibt sie in JEDEM Ergebnis-/Fehlerpfad wieder frei.
+#
+# source_stamp/max_source_age_s: der Server vertraut NICHT blind darauf,
+# dass der Zielwinkel noch aktuell ist -- ein zu alter Ursprungswert
+# (z.B. eine laengst veraltete Schallrichtung) fuehrt zum sofortigen
+# Abbruch, statt eine veraltete Bewegung auszufuehren (fail-closed, wie
+# ueberall sonst im Projekt).
+
+# Goal
+float32 head_yaw_rad
+float32 head_pitch_rad
+float32 max_speed_scale
+builtin_interfaces/Time source_stamp
+float32 max_source_age_s
+string owner_id
+---
+# Result
+bool success
+float32 final_head_yaw_rad
+float32 final_head_pitch_rad
+string error_message
+---
+# Feedback
+# einer aus: acquiring_lease, moving, holding, releasing_lease
+string status
+float32 current_head_yaw_rad
+float32 current_head_pitch_rad

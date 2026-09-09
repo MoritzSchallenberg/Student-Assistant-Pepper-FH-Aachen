@@ -1,0 +1,22 @@
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 7: semantische Action --
+# berechnet aus einer gemessenen Schallrichtung (bereits nach base_link
+# transformiert, siehe docs/RESPEAKER_CORE_V2_INTEGRATION.md, Abschnitt
+# "Koordinatensysteme") ein sicheres, begrenztes Kopfziel und ruft
+# anschliessend SetHeadPose auf. Fuehrt selbst KEINE eigene
+# Gelenkbewegung aus, keine eigene Lease-Verwaltung (delegiert an
+# SetHeadPose).
+
+# Goal
+string wakeword_event_id
+float32 azimuth_rad_base_link
+builtin_interfaces/Time measured_at
+float32 max_measurement_age_s
+---
+# Result
+bool success
+float32 final_head_yaw_rad
+string error_message
+---
+# Feedback
+# einer aus: validating, orienting, done
+string status

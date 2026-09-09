@@ -21,6 +21,9 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ActuatorLease.msg"
   "msg/ActuatorResourceState.msg"
   "msg/ActuatorState.msg"
+  "msg/SoundDirection.msg"
+  "msg/WakewordEvent.msg"
+  "msg/AudioFocusState.msg"
   "srv/SetSystemMode.srv"
   "srv/SelectDailyTopic.srv"
   "srv/ReloadKnowledge.srv"
@@ -46,6 +49,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/GuidePerson.action"
   "action/FollowPerson.action"
   "action/PlayGesture.action"
+  "action/SetHeadPose.action"
+  "action/OrientToSound.action"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces action_msgs
 )
 
