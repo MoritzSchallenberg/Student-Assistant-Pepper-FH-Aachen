@@ -26,13 +26,17 @@
 #include <ihk_pepper_interfaces/action/play_presentation.hpp>
 #include <ihk_pepper_interfaces/action/approach_person.hpp>
 #include <ihk_pepper_interfaces/action/run_dialogue.hpp>
+#include <ihk_pepper_interfaces/action/orient_to_sound.hpp>
 #include <ihk_pepper_interfaces/msg/safety_state.hpp>
 #include <ihk_pepper_interfaces/msg/system_health.hpp>
 #include <ihk_pepper_interfaces/msg/person_track_array.hpp>
 #include <ihk_pepper_interfaces/msg/wave_gesture_event.hpp>
+#include <ihk_pepper_interfaces/msg/wakeword_event.hpp>
 #include <ihk_pepper_interfaces/srv/cancel_interaction.hpp>
 #include <ihk_pepper_interfaces/srv/set_interaction_state.hpp>
+#include <ihk_pepper_interfaces/srv/associate_person_with_sound.hpp>
 #include <action_msgs/srv/cancel_goal.hpp>
+#include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8.hpp>
 
 namespace ihk_pepper_bt
@@ -157,6 +161,87 @@ constexpr uint8_t INTERACTION_STATE_NAVIGATING = 4;
 // Entwicklungsauftrag 3, AP11: Zielzustand nach erfolgreicher Mock-
 // Annaeherung (siehe ihk_pepper_interaction/interaction_state.py).
 constexpr uint8_t INTERACTION_STATE_CONVERSATION_READY = 7;
+
+/// SUCCESS nur, wenn ein FRISCHES WakewordEvent mit gueltiger Richtung
+/// vorliegt (Entwicklungsauftrag 04-B, AP6, Abschnitt 8/14). Schreibt
+/// event_id/azimuth_rad/measured_at_sec auf das Blackboard fuer
+/// OrientHeadToSound/FindPersonNearSoundRay -- bewusst als
+/// SyncActionNode (wie SelectStablePerson), nicht als reine Bedingung,
+/// da Ausgabeports geschrieben werden.
+///
+/// KEINE eigene "schon verbraucht"-Buchfuehrung -- das erledigt bereits
+/// der bestehende Interaktionszustand: nach einer ERFOLGREICHEN
+/// Begruessung wechselt /interaction_state auf CONVERSATION_READY, womit
+/// IsConversationInactive (davor in der Sequence) das naechste
+/// WaitForFreshWakeword-Tick ohnehin blockiert. Ein wiederholtes Ticken
+/// mit demselben, noch frischen Ereignis nach einem FEHLGESCHLAGENEN
+/// Versuch (z.B. Person nicht gefunden) ist bewusst erlaubt -- bleibt
+/// durch max_age_s selbst begrenzt und ist kein Sicherheitsrisiko
+/// (hoechstens eine erneute, vorsichtige Kopfausrichtung).
+class WaitForFreshWakeword : public BT::SyncActionNode
+{
+public:
+  WaitForFreshWakeword(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<double>("max_age_s", 2.0, ""),
+      BT::OutputPort<std::string>("wakeword_event_id"),
+      BT::OutputPort<double>("azimuth_rad"),
+      BT::OutputPort<double>("measured_at_sec"),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::WakewordEvent>::SharedPtr sub_;
+  std::string last_event_id_;
+  float azimuth_rad_ {0.0f};
+  bool direction_valid_ {false};
+  std::chrono::steady_clock::time_point last_received_;
+  bool have_reading_ {false};
+};
+
+/// SUCCESS nur, wenn weder Mapping noch Nav2-Fahrt aktiv sind
+/// (Entwicklungsauftrag 04-B, AP6, Abschnitt 12: "Waehrend aktivem
+/// Mapping oder fahrendem Nav2 darf keine Wakeword-Kopfbewegung
+/// erfolgen"). Verteidigung in der Tiefe -- orient_to_sound_node.py
+/// prueft dieselben Bedingungen serverseitig nochmal vollstaendig.
+class IsHeadOrientationAllowed : public TopicWatchingCondition
+{
+public:
+  IsHeadOrientationAllowed(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts() {return {};}
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr mapping_sub_;
+  rclcpp::Subscription<std_msgs::msg::Bool>::SharedPtr nav2_sub_;
+  bool mapping_active_ {true};   // sicherer Default bis zur ersten Nachricht
+  bool nav2_moving_ {true};
+};
+
+/// SUCCESS nur, wenn der ROS2-Parameter "allow_unsolicited_attract" auf
+/// dem bt_executor-Node explizit auf true gesetzt wurde (Entwicklungsauftrag
+/// 04-B, AP6, Abschnitt 14: sicherer Standardwert false -- das bisherige
+/// ungefragte Winken im IdleAttractSubtree darf nicht mehr automatisch
+/// laufen).
+class IsUnsolicitedAttractAllowed : public BT::ConditionNode
+{
+public:
+  IsUnsolicitedAttractAllowed(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts() {return {};}
+  BT::NodeStatus tick() override;
+
+private:
+  bool allowed_ {false};
+};
 
 /// SUCCESS nur, wenn /safety_state aktuell (nicht aelter als max_age_s)
 /// UND weder emergency_stop noch compute_power_invalid gemeldet ist.
@@ -409,6 +494,76 @@ private:
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
   bool last_halt_cancel_confirmed_ {false};
+};
+
+/// Ruft /orient_to_sound auf (Entwicklungsauftrag 04-B, AP6, Abschnitt
+/// 7/14) -- richtet den Kopf begrenzt auf eine gemessene Schallrichtung
+/// aus. azimuth_rad/measured_at_sec kommen von WaitForFreshWakeword.
+/// onHalted() bricht ein laufendes Ausrichten wirklich ab, gleiches
+/// Muster wie ApproachSelectedPerson.
+class OrientHeadToSound : public BT::StatefulActionNode
+{
+public:
+  OrientHeadToSound(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<std::string>("wakeword_event_id"),
+      BT::InputPort<double>("azimuth_rad"),
+      BT::InputPort<double>("measured_at_sec"),
+      BT::InputPort<double>("max_measurement_age_s", 2.0, ""),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
+
+private:
+  using OrientAction = ihk_pepper_interfaces::action::OrientToSound;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<OrientAction>;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client<OrientAction>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> result_future_;
+  GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
+};
+
+/// Ruft /associate_person_with_sound auf (Entwicklungsauftrag 04-B, AP6,
+/// Abschnitt 13) -- ordnet die gemessene Schallrichtung genau EINER
+/// RealSense-Person zu, oder KEINER bei Mehrdeutigkeit. Schreibt
+/// target_track_id (dasselbe Blackboard-Feld, das SelectStablePerson
+/// sonst befuellt) NUR bei erfolgreicher, eindeutiger Zuordnung --
+/// FAILURE bei Mehrdeutigkeit/keiner Person, kein target_track_id
+/// gesetzt.
+class FindPersonNearSoundRay : public BT::StatefulActionNode
+{
+public:
+  FindPersonNearSoundRay(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<double>("azimuth_rad"),
+      BT::InputPort<double>("measured_at_sec"),
+      BT::InputPort<double>("max_measurement_age_s", 2.0, ""),
+      BT::OutputPort<int>("target_track_id"),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  using AssociateSrv = ihk_pepper_interfaces::srv::AssociatePersonWithSound;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Client<AssociateSrv>::SharedPtr client_;
+  std::future<AssociateSrv::Response::SharedPtr> future_;
+  bool have_future_ {false};
 };
 
 /// Ruft /run_dialogue auf (Entwicklungsauftrag 3, AP11) und wartet auf

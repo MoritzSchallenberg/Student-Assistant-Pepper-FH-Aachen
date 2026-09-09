@@ -99,6 +99,16 @@ int main(int argc, char ** argv)
       return std::make_unique<ihk_pepper_bt::InteractionStateCondition>(
         name, config, node, ihk_pepper_bt::INTERACTION_STATE_CONVERSATION_READY);
     });
+  // Entwicklungsauftrag 04-B, AP6, Abschnitt 8/14: Wakeword-gesteuerter
+  // Begruessen-Ablauf braucht "ist gerade KEIN Gespraech aktiv" --
+  // dieselbe InteractionStateCondition-Klasse, nur unter neuem Namen mit
+  // expected_state=IDLE registriert (kein neuer C++-Knotentyp noetig).
+  factory.registerBuilder<ihk_pepper_bt::InteractionStateCondition>(
+    "IsConversationInactive",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::InteractionStateCondition>(
+        name, config, node, ihk_pepper_bt::INTERACTION_STATE_IDLE);
+    });
 
   // Entwicklungsauftrag 1, Abschnitt 6: neuer Begruessen-und-Annaehern-Ablauf.
   factory.registerBuilder<ihk_pepper_bt::IsSystemReady>(
@@ -126,6 +136,33 @@ int main(int argc, char ** argv)
     "ApproachSelectedPerson",
     [node](const std::string & name, const BT::NodeConfig & config) {
       return std::make_unique<ihk_pepper_bt::ApproachSelectedPerson>(name, config, node);
+    });
+  // Entwicklungsauftrag 04-B, AP6, Abschnitt 8/13/14: Wakeword-gesteuerter
+  // Begruessen-Ablauf.
+  factory.registerBuilder<ihk_pepper_bt::WaitForFreshWakeword>(
+    "WaitForFreshWakeword",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::WaitForFreshWakeword>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::IsHeadOrientationAllowed>(
+    "IsHeadOrientationAllowed",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::IsHeadOrientationAllowed>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::OrientHeadToSound>(
+    "OrientHeadToSound",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::OrientHeadToSound>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::FindPersonNearSoundRay>(
+    "FindPersonNearSoundRay",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::FindPersonNearSoundRay>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::IsUnsolicitedAttractAllowed>(
+    "IsUnsolicitedAttractAllowed",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::IsUnsolicitedAttractAllowed>(name, config, node);
     });
   factory.registerBuilder<ihk_pepper_bt::SetInteractionState>(
     "SetInteractionState",

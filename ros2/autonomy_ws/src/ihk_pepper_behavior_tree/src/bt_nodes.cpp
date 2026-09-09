@@ -75,6 +75,89 @@ BT::NodeStatus InteractionStateCondition::tick()
   return current_state_ == expected_state_ ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
 }
 
+// ---- WaitForFreshWakeword (Entwicklungsauftrag 04-B, AP6, Abschnitt 8/14) ----
+
+WaitForFreshWakeword::WaitForFreshWakeword(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  sub_ = node->create_subscription<ihk_pepper_interfaces::msg::WakewordEvent>(
+    "/audio/wakeword_event", 10,
+    [this](const ihk_pepper_interfaces::msg::WakewordEvent::SharedPtr msg) {
+      last_event_id_ = msg->event_id;
+      azimuth_rad_ = msg->azimuth_rad;
+      direction_valid_ = msg->direction_valid;
+      last_received_ = std::chrono::steady_clock::now();
+      have_reading_ = true;
+    });
+}
+
+BT::NodeStatus WaitForFreshWakeword::tick()
+{
+  if (!have_reading_ || !direction_valid_ || last_event_id_.empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  double max_age_s = getInput<double>("max_age_s").value_or(2.0);
+  double age_s = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - last_received_).count();
+  if (age_s > max_age_s) {
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("wakeword_event_id", last_event_id_);
+  setOutput("azimuth_rad", static_cast<double>(azimuth_rad_));
+  // measured_at_sec wird bewusst als "jetzt" (Empfangszeitpunkt dieses
+  // Ticks) weitergegeben, nicht als Nachrichten-Header-Zeitstempel --
+  // OrientHeadToSound/FindPersonNearSoundRay pruefen ohnehin nur die
+  // seither vergangene Zeit ab diesem Punkt, keine absolute Systemuhr-
+  // Korrelation noetig.
+  double now_sec = std::chrono::duration<double>(
+    std::chrono::system_clock::now().time_since_epoch()).count();
+  setOutput("measured_at_sec", now_sec);
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---- IsHeadOrientationAllowed (Entwicklungsauftrag 04-B, AP6, Abschnitt 12) ----
+
+IsHeadOrientationAllowed::IsHeadOrientationAllowed(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: TopicWatchingCondition(name, config)
+{
+  mapping_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    "/mapping_active", 10,
+    [this](const std_msgs::msg::Bool::SharedPtr msg) {mapping_active_ = msg->data;});
+  nav2_sub_ = node->create_subscription<std_msgs::msg::Bool>(
+    "/nav2_moving", 10,
+    [this](const std_msgs::msg::Bool::SharedPtr msg) {nav2_moving_ = msg->data;});
+}
+
+BT::NodeStatus IsHeadOrientationAllowed::tick()
+{
+  if (mapping_active_ || nav2_moving_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---- IsUnsolicitedAttractAllowed (Entwicklungsauftrag 04-B, AP6, Abschnitt 14) ----
+
+IsUnsolicitedAttractAllowed::IsUnsolicitedAttractAllowed(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::ConditionNode(name, config)
+{
+  if (!node->has_parameter("allow_unsolicited_attract")) {
+    node->declare_parameter<bool>("allow_unsolicited_attract", false);
+  }
+  allowed_ = node->get_parameter("allow_unsolicited_attract").as_bool();
+}
+
+BT::NodeStatus IsUnsolicitedAttractAllowed::tick()
+{
+  return allowed_ ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
 // ---- IsSystemReady ----------------------------------------------------------
 
 IsSystemReady::IsSystemReady(
@@ -510,6 +593,128 @@ void ApproachSelectedPerson::onHalted()
   } else {
     last_halt_cancel_confirmed_ = false;
   }
+}
+
+// ---- OrientHeadToSound (Entwicklungsauftrag 04-B, AP6, Abschnitt 7/14) ----
+
+OrientHeadToSound::OrientHeadToSound(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = rclcpp_action::create_client<OrientAction>(node_, "/orient_to_sound");
+}
+
+BT::NodeStatus OrientHeadToSound::onStart()
+{
+  auto azimuth_rad = getInput<double>("azimuth_rad");
+  auto measured_at_sec = getInput<double>("measured_at_sec");
+  if (!azimuth_rad || !measured_at_sec) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->wait_for_action_server(std::chrono::seconds(1))) {
+    RCLCPP_WARN(node_->get_logger(), "OrientHeadToSound: OrientToSound-Action nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  OrientAction::Goal goal;
+  goal.wakeword_event_id = getInput<std::string>("wakeword_event_id").value_or("");
+  goal.azimuth_rad_base_link = static_cast<float>(azimuth_rad.value());
+  auto whole_sec = static_cast<int32_t>(measured_at_sec.value());
+  goal.measured_at.sec = whole_sec;
+  goal.measured_at.nanosec = static_cast<uint32_t>(
+    (measured_at_sec.value() - whole_sec) * 1e9);
+  goal.max_measurement_age_s = static_cast<float>(
+    getInput<double>("max_measurement_age_s").value_or(2.0));
+  goal_handle_.reset();
+  goal_future_ = client_->async_send_goal(goal);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus OrientHeadToSound::onRunning()
+{
+  if (!goal_handle_) {
+    if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_future_.get();
+    if (!goal_handle_) {
+      return BT::NodeStatus::FAILURE;
+    }
+    result_future_ = client_->async_get_result(goal_handle_);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto result = result_future_.get();
+  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+void OrientHeadToSound::onHalted()
+{
+  if (goal_handle_) {
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "OrientHeadToSound");
+  } else {
+    last_halt_cancel_confirmed_ = false;
+  }
+}
+
+// ---- FindPersonNearSoundRay (Entwicklungsauftrag 04-B, AP6, Abschnitt 13) ----
+
+FindPersonNearSoundRay::FindPersonNearSoundRay(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = node_->create_client<AssociateSrv>("/associate_person_with_sound");
+}
+
+BT::NodeStatus FindPersonNearSoundRay::onStart()
+{
+  auto azimuth_rad = getInput<double>("azimuth_rad");
+  auto measured_at_sec = getInput<double>("measured_at_sec");
+  if (!azimuth_rad || !measured_at_sec) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->service_is_ready()) {
+    RCLCPP_WARN(node_->get_logger(), "FindPersonNearSoundRay: Service nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  auto request = std::make_shared<AssociateSrv::Request>();
+  request->sound_azimuth_rad = static_cast<float>(azimuth_rad.value());
+  auto whole_sec = static_cast<int32_t>(measured_at_sec.value());
+  request->measured_at.sec = whole_sec;
+  request->measured_at.nanosec = static_cast<uint32_t>(
+    (measured_at_sec.value() - whole_sec) * 1e9);
+  request->max_measurement_age_s = static_cast<float>(
+    getInput<double>("max_measurement_age_s").value_or(2.0));
+  future_ = client_->async_send_request(request).future;
+  have_future_ = true;
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus FindPersonNearSoundRay::onRunning()
+{
+  if (!have_future_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto response = future_.get();
+  have_future_ = false;
+  if (!response->valid) {
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("target_track_id", response->selected_track_id);
+  return BT::NodeStatus::SUCCESS;
+}
+
+void FindPersonNearSoundRay::onHalted()
+{
+  have_future_ = false;
 }
 
 // ---- RunDialogueViaBT (Entwicklungsauftrag 3, AP11) ----------------------

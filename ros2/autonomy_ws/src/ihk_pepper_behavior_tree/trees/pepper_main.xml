@@ -113,11 +113,35 @@
        ClearSelectedPerson das Blackboard auf (IMMER SUCCESS) – naechster
        Tick beginnt wieder frisch bei SelectStablePerson, kein
        automatischer Wiederanlauf einer bereits abgebrochenen Annaeherung. -->
+  <!-- Entwicklungsauftrag 04-B, AP6, Abschnitt 14: das bisherige
+       ungefragte Winken zu jeder erkannten stabilen Person (per
+       SelectStablePerson) ist ERSETZT durch einen Wakeword-gesteuerten
+       Ablauf – SelectStablePerson waehlt hier NICHT mehr selbststaendig
+       irgendeine Person, target_track_id kommt stattdessen von
+       FindPersonNearSoundRay (audiovisuelle Zuordnung zur gemessenen
+       Schallrichtung). Ablauf: Gespraech muss inaktiv sein -> frisches
+       Wakeword-Ereignis -> Kopfausrichtung erlaubt (kein Mapping/keine
+       Nav2-Fahrt) -> Kopf vorsichtig zur Schallrichtung ausrichten ->
+       genau EINE Person in diesem Bereich finden (sonst FAILURE bei
+       Mehrdeutigkeit) -> ERST DANACH der bestehende
+       Gruss-/Rueckwink-/Annaeherungsablauf, unveraendert. -->
   <BehaviorTree ID="GreetAndApproachSubtree">
     <Sequence name="GreetAndApproach">
       <IsSystemReady max_age_s="3.0"/>
-      <SelectStablePerson selected_track_id="{target_track_id}"
-                           min_interest_score="0.5" max_track_age_s="2.0"/>
+      <IsConversationInactive/>
+      <WaitForFreshWakeword max_age_s="2.0"
+                             wakeword_event_id="{wakeword_event_id}"
+                             azimuth_rad="{wakeword_azimuth_rad}"
+                             measured_at_sec="{wakeword_measured_at_sec}"/>
+      <IsHeadOrientationAllowed/>
+      <OrientHeadToSound wakeword_event_id="{wakeword_event_id}"
+                          azimuth_rad="{wakeword_azimuth_rad}"
+                          measured_at_sec="{wakeword_measured_at_sec}"
+                          max_measurement_age_s="2.0"/>
+      <FindPersonNearSoundRay azimuth_rad="{wakeword_azimuth_rad}"
+                               measured_at_sec="{wakeword_measured_at_sec}"
+                               max_measurement_age_s="2.0"
+                               target_track_id="{target_track_id}"/>
       <Fallback name="GreetWaveApproachOrCleanup">
         <Sequence name="GreetWaveApproach">
           <HasGreetingCooldownExpired track_id="{target_track_id}" cooldown_s="60.0"/>
@@ -132,9 +156,16 @@
     </Sequence>
   </BehaviorTree>
 
+  <!-- Entwicklungsauftrag 04-B, AP6, Abschnitt 14: das ungefragte Winken
+       hier ist per Default GESPERRT (allow_unsolicited_attract=false) –
+       die eigentliche Begruessung laeuft jetzt ueber den Wakeword-
+       gesteuerten Ablauf in GreetAndApproachSubtree. Dieser Zweig bleibt
+       nur als bewusst deaktivierbare Ausnahme erhalten (z.B. fuer eine
+       Messestand-Demo ohne Mikrofon), niemals als Standardverhalten. -->
   <BehaviorTree ID="IdleAttractSubtree">
     <Fallback name="IdleAttract">
       <Sequence name="Attract">
+        <IsUnsolicitedAttractAllowed/>
         <IsPersonAttracted/>
         <PlayCatalogGesture gesture_name="wave_right" speed_scale="1.0"/>
       </Sequence>
@@ -227,6 +258,38 @@
       <input_port name="session_id">int (Track-ID) -- wird in onStart() zu RunDialogue.action's string-Feld session_id umgewandelt.</input_port>
       <description>Ruft /run_dialogue auf, bricht bei Praeemption (Safety/ReactiveFallback) die laufende Action wirklich ab. Entwicklungsauftrag 3, AP11.</description>
     </Action>
+
+    <!-- Entwicklungsauftrag 04-B, AP6: Wakeword-gesteuerter Begruessen-Ablauf. -->
+    <Condition ID="IsConversationInactive">
+      <description>SUCCESS wenn /interaction_state == IDLE (0). Verhindert ein Wakeword-Ereignis waehrend laufender Interaktion.</description>
+    </Condition>
+    <Action ID="WaitForFreshWakeword">
+      <input_port name="max_age_s" default="2.0"/>
+      <output_port name="wakeword_event_id"/>
+      <output_port name="azimuth_rad"/>
+      <output_port name="measured_at_sec"/>
+      <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten WakewordEvent mit gueltiger Richtung.</description>
+    </Action>
+    <Condition ID="IsHeadOrientationAllowed">
+      <description>SUCCESS wenn weder Mapping noch Nav2-Fahrt aktiv sind (Kopf bleibt sonst fest, RealSense-Pose beeinflusst SLAM/Hinderniswahrnehmung).</description>
+    </Condition>
+    <Action ID="OrientHeadToSound">
+      <input_port name="wakeword_event_id"/>
+      <input_port name="azimuth_rad"/>
+      <input_port name="measured_at_sec"/>
+      <input_port name="max_measurement_age_s" default="2.0"/>
+      <description>Ruft /orient_to_sound auf -- begrenzte, vorsichtige Kopfausrichtung ueber eine HEAD-Lease.</description>
+    </Action>
+    <Action ID="FindPersonNearSoundRay">
+      <input_port name="azimuth_rad"/>
+      <input_port name="measured_at_sec"/>
+      <input_port name="max_measurement_age_s" default="2.0"/>
+      <output_port name="target_track_id"/>
+      <description>Ruft /associate_person_with_sound auf -- FAILURE bei Mehrdeutigkeit/keiner Person, kein target_track_id gesetzt.</description>
+    </Action>
+    <Condition ID="IsUnsolicitedAttractAllowed">
+      <description>SUCCESS nur wenn der Parameter allow_unsolicited_attract explizit auf true gesetzt ist (Standard: false).</description>
+    </Condition>
   </TreeNodesModel>
 
 </root>

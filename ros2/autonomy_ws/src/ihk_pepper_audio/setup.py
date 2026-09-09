@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "audio_node = ihk_pepper_audio.audio_node:main",
+            "audio_focus_node = ihk_pepper_audio.audio_focus_node:main",
         ],
     },
 )
