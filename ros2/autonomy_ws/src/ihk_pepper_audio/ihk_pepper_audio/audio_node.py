@@ -18,6 +18,7 @@ import threading
 import time
 
 import rclpy
+from builtin_interfaces.msg import Time as TimeMsg
 from rclpy.node import Node
 from std_msgs.msg import String, Bool, Float32, UInt8
 
@@ -25,12 +26,29 @@ from ihk_pepper_interaction.interaction_state import InteractionState
 from ihk_pepper_interfaces.msg import SoundDirection, WakewordEvent
 
 from .audio_source import create_source, AudioSourceError, CHUNK_MS
+from .direction_sample_buffer import DirectionSampleBuffer, TimedDirectionSample
 from .ring_buffer import RingBuffer
 from .vad_segmenter import UtteranceSegmenter, create_vad_backend
 from .half_duplex import HalfDuplexController
 from .cancel_words import detect_command, is_hard_stop
 from .wakeword import WakewordDetector
 from .wakeword_gate import WakewordGate
+
+# Entwicklungsauftrag 04-B, AP6.1, Abschnitt 13.
+ACTIVATION_MODE_WAKEWORD_REQUIRED = "wakeword_required"
+ACTIVATION_MODE_PUSH_TO_TALK = "push_to_talk"
+ACTIVATION_MODE_CONTINUOUS_DEVELOPMENT = "continuous_development"
+VALID_ACTIVATION_MODES = (
+    ACTIVATION_MODE_WAKEWORD_REQUIRED, ACTIVATION_MODE_PUSH_TO_TALK,
+    ACTIVATION_MODE_CONTINUOUS_DEVELOPMENT,
+)
+
+
+def _ns_to_stamp(ns: int) -> TimeMsg:
+    stamp = TimeMsg()
+    stamp.sec = int(ns // 1_000_000_000)
+    stamp.nanosec = int(ns % 1_000_000_000)
+    return stamp
 
 try:
     from ihk_pepper_interfaces.srv import CancelInteraction
@@ -69,6 +87,29 @@ class AudioNode(Node):
         self.declare_parameter("session_active_timeout_s", 20.0)
         self.declare_parameter("interaction_state_max_age_s", 3.0)
 
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 13: expliziter
+        # Aktivierungsmodus ersetzt das bisherige implizite
+        # "if not self.wakeword.enabled: return True" -- das war ein
+        # bestaetigter Fail-Open-Fund (ein fehlendes Modell fuehrte zu
+        # DAUERHAFTER Transkription, nicht zu keiner Sitzung).
+        # production_mode (analog zu gesture_memory_node.py) sperrt
+        # continuous_development serverseitig, unabhaengig vom Launch.
+        self.declare_parameter("activation_mode", ACTIVATION_MODE_WAKEWORD_REQUIRED)
+        self.declare_parameter("production_mode", False)
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: begrenzter
+        # Zeitpuffer fuer Richtungsproben statt einer einzelnen globalen
+        # "letzte Richtung"-Variable.
+        self.declare_parameter("direction_buffer_max_duration_s", 3.0)
+        self.declare_parameter("direction_window_margin_s", 0.5)
+        self.declare_parameter("direction_min_confidence_for_wakeword", 0.0)
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.3: der von
+        # audio_node.py veroeffentlichte Winkel ist IMMER relativ zum
+        # Mikrofonarray selbst -- der Frame-Name macht das explizit
+        # (Transformation nach base_link passiert erst im separaten
+        # sound_direction_transform_node.py, siehe AP6.1 Commit 3).
+        self.declare_parameter("respeaker_frame_id", "respeaker_link")
+
         # Entwicklungsauftrag 04-B, AP6, Abschnitt 5: ReSpeaker-Core-v2.0-
         # Konfiguration, nur relevant wenn source_kind=respeaker_core_v2.
         self.declare_parameter("respeaker_transport_kind", "mock")
@@ -85,6 +126,20 @@ class AudioNode(Node):
         self.declare_parameter("respeaker_microphone_channels", [0, 1, 2, 3, 4, 5])
         self.declare_parameter("respeaker_mic_spacing_m", 0.035)
 
+        activation_mode = self.get_parameter("activation_mode").value
+        if activation_mode not in VALID_ACTIVATION_MODES:
+            raise RuntimeError(
+                f"audio_node: unbekannter activation_mode '{activation_mode}'. "
+                f"Erlaubt: {', '.join(VALID_ACTIVATION_MODES)}."
+            )
+        if (self.get_parameter("production_mode").value
+                and activation_mode == ACTIVATION_MODE_CONTINUOUS_DEVELOPMENT):
+            raise RuntimeError(
+                "audio_node: activation_mode=continuous_development ist mit "
+                "production_mode=true gesperrt (Entwicklungsauftrag 04-B, AP6.1, "
+                "Abschnitt 13) -- niemals unbeaufsichtigtes Dauerhoeren in Produktion."
+            )
+
         self.transcript_pub = self.create_publisher(String, "transcript", 10)
         self.command_pub = self.create_publisher(String, "voice_command", 10)
         self.source_ok_pub = self.create_publisher(Bool, "source_ok", 10)
@@ -94,6 +149,13 @@ class AudioNode(Node):
 
         self.create_subscription(Bool, "/pepper_bridge/speaking", self._on_speaking, 10)
         self.half_duplex = HalfDuplexController(resume_delay_s=0.5)
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 13: expliziter
+        # Befehl fuer activation_mode=push_to_talk -- ein Tablet-/ROS2-
+        # Aufruf setzt dieses Topic, sonst bleibt die Sitzung inaktiv.
+        self._push_to_talk_active = False
+        self.create_subscription(
+            Bool, "/audio/push_to_talk_active", self._on_push_to_talk, 10)
 
         # Entwicklungsauftrag 04-B, AP6, Abschnitt 8: der tatsaechliche
         # Gespraechszustand kommt aus dem zentralen Supervisor
@@ -112,8 +174,14 @@ class AudioNode(Node):
         self.wakeword_gate = WakewordGate(
             cooldown_s=self.get_parameter("wakeword_cooldown_s").value)
         self._session_active_until = None  # None = keine aktive Sitzung
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: ersetzt die
+        # vorherige einzelne "letzte Richtung"-Variable durch einen
+        # zeitindizierten Puffer -- siehe direction_sample_buffer.py.
+        # _direction_lock schuetzt ihn: push() laeuft im Capture-Thread,
+        # select_for_window() im ROS-Executor-Thread (Timer-Callback).
         self._direction_lock = threading.Lock()
-        self._latest_direction = (0.0, 0.0, False)  # (azimuth_rad, confidence, valid)
+        self._direction_buffer = DirectionSampleBuffer(
+            max_duration_s=self.get_parameter("direction_buffer_max_duration_s").value)
 
         if HAVE_CANCEL_SRV:
             self.cancel_client = self.create_client(CancelInteraction, "cancel_interaction")
@@ -130,11 +198,21 @@ class AudioNode(Node):
 
         self.get_logger().info(
             f"audio_node gestartet, Quelle={self.get_parameter('source_kind').value}, "
+            f"activation_mode={activation_mode}, "
             f"Wakeword={'aktiv' if self.wakeword.enabled else 'deaktiviert (kein Modell)'}"
         )
+        if activation_mode == ACTIVATION_MODE_WAKEWORD_REQUIRED and not self.wakeword.enabled:
+            self.get_logger().warn(
+                "activation_mode=wakeword_required, aber KEIN Wakeword-Modell geladen -- "
+                "es wird NIEMALS eine Sitzung aktiv (fail-closed, kein Transkript im "
+                "Idle-Modus). Siehe wakeword_model_path."
+            )
 
     def _on_speaking(self, msg: Bool):
         self.half_duplex.on_speaking_changed(msg.data)
+
+    def _on_push_to_talk(self, msg: Bool):
+        self._push_to_talk_active = msg.data
 
     def _on_interaction_state(self, msg: UInt8):
         self._interaction_state_value = msg.data
@@ -158,11 +236,32 @@ class AudioNode(Node):
         return self._interaction_state_value != InteractionState.IDLE
 
     def _session_active(self) -> bool:
-        if not self.wakeword.enabled:
-            return True  # ohne Modell: immer "wach" (unveraendertes Verhalten)
+        """Reiner Timeout-Check -- NUR im activation_mode=wakeword_required
+        aussagekraeftig (siehe _should_process_utterance()). Bewusst KEIN
+        "ohne Modell -> immer wach" mehr -- das war der bestaetigte
+        Fail-Open-Fund aus Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.4."""
         if self._session_active_until is None:
             return False
         return time.monotonic() < self._session_active_until
+
+    def _should_process_utterance(self) -> bool:
+        """Ersetzt die bisherige, direkt an self.wakeword.enabled gekoppelte
+        Kurzschluss-Logik (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.4/13):
+        vorher fuehrte ein fehlendes Wakeword-Modell dazu, dass JEDE
+        Aeusserung transkribiert wurde (fail-open). Jetzt entscheidet
+        ausschliesslich der explizite activation_mode -- niemals ein
+        impliziter Fallback."""
+        mode = self.get_parameter("activation_mode").value
+        if mode == ACTIVATION_MODE_CONTINUOUS_DEVELOPMENT:
+            return True
+        if mode == ACTIVATION_MODE_PUSH_TO_TALK:
+            return self._push_to_talk_active
+        # wakeword_required (sicherer Standard): OHNE geladenes Modell
+        # NIE eine Sitzung -- kein Erkennungsversuch kann je gelingen,
+        # also darf auch nie transkribiert werden.
+        if not self.wakeword.enabled:
+            return False
+        return self._session_active()
 
     def _build_directional_backend(self):
         from .directional_audio import GccPhatDelayAndSumBackend, PassthroughTestBackend
@@ -228,19 +327,35 @@ class AudioNode(Node):
         (last_azimuth_rad/last_doa_confidence/last_direction_valid) --
         andere Quellen (file/microphone/pepper_pulseaudio) haben keine
         Richtungsschaetzung, hasattr() statt isinstance() um keinen
-        Zyklus-Import mit audio_source.py einzugehen."""
+        Zyklus-Import mit audio_source.py einzugehen.
+
+        Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.3/5: jede Probe
+        bekommt ihren EIGENEN Zeitstempel (ROS- und monotone Uhr) und
+        einen expliziten frame_id -- landet zusaetzlich zum Topic im
+        DirectionSampleBuffer, damit ein spaeteres Wakeword-Ereignis
+        gezielt aus seinem eigenen Aeusserungsfenster waehlen kann,
+        statt blind die "letzte" Richtung zu uebernehmen."""
         if not hasattr(source, "last_azimuth_rad"):
             return
+        now_ns = self.get_clock().now().nanoseconds
+        frame_id = self.get_parameter("respeaker_frame_id").value
+        sample = TimedDirectionSample(
+            ros_stamp_ns=now_ns,
+            monotonic_stamp_s=time.monotonic(),
+            frame_id=frame_id,
+            azimuth_rad=float(source.last_azimuth_rad),
+            confidence=float(source.last_doa_confidence),
+            valid=bool(source.last_direction_valid),
+        )
         with self._direction_lock:
-            self._latest_direction = (
-                source.last_azimuth_rad, source.last_doa_confidence, source.last_direction_valid,
-            )
+            self._direction_buffer.push(sample)
         msg = SoundDirection()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.azimuth_rad = float(source.last_azimuth_rad)
-        msg.confidence = float(source.last_doa_confidence)
+        msg.header.stamp = _ns_to_stamp(now_ns)
+        msg.header.frame_id = frame_id
+        msg.azimuth_rad = sample.azimuth_rad
+        msg.confidence = sample.confidence
         msg.vad_active = bool(source.last_vad_active)
-        msg.valid = bool(source.last_direction_valid)
+        msg.valid = sample.valid
         msg.backend = type(getattr(source, "_backend", None)).__name__
         msg.reason = source.last_backend_reason
         self.sound_direction_pub.publish(msg)
@@ -320,41 +435,84 @@ class AudioNode(Node):
             if utterance is not None:
                 self._handle_utterance(utterance)
 
+    def _try_wakeword_activation(self, utterance_pcm: bytes, utterance_end_monotonic_s: float,
+                                  duration_s: float):
+        """Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/8: waehlt die
+        Richtungsprobe(n) aus GENAU dem Zeitfenster dieser Aeusserung
+        (nicht die zufaellig "letzte" Probe) und traegt den ECHTEN
+        Messzeitpunkt in WakewordEvent.header.stamp ein -- nicht den
+        spaeteren ROS-Empfangszeitpunkt dieses Callbacks."""
+        detected = self.wakeword.detect(utterance_pcm)
+
+        margin_s = self.get_parameter("direction_window_margin_s").value
+        utterance_start_monotonic_s = utterance_end_monotonic_s - duration_s
+        with self._direction_lock:
+            direction_sample = self._direction_buffer.select_for_window(
+                utterance_start_monotonic_s - margin_s, utterance_end_monotonic_s + margin_s,
+                min_confidence=self.get_parameter("direction_min_confidence_for_wakeword").value,
+            )
+
+        if direction_sample is not None:
+            azimuth_rad = direction_sample.azimuth_rad
+            direction_confidence = direction_sample.confidence
+            direction_valid = True
+            event_stamp_ns = direction_sample.ros_stamp_ns
+        else:
+            # Keine passende Probe im Aeusserungsfenster -- ehrlich als
+            # ungueltig melden, NIE eine Richtung erfinden. Der
+            # Zeitstempel selbst ist hier irrelevant (direction_valid
+            # bleibt False, WaitForFreshWakeword im Behavior Tree
+            # verlangt explizit direction_valid==true).
+            azimuth_rad = 0.0
+            direction_confidence = 0.0
+            direction_valid = False
+            event_stamp_ns = self.get_clock().now().nanoseconds
+
+        event = self.wakeword_gate.evaluate(
+            keyword_detected=detected,
+            keyword_confidence=1.0 if detected else 0.0,  # WakewordDetector liefert aktuell nur bool
+            conversation_active=self._conversation_active_for_gate(),
+            azimuth_rad=azimuth_rad,
+            direction_confidence=direction_confidence,
+            direction_valid=direction_valid,
+            min_keyword_confidence=self.get_parameter("wakeword_min_confidence").value,
+        )
+        if event is None:
+            return
+        timeout_s = self.get_parameter("session_active_timeout_s").value
+        self._session_active_until = time.monotonic() + timeout_s
+        self.get_logger().info(
+            f"Wakeword erkannt (event_id={event.event_id}), Sitzung fuer "
+            f"{timeout_s:.0f}s aktiv."
+        )
+        msg = WakewordEvent()
+        msg.header.stamp = _ns_to_stamp(event_stamp_ns)
+        msg.header.frame_id = self.get_parameter("respeaker_frame_id").value
+        msg.event_id = event.event_id
+        msg.keyword = event.keyword
+        msg.keyword_confidence = event.keyword_confidence
+        msg.azimuth_rad = event.azimuth_rad
+        msg.direction_confidence = event.direction_confidence
+        msg.direction_valid = event.direction_valid
+        self.wakeword_event_pub.publish(msg)
+
     def _handle_utterance(self, utterance_pcm: bytes):
         import numpy as np
+        now_s = time.monotonic()
         duration_s = len(utterance_pcm) / 2 / 16000
         self.segment_duration_pub.publish(Float32(data=duration_s))
 
-        if self.wakeword.enabled and not self._session_active():
-            detected = self.wakeword.detect(utterance_pcm)
-            with self._direction_lock:
-                azimuth_rad, direction_confidence, direction_valid = self._latest_direction
-            event = self.wakeword_gate.evaluate(
-                keyword_detected=detected,
-                keyword_confidence=1.0 if detected else 0.0,  # WakewordDetector liefert aktuell nur bool
-                conversation_active=self._conversation_active_for_gate(),
-                azimuth_rad=azimuth_rad,
-                direction_confidence=direction_confidence,
-                direction_valid=direction_valid,
-                min_keyword_confidence=self.get_parameter("wakeword_min_confidence").value,
-            )
-            if event is not None:
-                timeout_s = self.get_parameter("session_active_timeout_s").value
-                self._session_active_until = time.monotonic() + timeout_s
-                self.get_logger().info(
-                    f"Wakeword erkannt (event_id={event.event_id}), Sitzung fuer "
-                    f"{timeout_s:.0f}s aktiv."
-                )
-                msg = WakewordEvent()
-                msg.header.stamp = self.get_clock().now().to_msg()
-                msg.event_id = event.event_id
-                msg.keyword = event.keyword
-                msg.keyword_confidence = event.keyword_confidence
-                msg.azimuth_rad = event.azimuth_rad
-                msg.direction_confidence = event.direction_confidence
-                msg.direction_valid = event.direction_valid
-                self.wakeword_event_pub.publish(msg)
-            return  # ohne erzeugtes Ereignis: Aeusserung verwerfen (kein Transkript im Idle-Modus)
+        if not self._should_process_utterance():
+            # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.4/13: nur im
+            # wakeword_required-Modus MIT geladenem Modell lohnt ein
+            # Erkennungsversuch ueberhaupt -- in jedem anderen "nicht
+            # aktiv"-Fall (push_to_talk ohne Freigabe, wakeword_required
+            # ohne Modell) wird die Aeusserung OHNE Erkennungsversuch
+            # verworfen, nie stillschweigend transkribiert.
+            if (self.get_parameter("activation_mode").value == ACTIVATION_MODE_WAKEWORD_REQUIRED
+                    and self.wakeword.enabled):
+                self._try_wakeword_activation(utterance_pcm, now_s, duration_s)
+            return
 
         audio = np.frombuffer(utterance_pcm, dtype=np.int16).astype(np.float32) / 32768.0
         try:
