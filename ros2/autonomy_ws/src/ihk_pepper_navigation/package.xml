@@ -71,6 +71,12 @@
        dieses Pakets nicht daran haengt, falls es woanders fehlt. -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: dynamische
+       base_link->torso->Neck->Head-Kette aus /joint_states (siehe
+       pepper_robot_state.launch.py). Das URDF selbst liegt im separaten
+       Workspace ros2/robot_model (Paket pepper_description) -- siehe
+       Docstring dort fuer die Sourcing-Voraussetzung. -->
+  <exec_depend>robot_state_publisher</exec_depend>
 
   <!-- Entwicklungsauftrag 2, AP4/AP5: RGB-D-Odometrie/Mapping/Lokalisierung.
        rtabmap_msgs ist bereits installiert (siehe

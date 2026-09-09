@@ -1,7 +1,14 @@
-# Kalibrierbare Kameramontage: base_link -> realsense_mount_link ->
+# Kalibrierbare Kameramontage: Head -> realsense_mount_link ->
 # realsense_link (= das Wurzel-Frame, das der realsense2_camera-Treiber
 # selbst unter <camera_name>_link veroeffentlicht -- alles ab dort
 # publiziert der Treiber bereits korrekt, siehe realsense_bringup.launch.py).
+#
+# Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: parent_frame ist jetzt
+# "Head" (Peppers ECHTES, dynamisches Kopf-Frame aus robot_state_publisher
+# + /joint_states, siehe pepper_robot_state.launch.py) statt vorher
+# "base_link" -- die Kamera sitzt tatsaechlich am beweglichen Kopf, eine
+# feste base_link->Kamera-Transformation war eine bewusst dokumentierte,
+# jetzt behobene Vereinfachung (siehe realsense_static_tf.launch.py).
 #
 # ALLE Werte unten sind PLATZHALTER (Translation 0, Rotation Identitaet) --
 # NICHT vermessen (Entwicklungsauftrag 1, Abschnitt 3: "keine erfundenen
@@ -10,7 +17,7 @@
 # check) das als Hinweis, dass diese Werte nicht vertrauenswuerdig sind.
 # Siehe docs/REALSENSE_CALIBRATION.md fuer die Vermessungsanleitung.
 realsense_extrinsics:
-  parent_frame: "base_link"
+  parent_frame: "Head"
   mount_frame: "realsense_mount_link"
   camera_root_frame: "camera_link"   # muss zu camera_name im RealSense-Launch passen
   translation_m: {x: 0.0, y: 0.0, z: 0.0}

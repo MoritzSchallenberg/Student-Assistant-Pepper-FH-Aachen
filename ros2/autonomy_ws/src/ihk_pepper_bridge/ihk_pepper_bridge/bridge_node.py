@@ -18,6 +18,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import String, Bool, Float32
+from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
@@ -164,6 +165,19 @@ class PepperBridgeNode(Node):
         self.health_pub = self.create_publisher(SystemHealth, "system_health", 10)
         interval = self.get_parameter("health_publish_interval_s").value
         self.create_timer(interval, self._publish_health)
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: robot_state_publisher
+        # (siehe pepper_robot_state.launch.py) braucht /joint_states, um die
+        # dynamische Kette base_link->torso->Neck->Head zu berechnen --
+        # camera_pose_gate_node.py/head_pose_gate.py haben /joint_states
+        # bereits seit Auftrag 1 konsumiert (fail-closed bei fehlend/
+        # veraltet), aber VOR AP6.1 hat es in autonomy_ws nie einen
+        # tatsaechlichen Publisher dafuer gegeben -- head_navigation_pose_valid
+        # war dadurch in jedem echten Einsatz vermutlich immer False. Dieselbe
+        # Taktrate wie system_health (kein eigener Parameter noetig, das
+        # Gelenk aendert sich nicht schneller als die Health-Schleife
+        # sinnvoll aufloest).
+        self.joint_states_pub = self.create_publisher(JointState, "/joint_states", 10)
 
         # Entwicklungsauftrag 4, AP4 / Entwicklungsauftrag 04-B, AP2: reale
         # Statustopics statt Platzhalter. Alle unter dem eigenen Node-
@@ -654,11 +668,42 @@ class PepperBridgeNode(Node):
         self.charging_state_pub.publish(Bool(data=False if charging is None else charging))
         self.battery_pub.publish(Float32(data=-1.0 if battery is None else float(battery)))
         self.connection_state_pub.publish(String(data=self.pepper.connection_state))
+        self._publish_joint_states(reachable)
 
         msg.battery_percent = -1.0 if battery is None else float(battery)
         msg.current_mode = "unknown"
         msg.active_warnings = [] if reachable else ["pepper_unreachable"]
         self.health_pub.publish(msg)
+
+    def _publish_joint_states(self, reachable: bool):
+        """Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: einzige Quelle fuer
+        /joint_states in autonomy_ws -- robot_state_publisher berechnet daraus
+        die dynamische Kette base_link->torso->Neck->Head (siehe
+        pepper_robot_state.launch.py). Nur HeadYaw/HeadPitch sind fuer diese
+        Teilkette noetig (siehe pepper_description-URDF: base_link->torso ist
+        FIX, torso->Neck traegt HeadYaw, Neck->Head traegt HeadPitch).
+
+        Fail-closed wie das restliche Health-Polling: bei nicht erreichbarem
+        Pepper oder einem Fehler beim Auslesen wird NICHTS publiziert --
+        camera_pose_gate_node.py/head_pose_gate.py behandeln fehlende/
+        veraltete /joint_states bereits als "Kopfpose nicht sicher bekannt"
+        und sperren entsprechend (keine erfundenen Nullwerte statt echter
+        Gelenkwinkel)."""
+        if not reachable:
+            return
+        try:
+            yaw = self.pepper.get_angle("HeadYaw")
+            pitch = self.pepper.get_angle("HeadPitch")
+        except Exception as e:
+            self.get_logger().warn(f"get_angle() fuer /joint_states fehlgeschlagen: {e}")
+            return
+        if yaw is None or pitch is None:
+            return
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.name = ["HeadYaw", "HeadPitch"]
+        msg.position = [float(yaw), float(pitch)]
+        self.joint_states_pub.publish(msg)
 
 
 def main(args=None):

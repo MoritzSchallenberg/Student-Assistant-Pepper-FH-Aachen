@@ -299,3 +299,68 @@ def test_gesture_memory_node_production_mode_locked_to_true_only_in_production(l
             for key, value in param_dict.items()
         }
         assert resolved["production_mode"] == expected
+
+
+def _find_include_by_basename(ld, basename):
+    # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: wie _find_nav2_include()
+    # oben -- location bleibt ohne LaunchContext.perform() eine
+    # Substitution-Liste ohne brauchbare str()-Repraesentation, hier aber
+    # ueber das name-gemangelte private Attribut + perform_substitutions()
+    # gegen einen LEEREN LaunchContext aufgeloest (die Pfade selbst sind
+    # reine Python-Strings aus get_package_share_directory()+os.path.join(),
+    # brauchen also keine echten Launch-Konfigurationswerte).
+    from launch.utilities import perform_substitutions
+    includes = [e for e in ld.entities if isinstance(e, IncludeLaunchDescription)]
+    ctx = LaunchContext()
+    matches = [
+        e for e in includes
+        if perform_substitutions(
+            ctx, e.launch_description_source._LaunchDescriptionSource__location
+        ).endswith(basename)
+    ]
+    assert len(matches) == 1, f"genau eine Einbindung von {basename} erwartet, {len(matches)} gefunden"
+    return matches[0]
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("offline_test", False),
+    ("microphone_test", False),
+    ("pepper_gesture_test", False),
+    ("realsense_test", True),
+    ("navigation_dry_run", True),
+    ("production", True),
+    ("respeaker_offline_test", True),
+    ("respeaker_hardware_test", True),
+    ("audio_visual_test", True),
+    ("respeaker_head_test", True),
+])
+def test_pepper_robot_state_included_for_real_camera_and_respeaker_modes(launch_module, mode, expected):
+    # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: robot_state_publisher
+    # (pepper_robot_state.launch.py) ist Voraussetzung fuer JEDE TF-Kette
+    # unter "Head" -- RealSense-Modi UND alle vier respeaker_*-Modi
+    # brauchen ihn, keine anderen.
+    ld = launch_module.generate_launch_description()
+    include = _find_include_by_basename(ld, "pepper_robot_state.launch.py")
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = mode
+    assert include.condition.evaluate(ctx) is expected
+
+
+@pytest.mark.parametrize("mode,expected", [
+    ("offline_test", False),
+    ("microphone_test", False),
+    ("realsense_test", False),
+    ("pepper_gesture_test", False),
+    ("navigation_dry_run", False),
+    ("production", False),
+    ("respeaker_offline_test", True),
+    ("respeaker_hardware_test", True),
+    ("audio_visual_test", True),
+    ("respeaker_head_test", True),
+])
+def test_respeaker_static_tf_included_only_for_respeaker_audio_modes(launch_module, mode, expected):
+    ld = launch_module.generate_launch_description()
+    include = _find_include_by_basename(ld, "respeaker_static_tf.launch.py")
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = mode
+    assert include.condition.evaluate(ctx) is expected

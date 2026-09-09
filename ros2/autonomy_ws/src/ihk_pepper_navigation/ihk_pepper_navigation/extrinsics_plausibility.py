@@ -14,9 +14,12 @@ siehe docs/REALSENSE_CALIBRATION.md.
 import math
 from dataclasses import dataclass
 
-# Deutlich ueber Peppers Gesamthoehe (~1.2m) -- ein plausibler Rahmen fuer
-# eine kopfmontierte Kamera relativ zu base_link (Torso), keine praezise
-# Grenze.
+# Deutlich ueber Peppers Gesamthoehe (~1.2m) -- ein plausibler Rahmen,
+# selbst wenn parent_frame (Entwicklungsauftrag 04-B, AP6.1: jetzt "Head"
+# statt "base_link", siehe realsense_extrinsics.yaml/
+# respeaker_extrinsics.yaml) direkt am Kopf haengt -- eine reale
+# Sensor-/Mikrofonmontage liegt dort ohnehin nur wenige Zentimeter
+# entfernt, keine praezise Grenze.
 MAX_PLAUSIBLE_TRANSLATION_M = 2.0
 
 

@@ -381,6 +381,43 @@ def generate_launch_description():
     ]))
     real_camera_condition = _cond(2)
 
+    # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: robot_state_publisher
+    # (pepper_robot_state.launch.py) wird gebraucht, sobald IRGENDEIN
+    # kopfmontierter Sensor eine TF-Kette unter "Head" braucht -- das ist
+    # real_camera_condition (RealSense) ODER einer der vier respeaker_*-
+    # Modi (ReSpeaker, auch wenn real_camera in diesem Modus False ist,
+    # z.B. respeaker_offline_test/respeaker_hardware_test/
+    # respeaker_head_test). respeaker_static_tf.launch.py selbst braucht
+    # nur die respeaker_audio_condition (ReSpeaker-Montage-TF ist
+    # unabhaengig von der Kamera).
+    respeaker_audio_condition = IfCondition(PythonExpression([
+        "'", mode, f"' in {RESPEAKER_AUDIO_MODES!r}"
+    ]))
+    robot_state_condition = IfCondition(PythonExpression([
+        f"({repr(_MODE_FLAGS)}['", mode, f"'][2]) or ('", mode,
+        f"' in {RESPEAKER_AUDIO_MODES!r})",
+    ]))
+
+    ld += [
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: dynamische
+        # base_link->torso->Neck->Head-Kette (aus /joint_states, siehe
+        # bridge_node.py::_publish_joint_states) -- Voraussetzung fuer
+        # realsense_static_tf.launch.py/respeaker_static_tf.launch.py,
+        # deren parent_frame jetzt "Head" statt "base_link" ist. Braucht
+        # zusaetzlich zu autonomy_ws den separaten robot_model-Workspace
+        # gesourct (siehe pepper_robot_state.launch.py-Docstring).
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(nav_share, "launch", "pepper_robot_state.launch.py")),
+            condition=robot_state_condition,
+        ),
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(
+                os.path.join(nav_share, "launch", "respeaker_static_tf.launch.py")),
+            condition=respeaker_audio_condition,
+        ),
+    ]
+
     ld += [
         # Mock-Pfad: dieselbe Knotenliste wie offline_test.launch.py.
         Node(

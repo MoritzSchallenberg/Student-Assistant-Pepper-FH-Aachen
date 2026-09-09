@@ -1,0 +1,18 @@
+# Kalibrierbare ReSpeaker-Montage: Head -> respeaker_link
+# (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6).
+#
+# Head ist Peppers ECHTES, dynamisches Kopf-Frame (aus robot_state_publisher
+# + /joint_states, siehe pepper_robot_state.launch.py) -- respeaker_link
+# haengt darunter nur noch STATISCH (die eigentliche Kopf-Kinematik
+# HeadYaw/HeadPitch ist bereits in der Kette base_link->torso->Neck->Head
+# enthalten).
+#
+# ALLE Werte unten sind PLATZHALTER (Translation 0, Rotation Identitaet) --
+# NICHT vermessen (siehe docs/RESPEAKER_CALIBRATION.md). Solange
+# is_calibrated=false, gelten sie als hwverificationrequired.
+respeaker_extrinsics:
+  parent_frame: "Head"
+  mount_frame: "respeaker_link"
+  translation_m: {x: 0.0, y: 0.0, z: 0.0}
+  rotation_rpy_rad: {roll: 0.0, pitch: 0.0, yaw: 0.0}
+  is_calibrated: false
