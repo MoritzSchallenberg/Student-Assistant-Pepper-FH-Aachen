@@ -23,6 +23,7 @@ setup(
     entry_points={
         "console_scripts": [
             "person_memory_node = ihk_pepper_person_memory.person_memory_node:main",
+            "peoplectl = ihk_pepper_person_memory.peoplectl:main",
         ],
     },
 )

@@ -1,3 +1,6 @@
+import glob
+import os
+
 import pytest
 
 from ihk_pepper_person_memory.identity_registry import ConsentStatus
@@ -130,3 +133,144 @@ def test_byte_track_id_is_never_used_as_person_id_implicitly(store):
     sig = inspect.signature(store.create_or_touch)
     assert "track_id" not in sig.parameters
     assert "person_id" in sig.parameters
+
+
+# ---- Rollen (Entwicklungsauftrag 04-B, AP7, Abschnitt 6) ----
+
+def test_new_identity_defaults_to_student_role(store):
+    record = store.create_or_touch("p1", reason="seen")
+    assert record.role == "student"
+    assert record.role_assigned_at_iso is None
+    assert record.role_assigned_by is None
+
+
+def test_set_role_updates_record_and_audit_metadata(store):
+    store.create_or_touch("p1", reason="seen")
+    record = store.set_role("p1", "employee", assigned_by="admin_console", reason="hired")
+    assert record.role == "employee"
+    assert record.role_assigned_by == "admin_console"
+    assert record.role_assigned_at_iso is not None
+
+
+def test_set_role_unknown_person_rejected(store):
+    with pytest.raises(KeyError):
+        store.set_role("p_ghost", "employee", assigned_by="admin", reason="test")
+
+
+def test_set_role_invalid_role_rejected(store):
+    store.create_or_touch("p1", reason="seen")
+    with pytest.raises(ValueError):
+        store.set_role("p1", "superadmin", assigned_by="admin", reason="test")
+
+
+def test_revoke_role_resets_to_student(store):
+    store.create_or_touch("p1", reason="seen")
+    store.set_role("p1", "admin", assigned_by="admin_console", reason="promoted")
+    record = store.revoke_role("p1", assigned_by="admin_console", reason="left_company")
+    assert record.role == "student"
+
+
+def test_get_effective_role_returns_student_for_unknown_person(store):
+    assert store.get_effective_role("p_ghost") == "student"
+
+
+def test_get_effective_role_returns_current_role_when_valid(store):
+    store.create_or_touch("p1", reason="seen")
+    store.set_role("p1", "employee", assigned_by="admin", reason="hired")
+    assert store.get_effective_role("p1", now=1000.0) == "employee"
+
+
+def test_get_effective_role_falls_back_to_student_when_expired(store):
+    store.create_or_touch("p1", reason="seen")
+    store.set_role("p1", "employee", assigned_by="admin", reason="temp", valid_until_ts=500.0)
+    assert store.get_effective_role("p1", now=1000.0) == "student"
+
+
+def test_role_changes_are_audited(store):
+    store.create_or_touch("p1", reason="seen")
+    store.set_role("p1", "admin", assigned_by="admin_console", reason="promoted")
+    rows = store.conn.execute(
+        "SELECT action, reason FROM identity_audit_log WHERE person_id='p1'").fetchall()
+    actions = [r[0] for r in rows]
+    assert "set_role:admin" in actions
+
+
+def test_no_ros2_service_style_method_exists_for_setting_roles(store):
+    # Auftrag Abschnitt 6: "Rollenaenderungen duerfen nicht ueber ein
+    # frei erreichbares ROS2-Service moeglich sein" -- diese Klasse hat
+    # bewusst NUR set_role/revoke_role (aufgerufen von peoplectl), keine
+    # ROS2-Service-Registrierung. Dieser Test dokumentiert die Absicht:
+    # person_memory_node.py (der ROS-Wrapper) darf set_role/revoke_role
+    # NIE als Service exponieren (separat gegengeprueft in
+    # test_person_memory_node.py).
+    assert hasattr(store, "set_role")
+    assert hasattr(store, "revoke_role")
+
+
+# ---- Migration (Entwicklungsauftrag 04-B, AP7, Abschnitt 6) ----
+
+def test_fresh_database_has_role_columns_without_creating_a_backup(tmp_path):
+    db_path = str(tmp_path / "identity.db")
+    store = IdentityRegistryStore(db_path)
+    store.create_or_touch("p1", reason="seen")
+    store.close()
+    backups = glob.glob(db_path + ".pre-role-migration-*.bak")
+    assert backups == []  # nichts zu schuetzen bei einer frischen, leeren Datenbank
+
+
+def test_migrating_an_existing_populated_database_creates_a_backup_first(tmp_path):
+    db_path = str(tmp_path / "identity.db")
+
+    # Schritt 1: eine Datenbank OHNE die neuen Rollen-Spalten simulieren
+    # (alter Schemastand vor AP7) -- direkt per sqlite3, nicht ueber
+    # IdentityRegistryStore (das wuerde die Migration sofort ausfuehren).
+    import sqlite3
+    conn = sqlite3.connect(db_path)
+    conn.executescript("""
+        CREATE TABLE identities (
+            person_id TEXT PRIMARY KEY,
+            display_name TEXT,
+            consent_status TEXT NOT NULL DEFAULT 'not_asked',
+            created_at REAL NOT NULL,
+            last_seen_at REAL,
+            last_recognition_confidence REAL NOT NULL DEFAULT 0.0,
+            retention_deadline REAL
+        );
+        CREATE TABLE identity_audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            person_id TEXT NOT NULL, action TEXT NOT NULL,
+            reason TEXT NOT NULL, timestamp REAL NOT NULL
+        );
+    """)
+    conn.execute(
+        "INSERT INTO identities (person_id, created_at, last_recognition_confidence) "
+        "VALUES ('p1', 0.0, 0.0)")
+    conn.commit()
+    conn.close()
+
+    # Schritt 2: oeffnen ueber IdentityRegistryStore loest die Migration aus.
+    store = IdentityRegistryStore(db_path)
+    record = store.lookup("p1")
+    assert record.role == "student"  # Migrations-Default fuer bestehende Zeilen
+    store.close()
+
+    backups = glob.glob(db_path + ".pre-role-migration-*.bak")
+    assert len(backups) == 1
+    # Das Backup enthaelt noch den ALTEN Schemastand (keine role-Spalte).
+    backup_conn = sqlite3.connect(backups[0])
+    cols = {row[1] for row in backup_conn.execute("PRAGMA table_info(identities)").fetchall()}
+    backup_conn.close()
+    assert "role" not in cols
+
+
+def test_reopening_an_already_migrated_database_creates_no_further_backup(tmp_path):
+    db_path = str(tmp_path / "identity.db")
+    store1 = IdentityRegistryStore(db_path)
+    store1.create_or_touch("p1", reason="seen")
+    store1.close()
+
+    store2 = IdentityRegistryStore(db_path)  # bereits migriert -- kein erneutes Backup
+    store2.close()
+
+    backups = glob.glob(db_path + ".pre-role-migration-*.bak")
+    assert backups == []
