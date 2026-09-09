@@ -268,8 +268,11 @@
       <input_port name="max_age_s" default="2.0"/>
       <output_port name="wakeword_event_id"/>
       <output_port name="azimuth_rad"/>
+      <output_port name="direction_confidence"/>
       <output_port name="measured_at_sec"/>
-      <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten WakewordEvent mit gueltiger Richtung.</description>
+      <output_port name="original_stamp_sec"/>
+      <output_port name="original_stamp_nanosec"/>
+      <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten WakewordEvent mit gueltiger Richtung, gleichem frame_id wie wakeword_base_frame -- verarbeitet jede event_id GENAU EINMAL (begrenzter Cache, siehe bt_nodes.cpp).</description>
     </Action>
     <Condition ID="IsHeadOrientationAllowed">
       <description>SUCCESS wenn weder Mapping noch Nav2-Fahrt aktiv sind (Kopf bleibt sonst fest, RealSense-Pose beeinflusst SLAM/Hinderniswahrnehmung).</description>

@@ -14,8 +14,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <deque>
 #include <map>
 #include <string>
+#include <unordered_set>
 
 #include <behaviortree_cpp/behavior_tree.h>
 #include <rclcpp/rclcpp.hpp>
@@ -178,6 +180,21 @@ constexpr uint8_t INTERACTION_STATE_CONVERSATION_READY = 7;
 /// Versuch (z.B. Person nicht gefunden) ist bewusst erlaubt -- bleibt
 /// durch max_age_s selbst begrenzt und ist kein Sicherheitsrisiko
 /// (hoechstens eine erneute, vorsichtige Kopfausrichtung).
+/// Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.2/6: bestaetigter Fund --
+/// measured_at_sec wurde bislang als system_clock::now() (Empfangs-
+/// zeitpunkt DIESES BT-Ticks) ausgegeben, NIE der echte Original-
+/// Messzeitpunkt (msg->header.stamp) -- exakt dieselbe Art Fehler, die
+/// audio_node.py fuer die Python-Seite bereits in AP6.1 Commit 1 behoben
+/// hat, hier aber fuer die C++-Seite noch offen war. Zusaetzlich (Abschnitt
+/// 6): akzeptiert nur Nachrichten mit frame_id==base_frame (die kanonische
+/// Transformation aus sound_direction_transform_node.py, siehe AP6.1
+/// Commit 3) und erzwingt EXACTLY-ONCE-Verarbeitung -- ein event_id, das
+/// einmal erfolgreich verarbeitet wurde, kann NIE ein zweites Mal
+/// SUCCESS ausloesen (begrenzter Cache verbrauchter IDs, kein
+/// unbegrenztes Wachstum). Nach einem fehlgeschlagenen Versuch
+/// (Kopfausrichtung/Personenzuordnung schlaegt fehl) muss die Person
+/// also erneut "Pepper" sagen -- ein spaeterer Tick kann dasselbe
+/// Ereignis nicht wiederverwenden.
 class WaitForFreshWakeword : public BT::SyncActionNode
 {
 public:
@@ -190,18 +207,34 @@ public:
       BT::InputPort<double>("max_age_s", 2.0, ""),
       BT::OutputPort<std::string>("wakeword_event_id"),
       BT::OutputPort<double>("azimuth_rad"),
+      BT::OutputPort<double>("direction_confidence"),
       BT::OutputPort<double>("measured_at_sec"),
+      BT::OutputPort<int>("original_stamp_sec"),
+      BT::OutputPort<int>("original_stamp_nanosec"),
     };
   }
   BT::NodeStatus tick() override;
 
 private:
+  // Begrenzt (kein unbegrenztes Wachstum ueber eine lange Laufzeit) --
+  // ein FIFO-Ringpuffer + Set fuer O(1)-Nachschlag, aeltere IDs werden
+  // verdraengt, sobald der Cache voll ist (siehe .cpp fuer die Grenze).
+  void markEventConsumed(const std::string & event_id);
+  bool isEventConsumed(const std::string & event_id) const;
+
   rclcpp::Subscription<ihk_pepper_interfaces::msg::WakewordEvent>::SharedPtr sub_;
+  std::string base_frame_;
   std::string last_event_id_;
+  std::string last_frame_id_;
   float azimuth_rad_ {0.0f};
+  float direction_confidence_ {0.0f};
   bool direction_valid_ {false};
+  int32_t last_stamp_sec_ {0};
+  uint32_t last_stamp_nanosec_ {0};
   std::chrono::steady_clock::time_point last_received_;
   bool have_reading_ {false};
+  std::unordered_set<std::string> consumed_ids_;
+  std::deque<std::string> consumed_order_;
 };
 
 /// SUCCESS nur, wenn weder Mapping noch Nav2-Fahrt aktiv sind

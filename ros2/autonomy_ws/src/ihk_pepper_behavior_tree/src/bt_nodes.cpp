@@ -77,25 +77,75 @@ BT::NodeStatus InteractionStateCondition::tick()
 
 // ---- WaitForFreshWakeword (Entwicklungsauftrag 04-B, AP6, Abschnitt 8/14) ----
 
+namespace
+{
+// Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: begrenzt -- verhindert
+// unbegrenztes Wachstum ueber eine lange Laufzeit, gross genug, dass
+// keine realistische Ereignisfolge je vor Ablauf zurueckgesetzt wird.
+constexpr size_t kMaxConsumedWakewordEventIds = 64;
+}  // namespace
+
 WaitForFreshWakeword::WaitForFreshWakeword(
   const std::string & name, const BT::NodeConfig & config,
   rclcpp::Node::SharedPtr node)
 : BT::SyncActionNode(name, config)
 {
+  if (!node->has_parameter("wakeword_base_frame")) {
+    node->declare_parameter<std::string>("wakeword_base_frame", "base_link");
+  }
+  base_frame_ = node->get_parameter("wakeword_base_frame").as_string();
+
   sub_ = node->create_subscription<ihk_pepper_interfaces::msg::WakewordEvent>(
     "/audio/wakeword_event", 10,
     [this](const ihk_pepper_interfaces::msg::WakewordEvent::SharedPtr msg) {
       last_event_id_ = msg->event_id;
+      last_frame_id_ = msg->header.frame_id;
       azimuth_rad_ = msg->azimuth_rad;
+      direction_confidence_ = msg->direction_confidence;
       direction_valid_ = msg->direction_valid;
+      last_stamp_sec_ = msg->header.stamp.sec;
+      last_stamp_nanosec_ = msg->header.stamp.nanosec;
       last_received_ = std::chrono::steady_clock::now();
       have_reading_ = true;
     });
 }
 
+void WaitForFreshWakeword::markEventConsumed(const std::string & event_id)
+{
+  if (consumed_ids_.count(event_id) > 0) {
+    return;
+  }
+  consumed_ids_.insert(event_id);
+  consumed_order_.push_back(event_id);
+  if (consumed_order_.size() > kMaxConsumedWakewordEventIds) {
+    consumed_ids_.erase(consumed_order_.front());
+    consumed_order_.pop_front();
+  }
+}
+
+bool WaitForFreshWakeword::isEventConsumed(const std::string & event_id) const
+{
+  return consumed_ids_.count(event_id) > 0;
+}
+
 BT::NodeStatus WaitForFreshWakeword::tick()
 {
   if (!have_reading_ || !direction_valid_ || last_event_id_.empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  // Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: nur die kanonische,
+  // bereits nach base_frame transformierte Schallrichtung akzeptieren
+  // (siehe sound_direction_transform_node.py, AP6.1 Commit 3) -- ein
+  // Ereignis in einem anderen/unbekannten Frame ist fail-closed
+  // ungueltig, NIE stillschweigend uebernommen.
+  if (last_frame_id_ != base_frame_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  // Exactly-once: ein bereits erfolgreich verarbeitetes Ereignis kann
+  // NIE ein zweites Mal SUCCESS ausloesen -- ein spaeterer BT-Tick
+  // (z.B. nach einem gescheiterten Ausrichtungs-/Zuordnungsversuch)
+  // braucht ein NEUES Wakeword-Ereignis ("Pepper" erneut sagen).
+  if (isEventConsumed(last_event_id_)) {
     return BT::NodeStatus::FAILURE;
   }
   double max_age_s = getInput<double>("max_age_s").value_or(2.0);
@@ -106,14 +156,19 @@ BT::NodeStatus WaitForFreshWakeword::tick()
   }
   setOutput("wakeword_event_id", last_event_id_);
   setOutput("azimuth_rad", static_cast<double>(azimuth_rad_));
-  // measured_at_sec wird bewusst als "jetzt" (Empfangszeitpunkt dieses
-  // Ticks) weitergegeben, nicht als Nachrichten-Header-Zeitstempel --
-  // OrientHeadToSound/FindPersonNearSoundRay pruefen ohnehin nur die
-  // seither vergangene Zeit ab diesem Punkt, keine absolute Systemuhr-
-  // Korrelation noetig.
-  double now_sec = std::chrono::duration<double>(
-    std::chrono::system_clock::now().time_since_epoch()).count();
-  setOutput("measured_at_sec", now_sec);
+  setOutput("direction_confidence", static_cast<double>(direction_confidence_));
+  setOutput("original_stamp_sec", static_cast<int>(last_stamp_sec_));
+  setOutput("original_stamp_nanosec", static_cast<int>(last_stamp_nanosec_));
+  // Entwicklungsauftrag 04-B, AP6.1, Abschnitt 3.2/6: bestaetigter Fund
+  // behoben -- measured_at_sec ist jetzt der ECHTE Original-Messzeitpunkt
+  // (msg->header.stamp), NICHT mehr system_clock::now() (der bisherige
+  // BT-Tick-Empfangszeitpunkt haette eine mittlerweile veraltete Messung
+  // faelschlich als "gerade eben" ausgegeben).
+  double measured_at_sec = static_cast<double>(last_stamp_sec_) +
+    static_cast<double>(last_stamp_nanosec_) * 1e-9;
+  setOutput("measured_at_sec", measured_at_sec);
+
+  markEventConsumed(last_event_id_);
   return BT::NodeStatus::SUCCESS;
 }
 
