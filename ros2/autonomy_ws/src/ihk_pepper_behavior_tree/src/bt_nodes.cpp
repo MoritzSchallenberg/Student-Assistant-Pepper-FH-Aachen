@@ -683,6 +683,7 @@ BT::NodeStatus FindPersonNearSoundRay::onStart()
     return BT::NodeStatus::FAILURE;
   }
   auto request = std::make_shared<AssociateSrv::Request>();
+  request->event_id = getInput<std::string>("wakeword_event_id").value_or("");
   request->sound_azimuth_rad = static_cast<float>(azimuth_rad.value());
   auto whole_sec = static_cast<int32_t>(measured_at_sec.value());
   request->measured_at.sec = whole_sec;

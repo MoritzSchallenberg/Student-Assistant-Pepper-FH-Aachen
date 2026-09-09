@@ -8,6 +8,12 @@
 float32 sound_azimuth_rad
 builtin_interfaces/Time measured_at
 float32 max_measurement_age_s
+# Entwicklungsauftrag 04-B, AP6.1, Abschnitt 4/11: dieselbe event_id wie
+# WakewordEvent/OrientToSound -- ueber alle Stufen erhalten, damit
+# /audio/visual_target (AudioVisualTarget.msg) jedes Ergebnis dem
+# ausloesenden Wakeword-Ereignis zuordnen kann. Leer erlaubt (aeltere
+# Aufrufer/Tests), aber dann bleibt AudioVisualTarget.event_id ebenfalls leer.
+string event_id
 ---
 bool valid
 int32 selected_track_id

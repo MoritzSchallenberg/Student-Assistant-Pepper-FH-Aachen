@@ -548,6 +548,11 @@ public:
   static BT::PortsList providedPorts()
   {
     return {
+      // Entwicklungsauftrag 04-B, AP6.1, Abschnitt 4/11: dieselbe
+      // event_id wie WaitForFreshWakeword/OrientHeadToSound -- damit
+      // /audio/visual_target (AudioVisualTarget.msg) jedes Ergebnis dem
+      // ausloesenden Wakeword-Ereignis zuordnen kann.
+      BT::InputPort<std::string>("wakeword_event_id"),
       BT::InputPort<double>("azimuth_rad"),
       BT::InputPort<double>("measured_at_sec"),
       BT::InputPort<double>("max_measurement_age_s", 2.0, ""),

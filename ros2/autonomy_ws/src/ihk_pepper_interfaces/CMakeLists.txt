@@ -24,6 +24,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/SoundDirection.msg"
   "msg/WakewordEvent.msg"
   "msg/AudioFocusState.msg"
+  "msg/AudioVisualTarget.msg"
   "srv/SetSystemMode.srv"
   "srv/SelectDailyTopic.srv"
   "srv/ReloadKnowledge.srv"

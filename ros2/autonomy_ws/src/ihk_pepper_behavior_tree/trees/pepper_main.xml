@@ -138,7 +138,8 @@
                           azimuth_rad="{wakeword_azimuth_rad}"
                           measured_at_sec="{wakeword_measured_at_sec}"
                           max_measurement_age_s="2.0"/>
-      <FindPersonNearSoundRay azimuth_rad="{wakeword_azimuth_rad}"
+      <FindPersonNearSoundRay wakeword_event_id="{wakeword_event_id}"
+                               azimuth_rad="{wakeword_azimuth_rad}"
                                measured_at_sec="{wakeword_measured_at_sec}"
                                max_measurement_age_s="2.0"
                                target_track_id="{target_track_id}"/>
@@ -281,6 +282,7 @@
       <description>Ruft /orient_to_sound auf -- begrenzte, vorsichtige Kopfausrichtung ueber eine HEAD-Lease.</description>
     </Action>
     <Action ID="FindPersonNearSoundRay">
+      <input_port name="wakeword_event_id"/>
       <input_port name="azimuth_rad"/>
       <input_port name="measured_at_sec"/>
       <input_port name="max_measurement_age_s" default="2.0"/>
