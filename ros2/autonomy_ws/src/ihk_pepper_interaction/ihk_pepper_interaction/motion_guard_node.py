@@ -44,6 +44,15 @@ Ankunftszeitstempel (FreshBool, siehe safety_topics.py) -- eine fehlende
 ODER veraltete Nachricht faellt individuell auf den sicheren
 (blockierenden) Wert zurueck, statt sich auf ein einziges, nur fuer
 Kommando-Alter gedachtes data_age_s zu verlassen.
+
+Entwicklungsauftrag 04-B, AP5B: konsultiert zusaetzlich
+"/actuator_arbiter/base_lease_valid" (vom neuen zentralen
+Aktuator-Arbiter veroeffentlicht, siehe actuator_arbiter_node.py) --
+Navigation/person_approach_node.py muss eine BASE-Lease HALTEN, bevor
+Motion Guard ueberhaupt einen von Null verschiedenen Fahrbefehl
+durchlaesst. Fehlt/veraltet die Lease, wird wie bei jedem anderen
+Blockierungsgrund hier explizit Nullgeschwindigkeit publiziert (kein
+Verwerfen ohne Ersatzsignal) -- ein Stopp-Befehl kommt also immer durch.
 """
 import time
 
@@ -86,6 +95,10 @@ class MotionGuardNode(Node):
         self._head_navigation_pose_valid = FreshBool(False)
         self._bumper_active = FreshBool(True)
         self._gesture_in_progress = FreshBool(True)
+        # Entwicklungsauftrag 04-B, AP5B: fail-closed wie jeder andere
+        # *_valid-Eingang hier -- ohne (frische) Bestaetigung des
+        # Aktuator-Arbiters gilt die BASE-Lease als NICHT gehalten.
+        self._base_lease_valid = FreshBool(False)
 
         self.cmd_pub = self.create_publisher(Twist, self.get_parameter("cmd_vel_out_topic").value, 10)
         self.diagnostics_pub = self.create_publisher(String, "motion_guard/diagnostics", 10)
@@ -106,6 +119,8 @@ class MotionGuardNode(Node):
             Bool, "head_navigation_pose_valid", self._on_head_navigation_pose_valid, 10)
         self.create_subscription(
             Bool, safety_topics.GESTURE_IN_PROGRESS_TOPIC, self._on_gesture_in_progress, 10)
+        self.create_subscription(
+            Bool, safety_topics.BASE_LEASE_VALID_TOPIC, self._on_base_lease_valid, 10)
 
         rate = self.get_parameter("publish_rate_hz").value
         self.create_timer(1.0 / rate if rate > 0 else 0.1, self._tick)
@@ -150,6 +165,9 @@ class MotionGuardNode(Node):
     def _on_gesture_in_progress(self, msg: Bool):
         self._gesture_in_progress.update(msg.data, self._now())
 
+    def _on_base_lease_valid(self, msg: Bool):
+        self._base_lease_valid.update(msg.data, self._now())
+
     def _tick(self):
         now = self._now()
         max_age = self.get_parameter("max_input_age_s").value
@@ -166,6 +184,7 @@ class MotionGuardNode(Node):
             bumper_active=self._bumper_active.effective(now, max_age, True),
             emergency_stop=self._emergency_stop.effective(now, max_age, True),
             gesture_in_progress=self._gesture_in_progress.effective(now, max_age, True),
+            base_lease_valid=self._base_lease_valid.effective(now, max_age, False),
             cmd_age_s=cmd_age_s,
             max_cmd_age_s=self.get_parameter("max_cmd_age_s").value,
         ))

@@ -54,11 +54,24 @@ from std_msgs.msg import Bool
 
 from ihk_pepper_interfaces.msg import PersonTrackArray, SafetyState
 from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson
+from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
+
+from ihk_pepper_interaction.actuator_arbiter import BASE, PRIORITY_NAVIGATION
 
 from .approach_pose import compute_approach_pose, is_track_fresh
 from .zone_config import load_all_zones, point_in_any_keepout
 
 MAX_TRACK_AGE_S = 2.0
+
+# Entwicklungsauftrag 04-B, AP5B, Abschnitt 14: Navigation muss vor JEDER
+# Fahrt eine BASE-Lease vom zentralen Aktuator-Arbiter halten -- Motion
+# Guard blockiert sonst jeden von Null verschiedenen Fahrbefehl (siehe
+# ihk_pepper_interaction/motion_guard.py). Eine laengere Fahrt erneuert
+# die Lease periodisch, statt sich auf eine einzelne, sehr lange TTL zu
+# verlassen (Auftrag: "waehrend laengerer Navigation erneuern").
+OWNER_ID = "person_approach"
+BASE_LEASE_TTL_S = 20.0
+BASE_LEASE_RENEW_INTERVAL_S = 10.0  # deutlich unter der TTL, genug Sicherheitsmarge
 
 
 def _yaw_to_quaternion(yaw_rad: float):
@@ -128,6 +141,16 @@ class PersonApproachNode(Node):
             self, NavigateToPose, self.get_parameter("nav2_action_name").value,
             callback_group=cb_group,
         )
+
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 14: Service-Clients
+        # zum zentralen Aktuator-Arbiter, gleiches Muster wie
+        # ihk_pepper_bridge/bridge_node.py (Commit 2).
+        self.acquire_lease_client = self.create_client(
+            AcquireActuatorLease, "/actuator_arbiter/acquire", callback_group=cb_group)
+        self.renew_lease_client = self.create_client(
+            RenewActuatorLease, "/actuator_arbiter/renew", callback_group=cb_group)
+        self.release_lease_client = self.create_client(
+            ReleaseActuatorLease, "/actuator_arbiter/release", callback_group=cb_group)
 
         self.approach_server = ActionServer(
             self, ApproachPerson, "approach_person",
@@ -423,6 +446,76 @@ class PersonApproachNode(Node):
 
         return self._drive_to_pose(goal_handle, pose, feedback_cb, monitor_fn=monitor)
 
+    # ---- Aktuator-Arbiter (Entwicklungsauftrag 04-B, AP5B, Abschnitt 14) ----
+
+    @staticmethod
+    def _goal_id_str(goal_handle) -> str:
+        try:
+            return str(bytes(goal_handle.goal_id.uuid))
+        except Exception:
+            return ""
+
+    def _acquire_base_lease(self, purpose: str, goal_id: str, ttl_s: float = BASE_LEASE_TTL_S):
+        """Gibt (granted, lease_id, reason) zurueck. Fail-closed: ein
+        nicht erreichbarer/nicht antwortender Arbiter gewaehrt NIE
+        stillschweigend eine Fahrfreigabe -- kein Nav2-Ziel wird gesendet,
+        bevor diese Methode granted=True liefert."""
+        if not self.acquire_lease_client.wait_for_service(timeout_sec=1.0):
+            return False, "", "actuator_arbiter nicht erreichbar"
+        req = AcquireActuatorLease.Request()
+        req.owner_id = OWNER_ID
+        req.resources = [BASE]
+        req.purpose = purpose
+        req.priority = PRIORITY_NAVIGATION
+        req.ttl_s = ttl_s
+        req.goal_id = goal_id
+        future = self.acquire_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return False, "", "actuator_arbiter Zeitueberschreitung"
+        try:
+            response = future.result()
+        except Exception as e:
+            return False, "", f"actuator_arbiter Fehler: {e}"
+        return response.granted, response.lease_id, response.reason
+
+    def _renew_base_lease(self, lease_id: str, ttl_s: float = BASE_LEASE_TTL_S) -> bool:
+        if not lease_id:
+            return False
+        if not self.renew_lease_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn(
+                f"BASE-Lease '{lease_id}' konnte nicht erneuert werden (Arbiter nicht erreichbar).")
+            return False
+        req = RenewActuatorLease.Request()
+        req.lease_id = lease_id
+        req.ttl_s = ttl_s
+        future = self.renew_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return False
+        try:
+            return bool(future.result().success)
+        except Exception:
+            return False
+
+    def _release_base_lease(self, lease_id: str):
+        if not lease_id:
+            return
+        if not self.release_lease_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn(
+                f"BASE-Lease '{lease_id}' konnte nicht freigegeben werden (Arbiter nicht erreichbar).")
+            return
+        req = ReleaseActuatorLease.Request()
+        req.lease_id = lease_id
+        future = self.release_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+
     def _drive_to_pose(self, goal_handle, pose_stamped, feedback_cb, monitor_fn=None):
         """monitor_fn (optional): wird waehrend der Fahrt periodisch
         aufgerufen (Entwicklungsauftrag 2, AP10). Liefert monitor_fn()
@@ -437,6 +530,20 @@ class PersonApproachNode(Node):
                 "Nav2 ist auf diesem System nicht installiert/gestartet."
             )
             return False, "nav2_nicht_erreichbar"
+
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 14: KEIN Nav2-Ziel
+        # wird gesendet, bevor die BASE-Lease tatsaechlich gewaehrt wurde
+        # -- Motion Guard blockiert einen Fahrbefehl ohnehin ohne gueltige
+        # Lease, aber ein Nav2-Ziel ohne jede Aussicht auf Bewegungs-
+        # freigabe erst gar nicht zu starten ist ehrlicher und vermeidet
+        # unnoetige Nav2-interne Planungsarbeit.
+        goal_id = self._goal_id_str(goal_handle)
+        granted, lease_id, lease_reason = self._acquire_base_lease(
+            purpose="navigate_to_pose", goal_id=goal_id)
+        if not granted:
+            self.get_logger().warn(
+                f"Fahrt abgelehnt (Aktuator-Arbiter BASE-Lease): {lease_reason}")
+            return False, f"actuator_arbiter_lease_denied:{lease_reason}"
 
         from nav2_msgs.action import NavigateToPose
         goal = NavigateToPose.Goal()
@@ -475,13 +582,16 @@ class PersonApproachNode(Node):
 
         send_future.add_done_callback(on_goal_response)
         if not goal_response_done.wait(10.0):
+            self._release_base_lease(lease_id)
             return False, "nav2_goal_response_timeout"
         if goal_state["rejected"] or goal_state["handle"] is None:
+            self._release_base_lease(lease_id)
             return False, outcome["reason"] or "nav2_goal_rejected"
 
         gh = goal_state["handle"]
         deadline = time.time() + 60.0
         poll_interval_s = 0.5
+        last_lease_renew_s = time.time()
         # AP10: nav2_moving=True nur waehrend der eigentlichen Fahrt --
         # gesture_catalog.py::play() sperrt Arm-/Kopfgesten darauf.
         self.nav2_moving_pub.publish(Bool(data=True))
@@ -496,11 +606,23 @@ class PersonApproachNode(Node):
                             f"ApproachPerson waehrend der Fahrt abgebrochen: {reason}")
                         gh.cancel_goal_async()
                         return False, f"monitor_abort:{reason}"
+                # Entwicklungsauftrag 04-B, AP5B, Abschnitt 14: Lease
+                # waehrend laengerer Fahrten erneuern, statt sich auf eine
+                # einzelne, sehr lange TTL zu verlassen.
+                if time.time() - last_lease_renew_s >= BASE_LEASE_RENEW_INTERVAL_S:
+                    if not self._renew_base_lease(lease_id):
+                        self.get_logger().warn(
+                            "BASE-Lease-Erneuerung fehlgeschlagen -- Fahrt wird "
+                            "sicherheitshalber abgebrochen.")
+                        gh.cancel_goal_async()
+                        return False, "base_lease_renew_failed"
+                    last_lease_renew_s = time.time()
 
             gh.cancel_goal_async()
             return False, "nav2_timeout"
         finally:
             self.nav2_moving_pub.publish(Bool(data=False))
+            self._release_base_lease(lease_id)
 
 
 def main(args=None):

@@ -69,6 +69,11 @@ NAV2_MOVING_TOPIC = "/nav2_moving"
 MAPPING_ACTIVE_TOPIC = "/mapping_active"
 SAFETY_STATE_TOPIC = "/safety_state"
 CMD_VEL_TOPIC = "/cmd_vel"
+# Entwicklungsauftrag 04-B, AP5B, Abschnitt 13/BASE-Lease-Integration:
+# vom actuator_arbiter_node veroeffentlicht (Node-Name "actuator_arbiter",
+# Thema "~/base_lease_valid" -> ergibt diesen absoluten Pfad ohne
+# zusaetzliches Remapping).
+BASE_LEASE_VALID_TOPIC = "/actuator_arbiter/base_lease_valid"
 
 
 class FreshBool:

@@ -13,6 +13,7 @@ def _ok(**overrides):
         bumper_active=False,
         emergency_stop=False,
         gesture_in_progress=False,
+        base_lease_valid=True,
         cmd_age_s=0.05,
         max_cmd_age_s=0.5,
     )
@@ -89,6 +90,20 @@ def test_gesture_in_progress_blocks_motion():
     result = _ok(gesture_in_progress=True)
     assert result.allow is False
     assert result.reason == "gesture_in_progress"
+
+
+def test_missing_base_lease_blocks_motion():
+    # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: ohne (frische)
+    # BASE-Lease vom Aktuator-Arbiter darf Motion Guard NICHTS
+    # durchlassen, auch wenn alle anderen Bedingungen erfuellt sind.
+    result = _ok(base_lease_valid=False)
+    assert result.allow is False
+    assert result.reason == "base_lease_invalid"
+
+
+def test_bumper_takes_priority_over_missing_base_lease():
+    result = _ok(bumper_active=True, base_lease_valid=False)
+    assert result.reason == "bumper_active"
 
 
 def test_missing_cmd_age_blocks_motion():

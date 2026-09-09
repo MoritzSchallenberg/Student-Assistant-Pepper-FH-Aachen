@@ -34,6 +34,19 @@ class MotionGuardInputs:
     gesture_in_progress: bool
     cmd_age_s: Optional[float]
     max_cmd_age_s: float
+    # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: der Aktuator-Arbiter
+    # (actuator_arbiter_node.py) ist die einzige Quelle der Wahrheit
+    # dafuer, ob Navigation gerade tatsaechlich eine gueltige BASE-Lease
+    # haelt. Fehlt/veraltet die Lease, wird JEDER von Null verschiedene
+    # Fahrbefehl blockiert -- eine Nullgeschwindigkeit (der "Stopp"-Fall)
+    # kommt trotzdem durch, weil der ROS-Wrapper bei allow=False immer
+    # explizit Twist() (alle Nullen) statt des Kandidatenbefehls
+    # publiziert, nie den Befehl einfach verwirft (siehe
+    # motion_guard_node.py::_tick()). Kein Default (wie alle anderen
+    # Felder hier) -- jeder Aufrufer muss den Wert bewusst setzen, damit
+    # ein neuer Aufrufer nicht versehentlich einen impliziten,
+    # unbedachten Wert erbt.
+    base_lease_valid: bool
 
 
 @dataclass
@@ -55,6 +68,8 @@ def evaluate_motion_guard(inputs: MotionGuardInputs) -> MotionGuardResult:
         return MotionGuardResult(False, "live_motion_mode_inactive")
     if not inputs.safety_allow_motion:
         return MotionGuardResult(False, "safety_allow_motion_false")
+    if not inputs.base_lease_valid:
+        return MotionGuardResult(False, "base_lease_invalid")
     if not inputs.realsense_diagnostics_valid:
         return MotionGuardResult(False, "realsense_diagnostics_invalid")
     if not inputs.odometry_valid:

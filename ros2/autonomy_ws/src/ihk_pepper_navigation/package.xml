@@ -27,6 +27,11 @@
   <depend>geometry_msgs</depend>
   <depend>nav2_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
+  <!-- Entwicklungsauftrag 04-B, AP5B: BASE-Lease-Anfragen an den
+       zentralen Aktuator-Arbiter (actuator_arbiter.py-Konstanten BASE/
+       PRIORITY_NAVIGATION), gleiches Muster wie bereits
+       ihk_pepper_bridge/package.xml (Commit 2). -->
+  <depend>ihk_pepper_interaction</depend>
   <depend>ament_index_python</depend>
   <depend>python3-yaml</depend>
   <!-- Entwicklungsauftrag 2, AP2: realsense_diagnostics_node dekodiert

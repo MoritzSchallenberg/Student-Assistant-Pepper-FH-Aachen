@@ -110,6 +110,7 @@ class _FakeMotionGuardNode:
         self._head_navigation_pose_valid = FreshBool(False)
         self._bumper_active = FreshBool(True)
         self._gesture_in_progress = FreshBool(True)
+        self._base_lease_valid = FreshBool(False)
         self.cmd_pub = _FakePublisher()
         self.diagnostics_pub = _FakePublisher()
 
@@ -147,6 +148,7 @@ def _make_all_clear_node(now=1000.0):
         getattr(node, attr).update(value, now)
     node._bumper_active.update(False, now)
     node._gesture_in_progress.update(False, now)
+    node._base_lease_valid.update(True, now)
     node._last_cmd = Twist()
     node._last_cmd_wall_s = now
     return node
@@ -203,6 +205,7 @@ def test_stale_localization_blocks_even_if_last_value_was_true():
         ("_realsense_diagnostics_valid", True), ("_odometry_valid", True),
         ("_obstacle_data_valid", True), ("_head_navigation_pose_valid", True),
         ("_bumper_active", False), ("_gesture_in_progress", False),
+        ("_base_lease_valid", True),
     ]:
         getattr(node, attr).update(value, node._t)
     node._last_cmd_wall_s = node._t
@@ -217,6 +220,52 @@ def test_never_received_bumper_signal_blocks_as_if_pressed():
     MotionGuardNode._tick(node)
     assert node.cmd_pub.messages[-1] == Twist()
     assert "bumper_active" in node.diagnostics_pub.messages[-1].data
+
+
+def test_missing_base_lease_blocks_motion_via_node():
+    # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: ohne den Aktuator-
+    # Arbiter-Publisher (nie empfangen -- FreshBool faellt auf
+    # fail_closed_value=False zurueck) blockiert der Node, obwohl sonst
+    # alles gueltig ist.
+    node = _make_all_clear_node()
+    node._base_lease_valid = FreshBool(False)  # nie empfangen
+    MotionGuardNode._tick(node)
+    assert node.cmd_pub.messages[-1] == Twist()
+    assert "base_lease_invalid" in node.diagnostics_pub.messages[-1].data
+
+
+def test_on_base_lease_valid_wiring_allows_then_blocks():
+    node = _make_all_clear_node()
+    MotionGuardNode._tick(node)
+    assert node.cmd_pub.messages[-1] is node._last_cmd  # zunaechst frei
+
+    MotionGuardNode._on_base_lease_valid(node, Bool(data=False))
+    MotionGuardNode._tick(node)
+    assert node.cmd_pub.messages[-1] == Twist()
+    assert "base_lease_invalid" in node.diagnostics_pub.messages[-1].data
+
+    MotionGuardNode._on_base_lease_valid(node, Bool(data=True))
+    MotionGuardNode._tick(node)
+    assert node.cmd_pub.messages[-1] is node._last_cmd
+
+
+def test_stale_base_lease_blocks_even_if_last_value_was_true():
+    node = _make_all_clear_node(now=1000.0)
+    node._t = 1000.0 + 10.0  # weit ueber max_input_age_s=2.0
+    for attr, value in [
+        ("_safety_allow_motion", True), ("_emergency_stop", False),
+        ("_realsense_diagnostics_valid", True), ("_odometry_valid", True),
+        ("_localization_valid", True),
+        ("_obstacle_data_valid", True), ("_head_navigation_pose_valid", True),
+        ("_bumper_active", False), ("_gesture_in_progress", False),
+    ]:
+        getattr(node, attr).update(value, node._t)
+    # _base_lease_valid bleibt bewusst auf dem ALTEN Zeitstempel (now=1000.0)
+    node._last_cmd_wall_s = node._t
+
+    MotionGuardNode._tick(node)
+    assert node.cmd_pub.messages[-1] == Twist()
+    assert "base_lease_invalid" in node.diagnostics_pub.messages[-1].data
 
 
 def test_publisher_present_then_gone_transitions_to_blocking():
