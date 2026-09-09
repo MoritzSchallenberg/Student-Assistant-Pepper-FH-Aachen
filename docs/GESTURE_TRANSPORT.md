@@ -1,9 +1,14 @@
 # Gesten-Transport-Architektur
 
-Stand: 2026-09-04. Entwicklungsauftrag 3, AP12.
+Stand: 2026-09-09. Entwicklungsauftrag 3, AP12; Cancel-Architektur
+aktualisiert in Entwicklungsauftrag 04-B, AP5B (siehe
+`docs/ACTION_CANCELLATION.md` für die vollstaendige Abbruch-Kette
+ueber alle Schichten hinweg -- dieses Dokument beschreibt nur die
+Transport-Ebene).
 Implementierung: `ros2/autonomy_ws/src/ihk_pepper_bridge/ihk_pepper_bridge/
-kinematic_compiler.py`, `motion_transport.py`. Siehe auch
-`docs/GESTURE_AUTHORING.md` für das Katalog-YAML-Format.
+kinematic_compiler.py`, `motion_transport.py`, `pepper_client.py`
+(`PepperInterruptChannel`). Siehe auch `docs/GESTURE_AUTHORING.md` für
+das Katalog-YAML-Format.
 
 ## Pipeline
 
@@ -54,7 +59,19 @@ Zusätzlich geprüft, NACH Anwendung des `speed_scale`:
 ## MotionTransport
 
 Abstrakte Schnittstelle: `prepare(plan, restore_snapshot) -> start() ->
-poll()/wait() -> restore()`, `cancel()` jederzeit dazwischen aufrufbar.
+poll()/wait() -> restore()`, `cancel(timeout_s=DEFAULT_CANCEL_TIMEOUT_S)
+-> CancelResult` jederzeit dazwischen aufrufbar.
+
+Seit AP5B liefert `cancel()` ein strukturiertes `CancelResult`
+(`cancel_requested`, `cancel_confirmed`, `final_transport_state`,
+`elapsed_s`, `error_message`) statt eines bloßen `None` -- ersetzt das
+vorherige, potenziell UNBEGRENZTE Warten auf das Ende einer laufenden
+synchronen Trajektorie (bestätigter Fund: `cancel()` konnte bei einer
+laufenden Anfrage beliebig lange blockieren, bevor überhaupt eine
+Halte-Trajektorie gesendet wurde). `cancel_confirmed=True` bedeutet NUR,
+dass der Transport-Zustand als beendet beobachtet wurde -- keine Aussage
+darüber, ob Pepper sich tatsächlich bewegt hat (siehe
+`docs/ACTION_CANCELLATION.md`).
 
 - **`MockMotionTransport`**: reine Buchführung für Tests, keine
   Hardwareaktion.
@@ -70,19 +87,48 @@ poll()/wait() -> restore()`, `cancel()` jederzeit dazwischen aufrufbar.
   behebt den ursprünglichen Fehler in `apps/web/pepper/qicli.py::
   restore_joints()` (dort weiterhin Gelenk für Gelenk in einer Schleife,
   bewusst NICHT verändert, da von `apps/web`/Flask-Server mitgenutzt;
-  weiterhin von v1-Gesten verwendet). **`cancel()`** hat KEIN natives
-  Abbruch-Primitiv für eine bereits an NAOqi gesendete synchrone Anfrage
-  -- wartet auf deren Ende und sendet danach sofort eine
-  Halte-Trajektorie (aktuelle Ist-Position, kurze Dauer). Ehrlich als
-  Näherung dokumentiert, kein echtes Mid-Flight-Abbrechen.
+  weiterhin von v1-Gesten verwendet).
+
+  **`cancel()` (AP5B)**: nimmt optional einen `interrupt_channel`
+  entgegen (`pepper_client.py::PepperInterruptChannel` -- eine ZWEITE,
+  vom Hauptkanal unabhängige SSH-Verbindung + eigenes `threading.RLock`,
+  ausschließlich für `stop_motion()`/`stop_speech()`/
+  `send_hold_position()`). Ohne `interrupt_channel` (ältere
+  Aufrufer/Tests) bleibt es ein reines Best-Effort-Warten auf das
+  natürliche Ende der laufenden Anfrage, jetzt aber BEGRENZT
+  (`timeout_s`, Standard 2.0s) statt unbegrenzt. MIT
+  `interrupt_channel` wird zusätzlich sofort ein `stop_motion()` über den
+  zweiten Kanal gesendet -- der Hauptkanal kann dabei weiterhin hinter
+  der ursprünglichen synchronen Anfrage blockiert sein, der Abbruchbefehl
+  selbst wird davon nie blockiert. `qicli` selbst bietet weiterhin KEIN
+  natives Mid-Flight-Abbruch-Primitiv (kein async Task/Cancel, siehe
+  `docs/ACTION_CANCELLATION.md`, Abschnitt "Fähigkeitstest") -- der
+  zweite Kanal verkürzt die Reaktionszeit, verwandelt es aber nicht in
+  einen echten Hardware-Abbruch. Ehrlich als Best-Effort dokumentiert,
+  Hardwarepfad als `hwverificationrequired` markiert.
 - **`LocalPepperQiHelperTransport`**: dokumentierter, NICHT
   implementierter Platzhalter für eine künftige direkte NAOqi-SDK-
   Anbindung (statt SSH+`qicli`). Jede Methode wirft `NotImplementedError`.
+
+## GestureCatalog.play() (AP5B)
+
+`play()`/`_play_v1()`/`_play_v2()` nehmen jetzt optional
+`cancel_event: threading.Event` und `interrupt_channel` entgegen --
+beide Parameter sind rückwärtskompatibel (Standard `None` erhält das
+Verhalten vor AP5B exakt). `bridge_node.py::_execute_gesture()` reicht
+seinen eigenen Cancel-Event/Interrupt-Kanal durch, sodass eine im
+Hintergrundthread laufende Geste aktiv abgebrochen werden kann, statt
+nur bis zum natürlichen Ende zu laufen.
 
 ## Status
 
 `QicliTrajectoryTransport`/`KinematicCompiler` sind **dry_run_validated,
 NICHT live_validated** -- kein Pepper-Zugriff in dieser Session möglich.
-20 unit-getestete Fälle in `test_kinematic_compiler.py`/
-`test_motion_transport.py` (siehe
-`docs/DEVELOPMENT_ORDER_03_REPORT.md`, AP12).
+Der `PepperInterruptChannel`/die begrenzte `cancel()`-Bestätigung sind
+ebenfalls nur gegen Mocks getestet (`hwverificationrequired`) -- ob ein
+echter zweiter SSH-Kanal auf echter Hardware tatsächlich schneller
+reagiert als der Hauptkanal, ist NICHT verifiziert. 20+ unit-getestete
+Fälle in `test_kinematic_compiler.py`/`test_motion_transport.py` (siehe
+`docs/DEVELOPMENT_ORDER_03_REPORT.md`, AP12), erweitert um die
+Cancel-/`interrupt_channel`-Tests aus AP5B (siehe
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`).

@@ -237,3 +237,176 @@ Als Nächstes ausdrücklich vorgesehen: **AP5B** (zentraler Aktuator-Arbiter,
 echte Action-Cancellation), **AP6** (ReSpeaker Core v2.0, DoA,
 Beamforming, Wakeword), **AP7** (vollständiger
 Personen-Interaktionslebenszyklus).
+
+## AP5B: Zentraler Aktuator-Arbiter und nachweisbare Action-Cancellation
+
+Umgesetzt in 6 aufeinander aufbauenden Commits, jeweils nach betroffenen
+Tests gebaut. Details je Bereich stehen in eigenen Dokumenten (siehe
+Verweise unten); dieser Abschnitt fasst zusammen, was gebaut wurde und
+was ehrlich offen bleibt.
+
+### 1. Bestandsaufnahme/Baseline
+
+Baseline vor AP5B: 661 Python-Tests grün, BT.CPP 17/0/0/3 (bereits reine
+Lint-/Stil-Prüfungen, kein funktionaler gtest-Harness -- siehe unten).
+`apps/web/pepper/qicli.py::say()` wurde bei der Bestandsaufnahme als
+real verwundbar identifiziert: der Text wurde per f-String direkt in
+literale doppelte Anführungszeichen eines Shellbefehls eingebettet
+(Shell-Injection). Fähigkeitstest für Mid-Trajectory-Cancel: `qicli`
+ruft NAOqi ausschließlich über synchrone SSH-Shell-Befehle auf, es gibt
+kein async Task-Handle -- siehe `docs/ACTION_CANCELLATION.md`,
+Abschnitt "Fähigkeitstest" für die vollständige A/B/C-Bewertung. Ergebnis:
+Option C (ehrliches Best-Effort + `hwverificationrequired`-Markierung)
+umgesetzt, wie vom Auftrag für genau diesen Fall vorgesehen.
+
+### 2. Commit 1/6: Aktuator-Arbiter-Kernlogik
+
+Neues Modul `ihk_pepper_interaction/actuator_arbiter.py` (reine,
+ROS-freie Zustandsmaschine, injizierbare Zeitfunktion wie
+`CircuitBreaker`/`FreshBool`) + `resource_derivation.py` +
+`actuator_arbiter_node.py` (ROS2-Wrapper: 4 Services, 3 Topics,
+fail-closed bis zum ersten `SafetyState`). 7 neue Interfaces
+(`ActuatorLease.msg`, `ActuatorResourceState.msg`, `ActuatorState.msg`,
+`AcquireActuatorLease.srv`, `RenewActuatorLease.srv`,
+`ReleaseActuatorLease.srv`, `CancelActuation.srv`). Ressourcen,
+Prioritäten, Konflikt-/Präemptionsregeln, serverseitiges
+Vertrauensmodell: vollständig in `docs/ACTUATOR_ARBITER.md`
+dokumentiert. 66 neue Tests.
+
+### 3. Commit 2/6: Bounded Cancellation in Transport/Bridge
+
+`motion_transport.py`: neues `CancelResult`-Dataclass ersetzt das
+bisherige unbegrenzte `cancel() -> None` (bestätigter Fund: konnte bei
+einer laufenden synchronen Trajektorie beliebig lange blockieren).
+`pepper_client.py`: neue `PepperInterruptChannel`-Klasse (zweite,
+unabhängige SSH-Verbindung ausschließlich für
+`stop_speech()`/`stop_motion()`/`send_hold_position()`).
+`apps/web/pepper/qicli.py`: Shell-Injection in `say()` behoben
+(`shlex.quote()`), neue `say_text_only()` (kein automatisches
+`ALAnimatedSpeech`-Körperspiel). Neues `ihk_pepper_bridge/tts_guard.py`
+als zusätzliche, unabhängige TTS-Text-Validierung an der Bridge-Grenze.
+`GestureCatalog.play()` bekam optionale `cancel_event`/
+`interrupt_channel`-Parameter (rückwärtskompatibel). `bridge_node.py`:
+`_execute_say()`/`_execute_gesture()` laufen jetzt im
+Hintergrundthread mit begrenztem Polling, erwerben zuerst eine Lease
+vom Arbiter. Volle Details: `docs/GESTURE_TRANSPORT.md`,
+`docs/ACTION_CANCELLATION.md`. Viele neue Tests über
+`test_motion_transport.py`, `test_qicli.py`, `test_tts_guard.py`
+(neu, 15), `test_gesture_catalog_cancel.py` (neu, 6),
+`test_bridge_node_actuator_arbiter.py` (neu, 13).
+
+### 4. Commit 3/6: Cancel-Weiterleitung durch Dialog, Behavior Tree, Presentation Manager
+
+`response_plan_executor.py`: neuer `cancel_active_fn`-Hook, von
+`cancel()` sofort zusätzlich zum bestehenden Flag aufgerufen.
+`run_dialogue_action_server.py`: `_send_goal_and_wait()` bricht bei
+eigenem Timeout jetzt aktiv ab (begrenzte 2.0s-Bestätigung); neue
+`_cancel_active_actions()`; `executor.execute()` läuft im
+Hintergrundthread mit 0.1s-Cancel-Poll-Schleife. `bt_nodes.hpp/.cpp`:
+neue, ROS-unabhängige `waitForBoundedCancelConfirmation()` --
+`onHalted()` aller 5 Action-Knoten wartet jetzt begrenzt (250ms) auf
+Cancel-Bestätigung statt komplett ohne Feedback abzubrechen.
+`presentation_manager_node.py`: `_cancel_callback()` bricht das aktive
+Say-Ziel jetzt sofort ab, statt erst an der nächsten `_check_cancel()`-
+Stelle. Volle Details: `docs/RESPONSE_PLAN_EXECUTION.md`,
+`docs/BEHAVIOR_TREE.md`, `docs/ACTION_CANCELLATION.md`. Neue Tests:
+`test_response_plan_executor.py` (+2), `test_run_dialogue_cancellation.py`
+(neu, 7), `test_presentation_manager_cancel.py` (neu, 5),
+`test_bt_cancel_confirmation.cpp` (neu, 3 gtest -- BT.CPP damit auf
+23/0/0/4, vorher 17/0/0/3).
+
+### 5. Commit 4/6: BASE-Lease-Integration -- Navigation und Motion Guard
+
+`motion_guard.py`: neues, pflichtiges `base_lease_valid`-Feld,
+zusätzliche Prüfung direkt nach `safety_allow_motion` -- fehlt/ist
+veraltet die Lease, wird jeder von Null verschiedene Fahrbefehl
+blockiert (ein Stopp-Befehl kommt trotzdem immer durch, siehe
+`docs/ACTUATOR_ARBITER.md`). `motion_guard_node.py`: neues fail-closed
+`FreshBool` für `/actuator_arbiter/base_lease_valid` (neue Konstante in
+allen 3 Kopien von `safety_topics.py` identisch ergänzt).
+`person_approach_node.py::_drive_to_pose()`: erwirbt die BASE-Lease VOR
+jedem Nav2-Ziel, erneuert sie periodisch während längerer Fahrten, gibt
+sie in jedem Ausstiegspfad frei. Bumper/Not-Halt widerrufen sie bereits
+generisch über `emergency_revoke_all()` (keine Änderung nötig). Neue
+Tests: `test_motion_guard.py` (+2), `test_motion_guard_freshness.py`
+(+3), `test_person_approach_base_lease.py` (neu, 12, inkl.
+End-zu-Ende-Test von `_drive_to_pose()` gegen ein Fake-Nav2).
+
+### 6. Commit 5/6: Legacy-qicli-Umgehungspfade schließen/kenntlich machen
+
+Neuer sicherer Default `PEPPER_WEB_HARDWARE_TEST_ENABLED=false`.
+`apps/web/app.py`: neuer `_hardware_test_guard()` -- `/execute` (inkl.
+der echten Bewegung `moveTo`), `/al/<enable>`, `/logo`, `/say/<text>`
+geben ohne explizite Freigabe sofort 403 zurück, ohne qicli je zu
+erreichen. `vision/mimic_arms.py` (bewegt Arme über rohe
+`ALMotion.angleInterpolation`-Shellbefehle, komplett an Motion
+Guard/Arbiter/Gestenkatalog vorbei -- die gefährlichste der drei
+Dateien): `main()` bricht jetzt vor `rclpy.init()` ab, wenn der
+Schalter nicht gesetzt ist. War strukturell bereits nie automatisch
+gestartet, bleibt das auch. `apps/web/stt/listen_loop.py` (reine
+Audioaufnahme, kein `say()`/`moveTo()`): kein harter Block, aber klar
+als manuelles Werkzeug mit eigener, von der Bridge unabhängiger
+SSH-Verbindung gekennzeichnet. Neue Tests: `apps/web/test_app.py` (8),
+`vision/test_mimic_arms.py` (2).
+
+### 7. Commit 6/6: verbleibende Tests, Dokumentation, ehrlicher Abschluss
+
+Neue/aktualisierte Dokumente: `docs/ACTUATOR_ARBITER.md` (neu),
+`docs/ACTION_CANCELLATION.md` (neu), `docs/BEHAVIOR_TREE.md` (neu),
+`docs/GESTURE_TRANSPORT.md` (Cancel-Architektur aktualisiert),
+`docs/RESPONSE_PLAN_EXECUTION.md` (Cancel-Weiterleitung ergänzt), dieser
+Abschnitt.
+
+### Testzusammenfassung
+
+- **Python**: 692 Tests grün, 3 übersprungen (vor AP5B: 661) -- 31 neue
+  Tests über die Commits 1-5 (66 in Commit 1, weitere in Commit 2, +21
+  in Commit 3, +17 in Commit 4, +10 in Commit 5 -- Netto-Zuwachs 692-661
+  je nach Zwischenständen, siehe Commit-Historie für die exakten
+  Einzelzahlen je Commit).
+- **BT.CPP**: 23 Tests, 0 Fehler, 0 Fehlschläge, 4 übersprungen (vorher
+  17/0/0/3) -- **wichtiger ehrlicher Hinweis**: die "17" waren
+  ausschließlich Lint-/Stilprüfungen (cppcheck/cpplint-Kern/flake8/
+  lint_cmake/pep257/uncrustify/xmllint) über `ament_lint_auto`, KEIN
+  funktionaler gtest-Harness. AP5B hat mit `test_bt_cancel_confirmation.cpp`
+  (3 Tests, `ament_add_gtest`) den ERSTEN echten funktionalen Test für
+  dieses Paket ergänzt -- ein vollständiger Mock-Action-Server-Harness
+  für die übrigen BT-Knoten existiert weiterhin nicht.
+- **apps/web**: 20 Tests grün (8 neu für `app.py`, 12 bereits vorhanden
+  für `qicli.py`, davon 6 neu in Commit 2).
+- **vision**: 2 neue Tests für `mimic_arms.py`.
+- Harter Grep-Test `/cmd_vel` über alle in AP5B geänderten/neuen Dateien:
+  kein Treffer.
+
+### Ehrlicher Stand / verbleibende Punkte (gegen Abschnitt 21/22 des Auftrags)
+
+- **Kein echter Pepper in dieser Session erreichbar** -- alle vier
+  Hardware-Testphasen (A-D, Auftrag-Abschnitt 16) sind NICHT
+  durchgeführt worden. Jeder Cancel-/Bewegungspfad bleibt durchgängig
+  `hwverificationrequired` markiert, nirgends wird ein "bestätigter
+  Hardware-Abbruch" behauptet, ohne dass echte Hardware das verifiziert
+  hätte.
+- **Kein echter Mid-Trajectory-Abbruch implementiert** (Fähigkeitstest-
+  Ergebnis Option C, siehe oben) -- die begrenzte Bestätigung/der
+  zweite SSH-Kanal verkürzen die Reaktionszeit, verwandeln
+  `QicliTrajectoryTransport.cancel()` aber nicht in einen echten
+  Hardware-Abbruch. Das ist eine bewusste, ehrliche Grenze, keine
+  vergessene Aufgabe.
+- **`LocalPepperQiHelperTransport`** (Option B, persistenter
+  qi-Helper-Prozess) bleibt ein dokumentierter, nicht implementierter
+  Platzhalter -- nicht umgesetzt, da nicht ohne echten Pepper
+  verifizierbar und ein zusätzliches Sicherheitsrisiko (persistenter
+  Fremdprozess auf Pepper) ohne verifizierten Nutzen.
+- **BT.CPP-Testabdeckung bleibt lückenhaft**: nur die neue,
+  ROS-unabhängige Hilfsfunktion ist per gtest getestet, nicht die
+  Knoten selbst gegen einen echten/gemockten Action-Server.
+- Keine Livebewegung, kein neuer `/cmd_vel`-Zugriff, kein
+  `navigation_live.launch.py`, kein Push auf `main`, kein Force-Push --
+  alle Grenzen aus Abschnitt 21 eingehalten.
+- Working Tree nach Abschluss dieses Arbeitspakets sauber, 6 klar
+  abgegrenzte Commits (siehe Commit-Historie).
+
+Als Nächstes ausdrücklich vorgesehen: **AP6** (ReSpeaker Core v2.0, DoA,
+Beamforming, Wakeword) -- laut Auftrag ausdrücklich erst NACH einem
+abgeschlossenen AP5B ("Dieses Arbeitspaket ist die zwingende
+Sicherheitsgrundlage für AP6").
