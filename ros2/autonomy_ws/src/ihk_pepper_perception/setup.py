@@ -25,6 +25,7 @@ setup(
         "console_scripts": [
             "perception_node = ihk_pepper_perception.perception_node:main",
             "audiovisual_association_node = ihk_pepper_perception.audiovisual_association_node:main",
+            "group_tracking_node = ihk_pepper_perception.group_tracking_node:main",
         ],
     },
 )
