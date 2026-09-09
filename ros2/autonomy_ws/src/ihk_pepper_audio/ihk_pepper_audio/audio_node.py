@@ -23,7 +23,7 @@ from rclpy.node import Node
 from std_msgs.msg import String, Bool, Float32, UInt8
 
 from ihk_pepper_interaction.interaction_state import InteractionState
-from ihk_pepper_interfaces.msg import SoundDirection, WakewordEvent
+from ihk_pepper_interfaces.msg import AudioFocusState, SoundDirection, WakewordEvent
 
 from .audio_source import create_source, AudioSourceError, CHUNK_MS
 from .direction_sample_buffer import DirectionSampleBuffer, TimedDirectionSample
@@ -125,6 +125,28 @@ class AudioNode(Node):
         self.declare_parameter("respeaker_backend_kind", "passthrough")
         self.declare_parameter("respeaker_microphone_channels", [0, 1, 2, 3, 4, 5])
         self.declare_parameter("respeaker_mic_spacing_m", 0.035)
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: echte Kanal-
+        # geometrie fuer gezieltes Delay-and-Sum-Steering (statt nur des
+        # Referenzpaar-Abstands) -- drei parallele Arrays statt
+        # verschachtelter Structs (ROS2-Parameter kennen keine Listen von
+        # Objekten). Alle drei leer (Default) = keine Geometrie
+        # konfiguriert, Backend faellt fail-closed auf das alte,
+        # ungerichtete Delay-and-Sum zurueck (siehe directional_audio.py).
+        self.declare_parameter("respeaker_mic_geometry_channels", [])
+        self.declare_parameter("respeaker_mic_geometry_x_m", [])
+        self.declare_parameter("respeaker_mic_geometry_y_m", [])
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: siehe
+        # DirectionalAudioBackend.provides_unambiguous_direction-Doku --
+        # eine Zwei-Mikrofon-GCC-PHAT-Halbebenenschaetzung darf NIE ohne
+        # explizite, in production_mode gesperrte Bestaetigung eine
+        # Kopfbewegung ausloesen.
+        self.declare_parameter("allow_ambiguous_direction_for_head_orientation", False)
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: deutlich groesser
+        # als audio_focus_node.py's Publikationsintervall (0.2s) -- ein
+        # einzelner verpasster Tick darf das Steering nicht sofort
+        # abbrechen, ein ausbleibender audio_focus_node (Absturz, Netz)
+        # aber sehr wohl.
+        self.declare_parameter("focus_target_freshness_margin_s", 1.0)
 
         activation_mode = self.get_parameter("activation_mode").value
         if activation_mode not in VALID_ACTIVATION_MODES:
@@ -139,6 +161,22 @@ class AudioNode(Node):
                 "production_mode=true gesperrt (Entwicklungsauftrag 04-B, AP6.1, "
                 "Abschnitt 13) -- niemals unbeaufsichtigtes Dauerhoeren in Produktion."
             )
+        if (self.get_parameter("production_mode").value
+                and self.get_parameter("allow_ambiguous_direction_for_head_orientation").value):
+            raise RuntimeError(
+                "audio_node: allow_ambiguous_direction_for_head_orientation=true ist mit "
+                "production_mode=true gesperrt (Entwicklungsauftrag 04-B, AP6.1, "
+                "Abschnitt 5/13) -- eine front/back-mehrdeutige Zwei-Mikrofon-Schaetzung "
+                "darf in Produktion nie als sichere Grundlage fuer eine Kopfbewegung gelten."
+            )
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: konservativer
+        # Default, bis der erste Richtungssample eines Backends mit
+        # provides_unambiguous_direction=True eingetroffen ist (siehe
+        # _publish_sound_direction_if_available()) -- kein bekannter
+        # Backend-Typ bedeutet KEINE sichere 360-Grad-Peilung.
+        self._direction_source_unambiguous = False
+        self._current_backend = None
 
         self.transcript_pub = self.create_publisher(String, "transcript", 10)
         self.command_pub = self.create_publisher(String, "voice_command", 10)
@@ -173,6 +211,17 @@ class AudioNode(Node):
         self._interaction_state_value = InteractionState.IDLE
         self._interaction_state_received_at = None
         self.create_subscription(UInt8, "/interaction_state", self._on_interaction_state, 10)
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: bestaetigter Fund
+        # -- bislang gab es KEINEN Weg, das reale, bestaetigte Fokus-Ziel
+        # (audio_focus_node.py, AudioFocusStateMachine) an das aktive
+        # Backend weiterzugeben; jeder Beamforming-Pfad verarbeitete
+        # strukturell nur den lautesten/gemessenen Sprecher. Steuert das
+        # Backend NUR waehrend eines bestaetigten Gespraechsfokus an --
+        # ein lauterer/anderer Sprecher kann NIE selbst zum neuen Ziel
+        # werden (das entscheidet ausschliesslich audio_focus.py/
+        # audiovisual_association.py, nicht dieser Node).
+        self.create_subscription(AudioFocusState, "/audio/focus_state", self._on_focus_state, 10)
 
         self.wakeword = WakewordDetector(
             model_path=self.get_parameter("wakeword_model_path").value
@@ -219,6 +268,30 @@ class AudioNode(Node):
 
     def _on_push_to_talk(self, msg: Bool):
         self._push_to_talk_active = msg.data
+
+    def _on_focus_state(self, msg: AudioFocusState):
+        """Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: steuert das
+        aktive Backend auf das von audio_focus_node.py bestaetigte
+        Fokus-Ziel -- NUR waehrend CONVERSATION_FOCUS/PEPPER_SPEAKING
+        UND msg.valid. Jeder andere Zustand (IDLE_WIDE, AUDIO_DEGRADED,
+        RETURNING_TO_IDLE, ...) loescht ein evtl. gesetztes Ziel sofort
+        (kein stilles Weitersteuern auf eine verlorene Person).
+
+        valid_until wird bewusst HIER (mit der eigenen monotone Uhr
+        dieses Prozesses) berechnet, nicht aus dem Nachrichteninhalt
+        uebernommen -- verlaesst sich nicht auf eine geteilte
+        Uhren-Epoche zwischen getrennten ROS-Prozessen. Bleibt das
+        naechste Update laenger als die Marge aus, faellt das Backend
+        von selbst auf ungerichtetes Verhalten zurueck (siehe
+        directional_audio.py::_active_focus_azimuth)."""
+        backend = self._current_backend
+        if backend is None or not hasattr(backend, "set_focus_target"):
+            return
+        if msg.valid and msg.mode in ("CONVERSATION_FOCUS", "PEPPER_SPEAKING"):
+            margin_s = self.get_parameter("focus_target_freshness_margin_s").value
+            backend.set_focus_target(msg.target_azimuth_rad, time.monotonic() + margin_s)
+        else:
+            backend.clear_focus_target()
 
     def _on_interaction_state(self, msg: UInt8):
         self._interaction_state_value = msg.data
@@ -269,6 +342,27 @@ class AudioNode(Node):
             return False
         return self._session_active()
 
+    def _build_microphone_geometry(self):
+        """None, wenn die drei parallelen Arrays nicht UEBEREINSTIMMEND
+        (gleiche Laenge, nicht leer) konfiguriert sind -- fail-closed auf
+        "keine Geometrie" statt eine Teilkonfiguration zu erraten
+        (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5)."""
+        from .directional_audio import MicrophoneGeometry
+
+        channels = list(self.get_parameter("respeaker_mic_geometry_channels").value)
+        xs = list(self.get_parameter("respeaker_mic_geometry_x_m").value)
+        ys = list(self.get_parameter("respeaker_mic_geometry_y_m").value)
+        if not channels or not (len(channels) == len(xs) == len(ys)):
+            if channels or xs or ys:
+                self.get_logger().warn(
+                    "respeaker_mic_geometry_*-Parameter unvollstaendig/inkonsistent "
+                    f"(channels={len(channels)}, x={len(xs)}, y={len(ys)}) -- "
+                    "Geometrie-Steering bleibt deaktiviert."
+                )
+            return None
+        return [MicrophoneGeometry(channel=int(c), x_m=float(x), y_m=float(y))
+                for c, x, y in zip(channels, xs, ys)]
+
     def _build_directional_backend(self):
         from .directional_audio import GccPhatDelayAndSumBackend, PassthroughTestBackend
 
@@ -278,6 +372,7 @@ class AudioNode(Node):
                 microphone_channels=list(self.get_parameter("respeaker_microphone_channels").value),
                 mic_spacing_m=self.get_parameter("respeaker_mic_spacing_m").value,
                 sample_rate_hz=self.get_parameter("respeaker_sample_rate_hz").value,
+                microphone_geometry=self._build_microphone_geometry(),
             )
         return PassthroughTestBackend()
 
@@ -343,6 +438,13 @@ class AudioNode(Node):
         statt blind die "letzte" Richtung zu uebernehmen."""
         if not hasattr(source, "last_azimuth_rad"):
             return
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: einfache
+        # Bool-Zuweisung, kein Lock noetig (gleiches, bereits etabliertes
+        # Muster wie self._push_to_talk_active -- eine einzelne
+        # Attributzuweisung ist unter der GIL atomar genug fuer dieses
+        # nicht-kritische Cross-Thread-Flag).
+        self._direction_source_unambiguous = bool(
+            getattr(getattr(source, "_backend", None), "provides_unambiguous_direction", False))
         now_ns = self.get_clock().now().nanoseconds
         frame_id = self.get_parameter("respeaker_frame_id").value
         sample = TimedDirectionSample(
@@ -374,6 +476,11 @@ class AudioNode(Node):
             try:
                 source = self._build_source()
                 source.connect()
+                # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: Referenz
+                # auf das aktuell aktive Backend fuer den ROS-Callback-
+                # Thread (_on_focus_state()) -- derselbe Bool-Zuweisungs-
+                # Grund wie bei _direction_source_unambiguous oben.
+                self._current_backend = getattr(source, "_backend", None)
                 self.source_ok_pub.publish(Bool(data=True))
                 self.get_logger().info(f"Audioquelle '{source.name}' verbunden.")
                 while not self._stop_event.is_set():
@@ -473,6 +580,17 @@ class AudioNode(Node):
             direction_confidence = 0.0
             direction_valid = False
             event_stamp_ns = self.get_clock().now().nanoseconds
+
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: eine
+        # front/back-mehrdeutige Zwei-Mikrofon-Schaetzung (z.B. GCC-PHAT)
+        # darf NIE ohne explizite, in production_mode gesperrte
+        # Bestaetigung eine Kopfbewegung ausloesen -- direction_valid
+        # wird hier ehrlich zurueckgesetzt, NICHT die Richtung selbst
+        # veraendert (WaitForFreshWakeword/OrientHeadToSound verlangen
+        # direction_valid==true, siehe Behavior Tree).
+        if direction_valid and not self._direction_source_unambiguous:
+            if not self.get_parameter("allow_ambiguous_direction_for_head_orientation").value:
+                direction_valid = False
 
         event = self.wakeword_gate.evaluate(
             keyword_detected=detected,

@@ -18,6 +18,7 @@ from ihk_pepper_audio.audio_node import (
 from ihk_pepper_audio.direction_sample_buffer import DirectionSampleBuffer, TimedDirectionSample
 from ihk_pepper_audio.wakeword_gate import WakewordGate
 from ihk_pepper_interaction.interaction_state import InteractionState
+from ihk_pepper_interfaces.msg import AudioFocusState
 from std_msgs.msg import UInt8
 
 
@@ -63,6 +64,18 @@ class _FakeWakeword:
         return self._detect_result
 
 
+class _FakeSteerableBackend:
+    def __init__(self):
+        self.focus_calls = []
+        self.clear_calls = 0
+
+    def set_focus_target(self, azimuth_rad, valid_until_monotonic_s):
+        self.focus_calls.append((azimuth_rad, valid_until_monotonic_s))
+
+    def clear_focus_target(self):
+        self.clear_calls += 1
+
+
 class _FakeNode:
     _on_interaction_state = AudioNode._on_interaction_state
     _conversation_active_for_gate = AudioNode._conversation_active_for_gate
@@ -70,11 +83,22 @@ class _FakeNode:
     _should_process_utterance = AudioNode._should_process_utterance
     _try_wakeword_activation = AudioNode._try_wakeword_activation
     _handle_utterance = AudioNode._handle_utterance
+    _on_focus_state = AudioNode._on_focus_state
 
     def __init__(self, params=None, wakeword_enabled=True, wakeword_detect_result=False,
-                 interaction_state_known=True, push_to_talk_active=False):
+                 interaction_state_known=True, push_to_talk_active=False,
+                 direction_source_unambiguous=True):
         self._params = params or {}
         self._interaction_state_value = InteractionState.IDLE
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: Default True
+        # in diesem Test-Fake, damit die BESTEHENDEN Tests (die die neue
+        # Ambiguitaets-Gate-Funktion nicht pruefen wollen) unveraendert
+        # weiter direction_valid=True erwarten koennen -- der echte
+        # Produktions-Default in AudioNode.__init__ bleibt hingegen
+        # bewusst False (siehe dort), bis ein Backend mit
+        # provides_unambiguous_direction=True tatsaechlich eingetroffen ist.
+        self._direction_source_unambiguous = direction_source_unambiguous
+        self._current_backend = None
         # Realistischer Ausgangszustand fuer die meisten Tests: ein
         # frisches IDLE wurde bereits empfangen. Das reine "nie empfangen
         # -> faellt fail-closed auf 'koennte aktiv sein' zurueck"-
@@ -100,6 +124,8 @@ class _FakeNode:
             "direction_window_margin_s": 0.5,
             "direction_min_confidence_for_wakeword": 0.0,
             "respeaker_frame_id": "respeaker_link",
+            "allow_ambiguous_direction_for_head_orientation": False,
+            "focus_target_freshness_margin_s": 1.0,
         }
         return _FakeParam(self._params.get(name, defaults.get(name)))
 
@@ -290,3 +316,97 @@ def test_handle_utterance_ignores_direction_sample_outside_utterance_window():
     AudioNode._handle_utterance(node, b"\x00\x00" * 1600)
     event_msg = node.wakeword_event_pub.messages[0]
     assert event_msg.direction_valid is False
+
+
+# ---- Ambiguitaets-Gate (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13) ----
+
+def test_ambiguous_direction_source_forces_direction_invalid_by_default():
+    # Ein Backend ohne provides_unambiguous_direction=True (z.B. die
+    # Zwei-Mikrofon-GCC-PHAT-Halbebenenschaetzung) darf NIE ohne
+    # explizite Freigabe eine Kopfbewegung ausloesen -- direction_valid
+    # wird ehrlich zurueckgesetzt, auch wenn ein frischer, an sich
+    # gueltiger Richtungssample vorliegt.
+    node = _FakeNode(wakeword_enabled=True, wakeword_detect_result=True,
+                      direction_source_unambiguous=False)
+    node._push_direction_sample(azimuth_rad=0.42, confidence=0.9, valid=True)
+    AudioNode._handle_utterance(node, b"\x00\x00" * 1600)
+    event_msg = node.wakeword_event_pub.messages[0]
+    assert event_msg.direction_valid is False
+
+
+def test_allow_ambiguous_direction_override_permits_valid_direction():
+    node = _FakeNode(wakeword_enabled=True, wakeword_detect_result=True,
+                      direction_source_unambiguous=False,
+                      params={"allow_ambiguous_direction_for_head_orientation": True})
+    node._push_direction_sample(azimuth_rad=0.42, confidence=0.9, valid=True)
+    AudioNode._handle_utterance(node, b"\x00\x00" * 1600)
+    event_msg = node.wakeword_event_pub.messages[0]
+    assert event_msg.direction_valid is True
+
+
+# ---- _on_focus_state -> aktives Backend (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5) ----
+
+def _focus_state(mode="CONVERSATION_FOCUS", valid=True, azimuth_rad=0.3):
+    msg = AudioFocusState()
+    msg.mode = mode
+    msg.valid = valid
+    msg.target_azimuth_rad = azimuth_rad
+    return msg
+
+
+def test_focus_state_conversation_focus_sets_backend_target():
+    node = _FakeNode()
+    backend = _FakeSteerableBackend()
+    node._current_backend = backend
+    node._on_focus_state(_focus_state(mode="CONVERSATION_FOCUS", valid=True, azimuth_rad=0.7))
+    assert len(backend.focus_calls) == 1
+    assert backend.focus_calls[0][0] == 0.7
+
+
+def test_focus_state_pepper_speaking_also_sets_backend_target():
+    node = _FakeNode()
+    backend = _FakeSteerableBackend()
+    node._current_backend = backend
+    node._on_focus_state(_focus_state(mode="PEPPER_SPEAKING", valid=True))
+    assert len(backend.focus_calls) == 1
+
+
+def test_focus_state_invalid_clears_backend_target():
+    node = _FakeNode()
+    backend = _FakeSteerableBackend()
+    node._current_backend = backend
+    node._on_focus_state(_focus_state(mode="AUDIO_DEGRADED", valid=False))
+    assert backend.clear_calls == 1
+    assert backend.focus_calls == []
+
+
+def test_focus_state_idle_wide_clears_backend_target():
+    node = _FakeNode()
+    backend = _FakeSteerableBackend()
+    node._current_backend = backend
+    node._on_focus_state(_focus_state(mode="IDLE_WIDE", valid=False))
+    assert backend.clear_calls == 1
+
+
+def test_focus_state_ignored_without_any_backend():
+    node = _FakeNode()
+    node._current_backend = None
+    node._on_focus_state(_focus_state())  # darf nicht crashen
+
+
+def test_focus_state_ignored_for_non_steerable_backend():
+    class _NonSteerableBackend:
+        pass
+
+    node = _FakeNode()
+    node._current_backend = _NonSteerableBackend()
+    node._on_focus_state(_focus_state())  # darf nicht crashen, kein set_focus_target vorhanden
+
+
+def test_unambiguous_direction_source_is_unaffected_by_the_gate():
+    node = _FakeNode(wakeword_enabled=True, wakeword_detect_result=True,
+                      direction_source_unambiguous=True)
+    node._push_direction_sample(azimuth_rad=0.42, confidence=0.9, valid=True)
+    AudioNode._handle_utterance(node, b"\x00\x00" * 1600)
+    event_msg = node.wakeword_event_pub.messages[0]
+    assert event_msg.direction_valid is True

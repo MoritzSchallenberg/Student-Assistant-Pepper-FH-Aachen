@@ -19,9 +19,10 @@ in diesem Modul erfindet eine Richtung, wenn es keine hat).
 """
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import List
+from typing import Callable, List, Optional
 
 from .respeaker_transport import RawAudioBlock
 
@@ -38,9 +39,62 @@ class DirectionalAudioResult:
     reason: str = ""
 
 
+@dataclass(frozen=True)
+class MicrophoneGeometry:
+    """Position EINES Mikrofonkanals relativ zum Array-Ursprung (Meter,
+    x=vorwaerts, y=links -- dieselbe REP-103-Konvention wie
+    SoundDirection.msg/audiovisual_association.py). Entwicklungsauftrag
+    04-B, AP6.1, Abschnitt 5: Voraussetzung fuer echtes, geometrie-
+    basiertes Delay-and-Sum-Steering auf ein FESTES Ziel (statt nur den
+    gemessenen Peilwinkel auszurichten)."""
+
+    channel: int
+    x_m: float
+    y_m: float
+
+
 class DirectionalAudioBackend(ABC):
+    # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: konservativer
+    # Default -- ein Backend muss AUSDRUECKLICH deklarieren, dass es
+    # eine echte 360-Grad-Peilung liefert. Ein Backend, das das nicht
+    # kann (z.B. eine Zwei-Mikrofon-GCC-PHAT-Halbebenenschaetzung), darf
+    # NIE als sichere Grundlage fuer eine physische Kopfbewegung
+    # behandelt werden (siehe audio_node.py::_try_wakeword_activation).
+    provides_unambiguous_direction: bool = False
+
     @abstractmethod
     def process(self, block: RawAudioBlock) -> DirectionalAudioResult:
+        ...
+
+
+class SteerableDirectionalAudioBackend(DirectionalAudioBackend):
+    """Mixin fuer Backends, die den Beamforming-/Delay-and-Sum-Pfad
+    aktiv auf eine BEKANNTE, bestaetigte Personenrichtung ausrichten
+    koennen (Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5) -- bestaetigter
+    Fund: bislang gab es KEINEN Weg, die AudioFocusStateMachine's
+    Zielrichtung tatsaechlich an das Backend weiterzugeben, es wurde
+    strukturell immer nur der lauteste/gemessene Sprecher verarbeitet.
+
+    set_focus_target() darf NIE selbst entscheiden, WER die Zielperson
+    ist -- das bleibt Aufgabe von audio_focus.py/
+    audiovisual_association.py (Mehrdeutigkeit -> keine Auswahl). Das
+    Backend bekommt hier nur einen FERTIG BESTAETIGTEN Winkel injiziert
+    und nutzt ihn ausschliesslich zur Signalverbesserung -- die
+    gemeldete DoA-Schaetzung (azimuth_rad/doa_confidence im
+    DirectionalAudioResult) bleibt UNABHAENGIG von diesem Zielwinkel,
+    damit ein Fokus-Ziel niemals die eigentliche Messung verfaelscht."""
+
+    @abstractmethod
+    def set_focus_target(self, azimuth_rad: float, valid_until_monotonic_s: float) -> None:
+        """valid_until_monotonic_s: Zeitpunkt (time.monotonic()-Basis),
+        bis zu dem dieses Ziel als frisch gilt -- danach MUSS das
+        Backend automatisch auf ungerichtetes Verhalten zurueckfallen
+        (kein ewiges Festhalten an einer laengst veralteten Richtung,
+        falls der Aufrufer einen Abbruch je verpasst)."""
+        ...
+
+    @abstractmethod
+    def clear_focus_target(self) -> None:
         ...
 
 
@@ -111,6 +165,10 @@ class MockDirectionalBackend(DirectionalAudioBackend):
     DirectionalAudioResult -- fuer Tests, die eine EXAKTE Richtung/
     Konfidenz brauchen, ohne echte Signalverarbeitung."""
 
+    # Testkomfort: ein Mock darf per Definition als "unambiguous" gelten,
+    # der Testautor kontrolliert das Ergebnis ohnehin vollstaendig.
+    provides_unambiguous_direction = True
+
     def __init__(self, result_fn=None, fixed_result: DirectionalAudioResult | None = None):
         if result_fn is None and fixed_result is None:
             raise ValueError("entweder result_fn oder fixed_result muss gesetzt sein")
@@ -144,9 +202,28 @@ class GccPhatDelayAndSumBackend(DirectionalAudioBackend):
     kuenstlich verzoegerte Signale (siehe test_directional_audio.py) --
     NICHT gegen echte ReSpeaker-Hardwaredaten (hwverificationrequired,
     siehe docs/RESPEAKER_CALIBRATION.md fuer den vorgesehenen
-    Kalibrierungsablauf am realen Geraet)."""
+    Kalibrierungsablauf am realen Geraet).
+
+    Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5/13: implementiert
+    SteerableDirectionalAudioBackend -- set_focus_target() haelt einen
+    BESTAETIGTEN Zielwinkel + Ablaufzeit; ist er frisch UND eine
+    per-Kanal microphone_geometry konfiguriert, steuert process() das
+    Delay-and-Sum GEZIELT auf diesen festen Winkel (echtes, geometrie-
+    basiertes Steering ueber ALLE konfigurierten Kanaele, nicht nur das
+    Referenzpaar) -- die gemeldete DoA-Schaetzung (azimuth_rad/
+    doa_confidence) kommt weiterhin UNABHAENGIG aus der normalen
+    Zwei-Mikrofon-GCC-PHAT-Messung, ein Fokus-Ziel kann diese Messung
+    also nie verfaelschen. Ohne microphone_geometry (Default) bleibt das
+    alte, rein tau-basierte Delay-and-Sum unveraendert -- volle
+    Rueckwaertskompatibilitaet.
+
+    provides_unambiguous_direction=False: EXPLIZIT, siehe Klassendoku
+    oben -- eine Zwei-Mikrofon-Halbebenenschaetzung darf nie als sichere
+    Grundlage fuer eine Kopfbewegung gelten (siehe
+    audio_node.py::_try_wakeword_activation)."""
 
     SPEED_OF_SOUND_M_S = 343.0
+    provides_unambiguous_direction = False
 
     def __init__(
         self,
@@ -156,6 +233,8 @@ class GccPhatDelayAndSumBackend(DirectionalAudioBackend):
         vad_threshold_dbfs: float = -45.0,
         min_confidence: float = 0.3,
         smoothing_window: int = 1,
+        microphone_geometry: Optional[List[MicrophoneGeometry]] = None,
+        now_fn: Callable[[], float] = time.monotonic,
     ):
         if len(microphone_channels) < 2:
             raise ValueError("GccPhatDelayAndSumBackend braucht mindestens 2 Mikrofonkanaele")
@@ -166,6 +245,57 @@ class GccPhatDelayAndSumBackend(DirectionalAudioBackend):
         self.min_confidence = min_confidence
         self.smoothing_window = max(1, smoothing_window)
         self._recent_azimuths: List[float] = []
+        self.microphone_geometry = list(microphone_geometry) if microphone_geometry else None
+        self._now_fn = now_fn
+        self._focus_azimuth_rad: Optional[float] = None
+        self._focus_valid_until_s: Optional[float] = None
+
+    def set_focus_target(self, azimuth_rad: float, valid_until_monotonic_s: float) -> None:
+        self._focus_azimuth_rad = azimuth_rad
+        self._focus_valid_until_s = valid_until_monotonic_s
+
+    def clear_focus_target(self) -> None:
+        self._focus_azimuth_rad = None
+        self._focus_valid_until_s = None
+
+    def _active_focus_azimuth(self) -> Optional[float]:
+        """None, wenn kein Ziel gesetzt ist, es abgelaufen ist, oder
+        keine Kanalgeometrie konfiguriert ist (dann ist echtes Steering
+        gar nicht moeglich -- fail-closed auf das alte Verhalten, statt
+        eine Geometrie zu erfinden)."""
+        if self._focus_azimuth_rad is None or self._focus_valid_until_s is None:
+            return None
+        if self.microphone_geometry is None:
+            return None
+        if self._now_fn() > self._focus_valid_until_s:
+            return None
+        return self._focus_azimuth_rad
+
+    def _expected_delay_s(self, mic_x_m: float, mic_y_m: float, azimuth_rad: float) -> float:
+        """Erwartete Laufzeitdifferenz relativ zum Array-Ursprung fuer
+        eine ebene Welle aus azimuth_rad (REP-103: 0=vorwaerts/+x,
+        positiv=links/+y) -- ein Mikrofon, das in Richtung der
+        Schallquelle liegt, empfaengt frueher (negativer Wert)."""
+        import math
+
+        return -(mic_x_m * math.cos(azimuth_rad) + mic_y_m * math.sin(azimuth_rad)) / self.SPEED_OF_SOUND_M_S
+
+    def _steered_delay_and_sum(self, block: RawAudioBlock, azimuth_rad: float):
+        import numpy as np
+
+        geometry_by_channel = {g.channel: g for g in self.microphone_geometry}
+        aligned = []
+        for channel in self.microphone_channels:
+            geom = geometry_by_channel.get(channel)
+            if geom is None:
+                continue  # ohne Geometrieeintrag kann dieser Kanal nicht gezielt ausgerichtet werden
+            samples = self._extract_channel(block, channel)
+            delay_s = self._expected_delay_s(geom.x_m, geom.y_m, azimuth_rad)
+            shift_samples = int(round(-delay_s * self.sample_rate_hz))
+            aligned.append(np.roll(samples, shift_samples))
+        if not aligned:
+            return None
+        return np.mean(aligned, axis=0)
 
     @staticmethod
     def _extract_channel(block: RawAudioBlock, channel_index: int):
@@ -232,13 +362,26 @@ class GccPhatDelayAndSumBackend(DirectionalAudioBackend):
         vad_active = input_rms > self.vad_threshold_dbfs
         valid = (confidence >= self.min_confidence) and vad_active
 
-        # Einfaches Delay-and-Sum: alle konfigurierten Kanaele werden per
-        # ganzzahliger Sample-Verschiebung auf den Referenzkanal
-        # ausgerichtet und gemittelt -- keine Subsample-Interpolation
-        # (siehe Klassendoku oben).
-        shift_samples = int(round(tau * self.sample_rate_hz))
-        aligned = [ref] + [np.roll(ch, shift_samples) for ch in channels[1:]]
-        summed = np.mean(aligned, axis=0)
+        # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: ist ein
+        # bestaetigtes, frisches Fokus-Ziel gesetzt UND eine
+        # Kanalgeometrie konfiguriert, wird das Ausgangssignal GEZIELT
+        # auf diesen Winkel ausgerichtet (echtes Steering ueber alle
+        # konfigurierten Kanaele) -- die oben berechnete azimuth/
+        # confidence-Messung bleibt davon UNBERUEHRT (siehe Klassendoku).
+        # Ohne Fokus-Ziel/Geometrie: unveraendertes altes Verhalten
+        # (einfaches tau-basiertes Delay-and-Sum auf das Referenzpaar).
+        focus_azimuth = self._active_focus_azimuth()
+        summed = None
+        if focus_azimuth is not None:
+            summed = self._steered_delay_and_sum(block, focus_azimuth)
+        if summed is None:
+            # Einfaches Delay-and-Sum: alle konfigurierten Kanaele werden
+            # per ganzzahliger Sample-Verschiebung auf den Referenzkanal
+            # ausgerichtet und gemittelt -- keine Subsample-Interpolation
+            # (siehe Klassendoku oben).
+            shift_samples = int(round(tau * self.sample_rate_hz))
+            aligned = [ref] + [np.roll(ch, shift_samples) for ch in channels[1:]]
+            summed = np.mean(aligned, axis=0)
         summed_int16 = np.clip(summed, -32768, 32767).astype(np.int16)
         mono_pcm = summed_int16.tobytes()
         output_rms = self._rms_dbfs(summed)
