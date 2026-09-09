@@ -88,6 +88,45 @@ Ziel uebernehmen (session_id = Track-ID als String)
 `docs/DEVELOPMENT_ORDER_03_REPORT.md` AP11 für die vollständigen
 Log-/SQLite-Nachweise.
 
+## Gesten-Vektordatenbank verdrahtet (Entwicklungsauftrag 04-B, AP5A)
+
+`_run_pipeline()` ruft nach LLM1+Retriever `_search_gestures()` auf
+(echter Client für `/search_gestures`, siehe `docs/PERSON_MEMORY_RUNTIME.md`
+für die Datenbank selbst). Suchanfrage NUR aus bereits geprüften Daten
+(`normalized_intent`, Frage, erste 2 `AnswerBrief`-Fakten) -- keine
+Namen/IDs. Fällt der Service aus, ist deaktiviert oder überschreitet
+`gesture_search.service_timeout_s` (Default 0.75s): leere
+Kandidatenliste, die Antwort wird trotzdem gesprochen, nur ohne Geste.
+
+**Fail-closed Laufzeitsignale** (neue Abonnements
+`/nav2_moving`, `/mapping_active`, `/pepper_bridge/gesture_in_progress`,
+`/pepper_bridge/connection_state`, dazu `/safety_state` jetzt mit
+Aktualitätsprüfung): jedes Signal nutzt `safety_topics.FreshBool`
+(dieselbe Klasse wie `motion_guard_node.py`/`supervisor_node.py`, hier
+als dritte bewusste Kopie in `ihk_pepper_dialog/safety_topics.py`, siehe
+`test_safety_topics_consistency.py`). Ein fehlendes/veraltetes Signal
+löst sich IMMER in die sichere Richtung auf
+(`_runtime_gesture_context()`): `nav2_moving`/`mapping_active`/
+`gesture_in_progress` → `True` (sperrt), `pepper_reachable` → `False`
+(sperrt). `PlanContext` wird bei JEDEM Durchlauf vollständig aus diesen
+Werten aufgebaut -- nie über den Dataclass-Default.
+
+**Drei-Mengen-Allowlist-Kette** (siehe `docs/LLM_PIPELINE_DESIGN.md`):
+`database_candidates` → `llm2_selected_gestures` → validierte
+`final_execution_allowlist`. **Wiederholungsschutz**: eine pro Sitzung
+lokale Liste (`recent_gestures`, Fenstergröße
+`gesture_search.recent_gesture_window`, Default 3) geht als
+`exclude_recent` in jede Suche ein -- nur erfolgreich ausgeführte,
+thematische (nicht System-)Gesten zählen.
+
+**Unmittelbarer Recheck vor jeder Ausführung** (`_recheck_before_gesture()`,
+Abschnitt 8 des Auftrags): SafetyState/Erreichbarkeit/Nav2/laufende
+Geste erneut geprüft, plus (bei thematischen Gesten) erneuter Abgleich
+gegen `final_execution_allowlist`/erlaubte Interaktionszustände, plus
+(bei Kopfgesten, auch Systemgesten) Mapping-Sperre. **Zusätzliche
+Schutzschicht -- ersetzt NICHT den späteren zentralen Aktuator-Arbiter
+(AP5B).**
+
 ## Bekannte, offene Punkte
 
 - Mehrere Gesten-YAMLs referenzierten bis AP13 den ungültigen
@@ -97,3 +136,9 @@ Log-/SQLite-Nachweise.
   `PlanContext` an den Validator/Executor durchgereicht, aber nicht aus
   einer live laufenden Navigation erprobt (`navigation_live.launch.py`
   wird in diesem Auftrag nicht gestartet).
+- Der Recheck vor jeder Gestenausführung (AP5A, Abschnitt 8) ist eine
+  zusätzliche Schutzschicht ohne echten zentralen Ressourcen-Arbiter --
+  folgt in AP5B.
+- `_search_gestures()`/der gesamte Gesten-Datenfluss ist nur offline
+  (Mock-Provider, Fake-Service) getestet, nicht gegen einen echten
+  `gesture_memory_node`-Prozess in dieser Session.

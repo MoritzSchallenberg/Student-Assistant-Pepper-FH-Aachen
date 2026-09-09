@@ -189,6 +189,15 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_dialog", executable="run_dialogue_action_server",
             output="screen",
+            # Entwicklungsauftrag 04-B, AP5A: keine expliziten gesture_search.*-
+            # Parameter hier -- die Knoten-eigenen Defaults (enabled=true,
+            # service_timeout_s=0.75, top_k=5, max_duration_s=6.0,
+            # minimum_tested_status_development=dry_run_validated,
+            # recent_gesture_window=3) entsprechen bereits der im Auftrag
+            # vorgegebenen Beispielkonfiguration. Faellt search_gestures aus
+            # (z.B. gesture_memory_node noch nicht bereit) oder ist der
+            # Service deaktiviert, spricht Pepper trotzdem ohne Geste
+            # weiter (siehe run_dialogue_action_server.py::_search_gestures()).
             condition=IfCondition(PythonExpression(["'", mode, "' != 'pepper_gesture_test'"])),
         ),
         Node(

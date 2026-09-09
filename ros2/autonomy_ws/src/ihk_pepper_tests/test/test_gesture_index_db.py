@@ -130,3 +130,21 @@ def test_search_respects_production_mode_against_draft_gestures(tmp_path):
 
     ranked = store.search(GestureSearchRequest(query="", production_mode=True))
     assert ranked == []
+
+
+def test_affects_head_is_persisted_correctly_for_head_and_non_head_gestures(tmp_path):
+    """Entwicklungsauftrag 04-B, AP5A, Abschnitt 5: affects_head muss aus
+    dem echten Gestenkatalog (Gesture.affects_head(), siehe
+    gesture_catalog.py) korrekt in den Index uebernommen werden --
+    agree_nod bewegt nur HeadPitch (affects_head=True), wave_right
+    bewegt nur Arm-/Ellbogengelenke (affects_head=False)."""
+    catalog_dir = _copy_real_gestures(tmp_path, ["agree_nod", "wave_right"])
+    catalog = GestureCatalog(catalog_dir)
+    assert catalog.get("agree_nod").affects_head() is True
+    assert catalog.get("wave_right").affects_head() is False
+
+    store = _store(tmp_path)
+    store.reindex(catalog, force=True)
+    ranked = store.search(GestureSearchRequest(query="", top_k=10))
+    affects_head_by_name = {entry.name: entry.affects_head for entry, _score in ranked}
+    assert affects_head_by_name == {"agree_nod": True, "wave_right": False}

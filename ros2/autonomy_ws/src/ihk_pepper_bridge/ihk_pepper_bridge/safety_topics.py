@@ -4,15 +4,16 @@ Signale (Entwicklungsauftrag 04-B, AP2: "Definiere eine zentrale,
 dokumentierte Topic-Liste... Vermeide leicht abweichende Namen in
 mehreren Paketen.").
 
-Bewusst als eigenstaendige, ABSICHTLICH IDENTISCHE Kopie sowohl in
-ihk_pepper_bridge als auch in ihk_pepper_interaction vorhanden (gleiches
-Prinzip wie embedding_backend.py/_find_flask_wrapper_path() an anderer
-Stelle in diesem Projekt) -- vermeidet eine neue Cross-Package-
-Abhaengigkeit nur fuer eine Handvoll String-Konstanten. Bei einer
-Aenderung MUSS die jeweils andere Kopie mitgepflegt werden --
-test_safety_topics_consistency.py prueft, dass beide Dateien
-tatsaechlich byte-identisch sind (verhindert genau das stillschweigende
-Auseinanderdriften, das AP2 als Fund beschreibt).
+Bewusst als eigenstaendige, ABSICHTLICH IDENTISCHE Kopie in
+ihk_pepper_bridge, ihk_pepper_interaction UND (seit AP5A, fuer den
+Gestensuche-Aufrufer im Dialogserver) ihk_pepper_dialog vorhanden
+(gleiches Prinzip wie embedding_backend.py/_find_flask_wrapper_path()
+an anderer Stelle in diesem Projekt) -- vermeidet eine neue
+Cross-Package-Abhaengigkeit nur fuer eine Handvoll String-Konstanten.
+Bei einer Aenderung MUESSEN die beiden anderen Kopien mitgepflegt
+werden -- test_safety_topics_consistency.py prueft, dass alle drei
+Dateien dieselben Konstanten/FreshBool exportieren (verhindert genau
+das stillschweigende Auseinanderdriften, das AP2 als Fund beschreibt).
 
 Fand beim Schreiben dieser Datei einen echten, bereits bestehenden
 Fehler: motion_guard_node.py abonnierte bisher "/gesture_in_progress"

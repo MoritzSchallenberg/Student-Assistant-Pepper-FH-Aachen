@@ -123,6 +123,36 @@ AP10) nimmt nur valide Pläne entgegen und synchronisiert TTS-/
   `estimated_duration_s()` erweitert (rückwärtskompatibel, siehe
   Commit-Historie von Entwicklungsauftrag 3 AP3/AP9).
 
+## Gesten-Vektordatenbank in die Pipeline verdrahtet (Entwicklungsauftrag 04-B, AP5A)
+
+`GesturePlanRequest` bekam ein neues Feld `gesture_options:
+list[GestureOption]` (Name/Beschreibung/Dauer/Ähnlichkeit/erlaubte
+Zustände -- niemals Gelenke/Winkel/Zeitachsen). Drei getrennte Mengen
+regeln die Gestenauswahl (siehe `docs/LLM_RUNTIME_ARCHITECTURE.md` für
+den vollständigen Datenfluss):
+
+```
+database_candidates    -- Ergebnis von /search_gestures (harte Filter
+                           bereits angewendet, siehe
+                           docs/PERSON_MEMORY_RUNTIME.md o.ä.
+                           gesture_search.py)
+llm2_selected_gestures  -- NUR was LLM 2 tatsächlich ausgewählt hat
+                           (validiert gegen database_candidates)
+final_execution_allowlist -- Schnittmenge aus llm2_selected_gestures und
+                           dem, was der ResponsePlanValidator tatsächlich
+                           durchgelassen hat
+```
+
+`run_response_composer()` bekommt **`llm2_selected_gestures`** als
+`allowed_gesture_names` -- NICHT die volle `database_candidates`-Menge.
+Das ist der entscheidende Unterschied zu einer naiven Verdrahtung: ohne
+diese Trennung könnte LLM 3 einen von LLM 2 nie erwähnten
+Datenbank-Kandidaten nachträglich verwenden. `system_only`/
+`selectable_by_llm=false`-Gesten (z.B. `acknowledge_nod_small`,
+`thinking_loop_subtle`) werden LLM 2 strukturell nie angeboten
+(`include_system_only=false` in jeder LLM-Suchanfrage, zusätzlich
+clientseitig defensiv nochmal gefiltert).
+
 ## Grenzen (weiterhin gültig)
 
 - Die Quellenpflicht-Heuristik (`FACT_CLAIM_MARKERS`) ist bewusst grob

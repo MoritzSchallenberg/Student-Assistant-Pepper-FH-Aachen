@@ -170,3 +170,40 @@ def test_microphone_test_mode_never_enables_real_navigation(launch_module):
     assert audio is True
     assert real_nav2 is False
     assert bridge_dry_run is True  # keine echte SSH-Verbindung, daher keine Pepper-Bewegung moeglich
+
+
+@pytest.mark.parametrize("mode", [
+    "offline_test", "microphone_test", "realsense_test", "pepper_gesture_test", "navigation_dry_run",
+])
+def test_gesture_memory_node_always_runs_together_with_run_dialogue_action_server(launch_module, mode):
+    # Entwicklungsauftrag 04-B, AP5A, Abschnitt 10: gesture_memory_node
+    # muss ueberall dort verfuegbar sein, wo run_dialogue_action_server
+    # laeuft (sonst faellt jede Gestensuche strukturell aus) -- beide
+    # Node()-Eintraege muessen in JEDEM Modus dieselbe Bedingung ergeben.
+    ld = launch_module.generate_launch_description()
+    nodes_by_executable = {n.node_executable: n for n in ld.entities if isinstance(n, Node)}
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = mode
+    dialog_enabled = nodes_by_executable["run_dialogue_action_server"].condition.evaluate(ctx)
+    gesture_memory_enabled = nodes_by_executable["gesture_memory_node"].condition.evaluate(ctx)
+    assert dialog_enabled == gesture_memory_enabled
+
+
+def test_gesture_memory_node_production_mode_locked_to_true_only_in_production(launch_module):
+    ld = launch_module.generate_launch_description()
+    gesture_memory_node = next(
+        n for n in ld.entities if isinstance(n, Node) and n.node_executable == "gesture_memory_node")
+    # Node.parameters ist launch_ros-intern (kein oeffentliches Attribut,
+    # Schluessel selbst als Tupel von Substitution-Objekten kodiert) --
+    # hier bewusst read-only Introspektion ueber perform_substitutions(),
+    # kein Eingriff in den Launch-Ablauf.
+    from launch.utilities import perform_substitutions
+    param_dict = gesture_memory_node._Node__parameters[0]
+    for mode, expected in [("offline_test", "false"), ("production", "true")]:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        resolved = {
+            perform_substitutions(ctx, list(key)): perform_substitutions(ctx, list(value))
+            for key, value in param_dict.items()
+        }
+        assert resolved["production_mode"] == expected

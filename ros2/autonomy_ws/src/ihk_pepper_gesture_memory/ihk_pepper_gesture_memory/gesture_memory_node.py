@@ -98,6 +98,7 @@ class GestureMemoryNode(Node):
                 tested_status=entry.tested_status, duration_s=float(entry.duration_s),
                 allowed_interaction_states=list(entry.allowed_interaction_states),
                 requires_stationary=entry.requires_stationary,
+                affects_head=entry.affects_head,
                 system_only=entry.system_only, selectable_by_llm=entry.selectable_by_llm,
             )
             for entry, score in ranked

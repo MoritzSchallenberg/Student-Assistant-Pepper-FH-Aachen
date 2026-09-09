@@ -43,9 +43,9 @@ from std_msgs.msg import Bool, String
 from ihk_pepper_audio.cancel_words import detect_command, is_hard_stop
 from ihk_pepper_interfaces.action import PlayGesture, RunDialogue, Say
 from ihk_pepper_interfaces.msg import DialogueState, PersonTrackArray, SafetyState
-from ihk_pepper_interfaces.srv import GetPersonContext, WriteMemorySummary
+from ihk_pepper_interfaces.srv import GetPersonContext, SearchGestures, WriteMemorySummary
 
-from ihk_pepper_llm_contracts.gesture_planner import GesturePlanRequest
+from ihk_pepper_llm_contracts.gesture_planner import GestureOption, GesturePlanRequest
 from ihk_pepper_llm_contracts.knowledge_planner import KnowledgePlanRequest
 from ihk_pepper_llm_contracts.knowledge_planner import PersonContext as PipelinePersonContext
 from ihk_pepper_llm_contracts.pipeline import (
@@ -64,6 +64,7 @@ from ihk_pepper_llm_contracts.providers import (
 from ihk_pepper_llm_contracts.response_plan import PlanContext, ResponsePlanValidator
 from ihk_pepper_llm_contracts.retriever import run_retrieval
 
+from . import safety_topics
 from .faq_cache import FaqCache
 from .response_plan_executor import ResponsePlanExecutor
 from .tts_sanitizer import prepare_for_speech
@@ -71,6 +72,23 @@ from .tts_sanitizer import prepare_for_speech
 DEFAULT_SESSION_TIMEOUT_S = 180.0
 DEFAULT_QUESTION_TIMEOUT_S = 20.0
 MAX_TRACK_AGE_S = 2.0
+
+# Entwicklungsauftrag 04-B, AP5A: maximales zulaessiges Alter je
+# sicherheitsrelevantem Laufzeitsignal, bevor es als "unbekannt" gilt
+# (siehe safety_topics.FreshBool.effective() -- fail-closed statt eines
+# stillen Dataclass-Defaults). Werte an bestehende Konventionen angelehnt
+# (MAX_TRACK_AGE_S=2.0, motion_guard_node.py/supervisor_node.py).
+NAV2_MOVING_MAX_AGE_S = 1.0
+MAPPING_ACTIVE_MAX_AGE_S = 2.0
+GESTURE_IN_PROGRESS_MAX_AGE_S = 2.0
+CONNECTION_STATE_MAX_AGE_S = 5.0
+SAFETY_STATE_MAX_AGE_S = 2.0
+
+# Beide Systemgesten (Ergaenzungsauftrag 04-A) bewegen den Kopf
+# (HeadPitch) -- nie ueber die LLM-Allowlist gesteuert, deshalb hier als
+# eigene, feste Menge fuer den Recheck in _recheck_before_gesture()
+# (Abschnitt 8) statt ueber PlanContext.head_gesture_names.
+SYSTEM_GESTURES_AFFECTING_HEAD = frozenset({"acknowledge_nod_small", "thinking_loop_subtle"})
 
 
 def build_faq_cache(db_path: str):
@@ -139,6 +157,16 @@ class RunDialogueActionServer(Node):
         self.declare_parameter("thinking_loop_max_repetitions", 3)
         self.declare_parameter("thinking_loop_max_duration_s", 6.0)
 
+        # Entwicklungsauftrag 04-B, AP5A: Gesten-Vektordatenbank-Anbindung.
+        # Faellt der Service aus/timed out/ist deaktiviert -> keine Geste,
+        # die Antwort wird trotzdem gesprochen (siehe _search_gestures()).
+        self.declare_parameter("gesture_search.enabled", True)
+        self.declare_parameter("gesture_search.service_timeout_s", 0.75)
+        self.declare_parameter("gesture_search.top_k", 5)
+        self.declare_parameter("gesture_search.max_duration_s", 6.0)
+        self.declare_parameter("gesture_search.minimum_tested_status_development", "dry_run_validated")
+        self.declare_parameter("gesture_search.recent_gesture_window", 3)
+
         self.knowledge_provider = _build_provider(
             self.get_parameter("knowledge_llm_provider").value, "KNOWLEDGE_LLM",
             self.get_parameter("knowledge_llm_mock_response").value)
@@ -153,9 +181,28 @@ class RunDialogueActionServer(Node):
 
         self._tracks = {}  # track_id -> (PersonTrack, empfangszeit)
         self._safety_state = None
+        self._safety_state_received_at = None
         self._latest_transcript = None
         self._latest_transcript_event = threading.Event()
         self._voice_command = None
+
+        # Entwicklungsauftrag 04-B, AP5A: fail-closed Laufzeitsignale fuer
+        # die Gestenfreigabe -- "unbekannt" (kein/veraltetes Signal) wird
+        # IMMER in die sichere Richtung aufgeloest (siehe
+        # _runtime_gesture_context()), niemals stillschweigend als "false"
+        # behandelt. Initialwerte folgen der bestehenden Konvention aus
+        # motion_guard_node.py/supervisor_node.py: Aktivitaets-/
+        # Gefahrensignale starten auf True (angenommen aktiv, bis
+        # widerlegt), Erreichbarkeits-/Validitaetssignale auf False
+        # (angenommen nicht bestaetigt, bis ein Signal eintrifft).
+        self._nav2_moving = safety_topics.FreshBool(True)
+        self._mapping_active = safety_topics.FreshBool(True)
+        self._gesture_in_progress_fresh = safety_topics.FreshBool(True)
+        self._pepper_connected = safety_topics.FreshBool(False)
+        # Vom aktuell laufenden Dialog-Turn gesetzt (siehe _execute()),
+        # von _gesture_and_wait() unmittelbar vor jeder Action gelesen
+        # (Abschnitt 8) -- None ausserhalb eines Turns/fuer Systemgesten.
+        self._current_gesture_recheck_context = None
 
         cb_group = ReentrantCallbackGroup()
 
@@ -164,6 +211,12 @@ class RunDialogueActionServer(Node):
         self.create_subscription(SafetyState, "/safety_state", self._on_safety_state, 10)
         self.create_subscription(String, "/audio_node/transcript", self._on_transcript, 10)
         self.create_subscription(String, "/audio_node/voice_command", self._on_voice_command, 10)
+        self.create_subscription(Bool, safety_topics.NAV2_MOVING_TOPIC, self._on_nav2_moving, 10)
+        self.create_subscription(Bool, safety_topics.MAPPING_ACTIVE_TOPIC, self._on_mapping_active, 10)
+        self.create_subscription(
+            Bool, safety_topics.GESTURE_IN_PROGRESS_TOPIC, self._on_gesture_in_progress, 10)
+        self.create_subscription(
+            String, safety_topics.CONNECTION_STATE_TOPIC, self._on_connection_state, 10)
 
         self.speaking_pub = self.create_publisher(Bool, "speaking", 10)
         self.dialogue_state_pub = self.create_publisher(DialogueState, "dialogue_state", 10)
@@ -175,6 +228,8 @@ class RunDialogueActionServer(Node):
             GetPersonContext, "/get_person_context", callback_group=cb_group)
         self.write_memory_client = self.create_client(
             WriteMemorySummary, "/write_memory_summary", callback_group=cb_group)
+        self.search_gestures_client = self.create_client(
+            SearchGestures, "search_gestures", callback_group=cb_group)
 
         self._action_server = ActionServer(
             self, RunDialogue, "run_dialogue",
@@ -199,6 +254,7 @@ class RunDialogueActionServer(Node):
 
     def _on_safety_state(self, msg: SafetyState):
         self._safety_state = msg
+        self._safety_state_received_at = time.time()
 
     def _on_transcript(self, msg: String):
         self._latest_transcript = msg.data
@@ -206,6 +262,18 @@ class RunDialogueActionServer(Node):
 
     def _on_voice_command(self, msg: String):
         self._voice_command = detect_command(msg.data)
+
+    def _on_nav2_moving(self, msg: Bool):
+        self._nav2_moving.update(msg.data, time.time())
+
+    def _on_mapping_active(self, msg: Bool):
+        self._mapping_active.update(msg.data, time.time())
+
+    def _on_gesture_in_progress(self, msg: Bool):
+        self._gesture_in_progress_fresh.update(msg.data, time.time())
+
+    def _on_connection_state(self, msg: String):
+        self._pepper_connected.update(msg.data == "connected", time.time())
 
     def _track_alive(self, track_id) -> bool:
         entry = self._tracks.get(track_id)
@@ -215,9 +283,33 @@ class RunDialogueActionServer(Node):
         return (time.time() - received_at) <= MAX_TRACK_AGE_S
 
     def _safety_ok(self) -> bool:
-        if self._safety_state is None:
+        """Entwicklungsauftrag 04-B, AP5A: SafetyState unbekannt (nie
+        empfangen ODER veraltet) sperrt den GESAMTEN Plan -- dieselbe
+        fail-closed Regel wie ein fehlendes Signal in motion_guard_node.py."""
+        if self._safety_state is None or self._safety_state_received_at is None:
+            return False
+        if (time.time() - self._safety_state_received_at) > SAFETY_STATE_MAX_AGE_S:
             return False
         return not self._safety_state.emergency_stop and not self._safety_state.bumper_active
+
+    def _runtime_gesture_context(self) -> dict:
+        """Fail-closed Momentaufnahme der gestenrelevanten Laufzeitsignale
+        (Entwicklungsauftrag 04-B, AP5A, Abschnitt 4). Ein fehlendes/
+        veraltetes Signal loest sich IMMER in die sichere Richtung auf:
+        nav2_moving/mapping_active/gesture_in_progress -> True (sperrt),
+        pepper_reachable -> False (sperrt). Diese Werte gehen 1:1 in
+        PlanContext, das selbst KEINE eigene Fail-Closed-Logik mehr
+        anwenden muss (vollstaendig vom Aufrufer befuellter Kontext,
+        siehe PlanContext-Docstring in response_plan.py)."""
+        now = time.time()
+        return {
+            "nav2_moving": self._nav2_moving.effective(now, NAV2_MOVING_MAX_AGE_S, True),
+            "mapping_active": self._mapping_active.effective(now, MAPPING_ACTIVE_MAX_AGE_S, True),
+            "gesture_in_progress": self._gesture_in_progress_fresh.effective(
+                now, GESTURE_IN_PROGRESS_MAX_AGE_S, True),
+            "pepper_reachable": self._pepper_connected.effective(
+                now, CONNECTION_STATE_MAX_AGE_S, False),
+        }
 
     # ---- Action-Server-Callbacks ----
 
@@ -264,6 +356,14 @@ class RunDialogueActionServer(Node):
                 f"Segment {seg_id}: {status}"),
             post_speech_pause_s=self.get_parameter("post_speech_pause_s").value,
         )
+        # Entwicklungsauftrag 04-B, AP5A, Abschnitt 7: Wiederholungsschutz
+        # gilt NUR pro Sitzung (lokale Variable, nicht Node-weit -- zurueckgesetzt
+        # bei jeder neuen RunDialogue-Session). Nur thematische (LLM-
+        # ausgewaehlte) Gesten landen hier -- Systemgesten ("Mhm"/
+        # Denkschleife) verfaelschen dieses Fenster nie, da sie ueber
+        # separate Methoden laufen, die recent_gestures nie aktualisieren.
+        recent_gestures = []
+        recent_gesture_window = self.get_parameter("gesture_search.recent_gesture_window").value
 
         try:
             while True:
@@ -292,16 +392,29 @@ class RunDialogueActionServer(Node):
                     executor.cancel()
                     return self._finish(goal_handle, result, "USER_STOP", success=True, feedback=feedback)
 
-                plan_context = self._acknowledge_and_run_pipeline(
-                    goal_handle, feedback, question, session_id, person_context)
-                if plan_context is None:
+                pipeline_output = self._acknowledge_and_run_pipeline(
+                    goal_handle, feedback, question, session_id, person_context, recent_gestures)
+                if pipeline_output is None:
                     continue  # Sicherheitsfehler -- Segment/Runde ueberspringen, Session laeuft weiter
 
-                response_plan, memory_summary_candidate = plan_context
+                response_plan, memory_summary_candidate, gesture_recheck_context = pipeline_output
+                # Entwicklungsauftrag 04-B, AP5A, Abschnitt 8: unmittelbar
+                # vor jeder tatsaechlichen PlayGesture-Action liest
+                # _gesture_and_wait() diesen Kontext erneut -- zusaetzliche
+                # Schutzschicht, kein Ersatz fuer den spaeteren zentralen
+                # Aktuator-Arbiter (AP5B).
+                self._current_gesture_recheck_context = gesture_recheck_context
                 feedback(DialogueState.SPEAKING, "SPEAKING")
                 exec_result = executor.execute(response_plan)
                 if not exec_result.success and not exec_result.cancelled:
                     self.get_logger().warn("ResponsePlanExecutor meldete einen Fehlschlag.")
+
+                executed_gestures = _successfully_executed_gesture_names(response_plan, exec_result)
+                recent_gestures.extend(executed_gestures)
+                if recent_gesture_window > 0:
+                    del recent_gestures[:-recent_gesture_window]  # nur die letzten N behalten
+                else:
+                    recent_gestures.clear()
 
                 if memory_summary_candidate and person_context.get("known"):
                     self._write_memory_summary(session_id, memory_summary_candidate, question)
@@ -412,7 +525,9 @@ class RunDialogueActionServer(Node):
                 return
             repetitions += 1
 
-    def _acknowledge_and_run_pipeline(self, goal_handle, feedback, question, session_id, person_context):
+    def _acknowledge_and_run_pipeline(
+        self, goal_handle, feedback, question, session_id, person_context, recent_gestures,
+    ):
         """Orchestriert ACKNOWLEDGING -> (optional) WAITING_FOR_RESPONSE
         um die eigentliche _run_pipeline()-Ausfuehrung herum. Die
         LLM-Pipeline selbst laeuft dabei in einem eigenen Thread, damit
@@ -431,7 +546,8 @@ class RunDialogueActionServer(Node):
         pipeline_done = threading.Event()
 
         def _run():
-            pipeline_result["value"] = self._run_pipeline(question, session_id, person_context)
+            pipeline_result["value"] = self._run_pipeline(
+                question, session_id, person_context, recent_gestures)
             pipeline_done.set()
 
         pipeline_thread = threading.Thread(target=_run, daemon=True)
@@ -466,10 +582,74 @@ class RunDialogueActionServer(Node):
 
         return pipeline_result.get("value")
 
-    def _run_pipeline(self, question, session_id, person_context):
-        """Gibt (ResponsePlan, memory_summary_candidate) zurueck, oder
-        None bei einem Sicherheitsfehler (Sprache+Geste MUESSEN dann
-        gemeinsam abbrechen, siehe ResponsePlanValidator-Regel 'safety_ok')."""
+    def _search_gestures(self, query: str, interaction_state: str, exclude_recent: list) -> list:
+        """Entwicklungsauftrag 04-B, AP5A, Abschnitt 3: liefert bereits
+        durch harte Sicherheitsfilter eingeschraenkte Kandidaten aus der
+        Gesten-Vektordatenbank (list[GestureCandidate]). Bei
+        deaktiviertem Service, fehlendem Server, Zeitueberschreitung
+        oder einem Fehler: leere Liste -- KEINE Geste, die Antwort wird
+        trotzdem gesprochen (siehe _run_pipeline())."""
+        if not self.get_parameter("gesture_search.enabled").value:
+            return []
+        timeout_s = self.get_parameter("gesture_search.service_timeout_s").value
+        if not self.search_gestures_client.wait_for_service(timeout_sec=timeout_s):
+            self.get_logger().warn("search_gestures-Service nicht erreichbar -- keine Geste.")
+            return []
+
+        runtime_ctx = self._runtime_gesture_context()
+        request = SearchGestures.Request()
+        request.query = query
+        request.interaction_state = interaction_state
+        # Echte Laufzeitwerte (nicht nur ein platzhalterhaftes False) --
+        # eine Geste, die JETZT sowieso gesperrt waere, wird LLM 2 gar
+        # nicht erst angeboten (weniger nutzlose Vorschlaege, siehe
+        # Auftrag Abschnitt 6, Regel 5 "Schnittmenge aus LLM-2-Auswahl
+        # und weiterhin gueltigen Laufzeitbedingungen" -- hier bereits an
+        # der Quelle vorweggenommen, der Recheck in Abschnitt 8 bleibt
+        # trotzdem zusaetzlich bestehen, falls sich der Zustand zwischen
+        # Suche und Ausfuehrung aendert).
+        request.nav2_moving = runtime_ctx["nav2_moving"]
+        request.mapping_active = runtime_ctx["mapping_active"]
+        request.production_mode = False  # gesture_memory_node's eigener Node-Parameter bleibt die massgebliche Sperre
+        request.minimum_tested_status = self.get_parameter(
+            "gesture_search.minimum_tested_status_development").value
+        request.max_duration_s = self.get_parameter("gesture_search.max_duration_s").value
+        request.exclude_recent = list(exclude_recent)
+        request.top_k = self.get_parameter("gesture_search.top_k").value
+        request.include_system_only = False  # Auftrag Abschnitt 6, Regel 2
+
+        future = self.search_gestures_client.call_async(request)
+        deadline = time.time() + timeout_s
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            self.get_logger().warn("search_gestures: Zeitueberschreitung -- keine Geste.")
+            return []
+        try:
+            response = future.result()
+        except Exception as e:
+            self.get_logger().warn(f"search_gestures: Fehler ({e}) -- keine Geste.")
+            return []
+        if not response.success:
+            self.get_logger().warn(f"search_gestures meldete Fehlschlag: {response.message}")
+            return []
+        # Verteidigung in der Tiefe (Regel 2): system_only/nicht LLM-
+        # waehlbare Kandidaten duerfen NIE hier ankommen
+        # (include_system_only=False oben), werden aber zusaetzlich
+        # clientseitig nochmal ausgeschlossen.
+        return [c for c in response.candidates if not c.system_only and c.selectable_by_llm]
+
+    def _run_pipeline(self, question, session_id, person_context, recent_gestures):
+        """Gibt (ResponsePlan, memory_summary_candidate,
+        gesture_recheck_context) zurueck, oder None bei einem
+        Sicherheitsfehler (Sprache+Geste MUESSEN dann gemeinsam
+        abbrechen, siehe ResponsePlanValidator-Regel 'safety_ok').
+
+        gesture_recheck_context wird von _gesture_and_wait() unmittelbar
+        vor jeder PlayGesture-Action nochmal konsultiert (Abschnitt 8) --
+        zusaetzliche Schutzschicht, ersetzt nicht den spaeteren
+        zentralen Aktuator-Arbiter (AP5B)."""
+        interaction_state = "CONVERSATION_READY"
         knowledge_request = KnowledgePlanRequest(
             normalized_question=question.strip().lower(),
             person_context=PipelinePersonContext(
@@ -487,30 +667,78 @@ class RunDialogueActionServer(Node):
             person_context=person_context,
         )
 
-        allowed_gesture_names = []  # AP12/13 wiring liefert die echte Allowlist
+        # Entwicklungsauftrag 04-B, AP5A, Abschnitt 3: Suchanfrage NUR aus
+        # bereits geprueften Daten -- keine Namen/Personen-IDs/Track-IDs/
+        # vollstaendigen Personenakten.
+        search_query_parts = [
+            knowledge_plan.normalized_intent,
+            question.strip(),
+        ] + [f.text for f in answer_brief.facts[:2]]
+        search_query = " ".join(p for p in search_query_parts if p).strip()
+
+        database_candidates = self._search_gestures(
+            search_query, interaction_state, exclude_recent=recent_gestures)
+
+        # database_candidates (Auftrag Abschnitt 6): einzige Menge, aus
+        # der LLM 2 waehlen darf.
+        allowed_gesture_names = [c.name for c in database_candidates]
+        gesture_options = [
+            GestureOption(
+                name=c.name, description=c.description, duration_s=c.duration_s,
+                score=c.score, allowed_interaction_states=list(c.allowed_interaction_states),
+            )
+            for c in database_candidates
+        ]
         gesture_request = GesturePlanRequest(
-            answer_brief=answer_brief.question, robot_situation="CONVERSATION_READY",
+            answer_brief=answer_brief.question, robot_situation=interaction_state,
             allowed_gesture_names=allowed_gesture_names,
+            gesture_options=gesture_options,
         )
         gesture_plan = run_gesture_planner(self.gesture_provider, gesture_request)
 
+        # llm2_selected_gestures (Auftrag Abschnitt 6): NUR was LLM 2
+        # tatsaechlich ausgewaehlt hat -- run_gesture_planner() hat das
+        # bereits gegen allowed_gesture_names validiert (siehe
+        # GesturePlanResponse.validate() in gesture_planner.py), ein
+        # erfundener/nicht ausgewaehlter Name kann hier nicht mehr stehen.
+        llm2_selected_gestures = [s.gesture_name for s in gesture_plan.suggestions]
+
+        # LLM 3 darf AUSSCHLIESSLICH aus llm2_selected_gestures waehlen --
+        # NICHT aus der vollen database_candidates-Menge (sonst koennte
+        # LLM 3 einen von LLM 2 nie gewaehlten Datenbankkandidaten
+        # nachtraeglich verwenden, Auftrag Abschnitt 6, Regel 4).
         response_plan = run_response_composer(
             self.response_provider, question, answer_brief, gesture_plan,
-            allowed_gesture_names, person_context=person_context,
+            llm2_selected_gestures, person_context=person_context,
         )
 
+        head_gesture_names = {c.name for c in database_candidates if c.affects_head}
+        allowed_interaction_states_for_gestures = {
+            c.name: list(c.allowed_interaction_states) for c in database_candidates
+        }
+
+        runtime_ctx = self._runtime_gesture_context()
         plan_context = PlanContext(
-            allowed_gesture_names=allowed_gesture_names,
-            current_interaction_state="CONVERSATION_READY",
+            allowed_gesture_names=llm2_selected_gestures,
+            current_interaction_state=interaction_state,
+            allowed_interaction_states_for_gestures=allowed_interaction_states_for_gestures,
             safety_ok=self._safety_ok(),
             known_source_ids=answer_brief.source_ids(),
+            nav2_moving=runtime_ctx["nav2_moving"],
+            mapping_active=runtime_ctx["mapping_active"],
+            gesture_in_progress=runtime_ctx["gesture_in_progress"],
+            pepper_reachable=runtime_ctx["pepper_reachable"],
+            tts_available=self._tts_available(),
+            head_gesture_names=list(head_gesture_names),
         )
         validation = ResponsePlanValidator().validate(response_plan, plan_context)
         if not validation.valid:
             self.get_logger().warn(f"ResponsePlan abgelehnt: {validation.errors}")
-            if not plan_context.safety_ok:
+            if not plan_context.safety_ok or not plan_context.tts_available:
                 return None  # Sicherheitsfehler: Sprache+Geste gemeinsam abbrechen
-            # sonst: einfache saetze aus dem AnswerBrief als sicherer Fallback
+            # sonst: einfache saetze aus dem AnswerBrief als sicherer Fallback,
+            # NIE mit Geste (Auftrag Abschnitt 6, Regel 7: leere Auswahl
+            # bzw. verworfener Plan -> Pepper spricht ohne Geste).
             from ihk_pepper_llm_contracts.response_plan import ResponsePlan, ResponseSegment
             fallback_segments = [
                 ResponseSegment(segment_id=f"safe_{i}", text=prepare_for_speech(f.text, 400)[0])
@@ -518,8 +746,32 @@ class RunDialogueActionServer(Node):
             ] or [ResponseSegment(segment_id="safe_no_info",
                                    text="Dazu habe ich aktuell keine verlaessliche Information.")]
             response_plan = ResponsePlan(segments=fallback_segments, source_ids=answer_brief.source_ids())
+            final_allowlist = set()
+        else:
+            # endgueltige Allowlist (Auftrag Abschnitt 6, Regel 5): nur
+            # Segmente, die der Validator TATSAECHLICH akzeptiert hat,
+            # sind noch mit einer Geste verknuepft -- ein abgelehntes
+            # Segment behaelt keinen gesture_name im validierten Plan
+            # (der Validator laesst den Plan nur durchgehen, wenn ALLE
+            # Regeln erfuellt sind; ein zurueckgewiesener gesture_name
+            # bedeutet also, dass validation.valid bereits False waere).
+            final_allowlist = {
+                seg.gesture_name for seg in response_plan.segments if seg.gesture_name
+            }
 
-        return response_plan, response_plan.memory_summary_candidate
+        self.get_logger().debug(
+            f"Gesten-Datenfluss: {len(database_candidates)} Kandidaten -> "
+            f"{len(llm2_selected_gestures)} von LLM 2 gewaehlt -> "
+            f"{len(final_allowlist)} endgueltig ausfuehrbar."
+        )
+
+        gesture_recheck_context = {
+            "final_allowlist": final_allowlist,
+            "head_gesture_names": {n for n in final_allowlist if n in head_gesture_names},
+            "allowed_interaction_states_for_gestures": allowed_interaction_states_for_gestures,
+            "current_interaction_state": interaction_state,
+        }
+        return response_plan, response_plan.memory_summary_candidate, gesture_recheck_context
 
     def _faq_lookup(self, query, mode):
         if mode == "exact":
@@ -546,6 +798,57 @@ class RunDialogueActionServer(Node):
 
     # ---- blockierende Action-Aufrufe (Muster wie presentation_manager_node::_say_and_wait) ----
 
+    def _tts_available(self) -> bool:
+        """Nicht-blockierende Verfuegbarkeitspruefung fuer die Say-Action
+        (Entwicklungsauftrag 04-B, AP5A, Abschnitt 4) -- geht in
+        PlanContext.tts_available ein, dessen Fehlen den GESAMTEN Plan
+        blockiert (nicht nur Gestensegmente)."""
+        return self.say_client.server_is_ready()
+
+    def _recheck_before_gesture(self, gesture_name: str) -> bool:
+        """Entwicklungsauftrag 04-B, AP5A, Abschnitt 8: erneute Pruefung
+        UNMITTELBAR vor jeder PlayGesture-Action -- der Systemzustand
+        kann sich zwischen Vektorsuche/Planung und Ausfuehrung geaendert
+        haben. Zusaetzliche Schutzschicht, ERSETZT NICHT den spaeteren
+        zentralen Aktuator-Arbiter (AP5B)."""
+        if not self._safety_ok():
+            self.get_logger().warn(f"Geste '{gesture_name}' abgelehnt: SafetyState nicht ok/veraltet.")
+            return False
+        runtime_ctx = self._runtime_gesture_context()
+        if runtime_ctx["nav2_moving"]:
+            self.get_logger().warn(f"Geste '{gesture_name}' abgelehnt: Nav2 faehrt (oder Signal veraltet).")
+            return False
+        if runtime_ctx["gesture_in_progress"]:
+            self.get_logger().warn(
+                f"Geste '{gesture_name}' abgelehnt: bereits eine Geste aktiv (oder Signal veraltet).")
+            return False
+        if not runtime_ctx["pepper_reachable"]:
+            self.get_logger().warn(f"Geste '{gesture_name}' abgelehnt: Pepper nicht erreichbar (oder unbekannt).")
+            return False
+
+        recheck_ctx = self._current_gesture_recheck_context
+        if recheck_ctx is not None:
+            # Thematische (LLM-ausgewaehlte) Geste -- muss weiterhin in
+            # der endgueltigen Allowlist stehen (Abschnitt 6, Regel 5/6).
+            if gesture_name not in recheck_ctx["final_allowlist"]:
+                self.get_logger().warn(
+                    f"Geste '{gesture_name}' abgelehnt: nicht (mehr) in der endgueltigen Allowlist.")
+                return False
+            if runtime_ctx["mapping_active"] and gesture_name in recheck_ctx["head_gesture_names"]:
+                self.get_logger().warn(f"Geste '{gesture_name}' abgelehnt: Mapping aktiv, Kopfgeste gesperrt.")
+                return False
+            allowed_states = recheck_ctx["allowed_interaction_states_for_gestures"].get(gesture_name)
+            if allowed_states and recheck_ctx["current_interaction_state"] not in allowed_states:
+                self.get_logger().warn(f"Geste '{gesture_name}' abgelehnt: Interaktionszustand nicht mehr erlaubt.")
+                return False
+        else:
+            # Systemgeste ("Mhm"/Denkschleife) -- keine LLM-Allowlist,
+            # aber beide bewegen den Kopf, die Mapping-Sperre gilt trotzdem.
+            if runtime_ctx["mapping_active"] and gesture_name in SYSTEM_GESTURES_AFFECTING_HEAD:
+                self.get_logger().warn(f"Systemgeste '{gesture_name}' abgelehnt: Mapping aktiv.")
+                return False
+        return True
+
     def _say_and_wait(self, text: str) -> bool:
         spoken, _full_text, _truncated = prepare_for_speech(text, 400)
         if not self.say_client.wait_for_server(timeout_sec=2.0):
@@ -558,6 +861,8 @@ class RunDialogueActionServer(Node):
         return self._send_goal_and_wait(self.say_client, goal, timeout_s=30.0)
 
     def _gesture_and_wait(self, gesture_name: str, speed_scale: float) -> bool:
+        if not self._recheck_before_gesture(gesture_name):
+            return False
         if not self.gesture_client.wait_for_server(timeout_sec=2.0):
             self.get_logger().warn("PlayGesture-Action nicht erreichbar.")
             return False
@@ -598,6 +903,21 @@ def _try_parse_int(value):
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _successfully_executed_gesture_names(response_plan, exec_result) -> list:
+    """Entwicklungsauftrag 04-B, AP5A, Abschnitt 7: welche Gesten aus
+    einem ResponsePlan tatsaechlich erfolgreich ausgefuehrt wurden --
+    fuer den Wiederholungsschutz (recent_gestures). SegmentExecutionResult
+    traegt selbst keinen gesture_name, daher hier ueber segment_id mit
+    dem urspruenglichen Plan verknuepft."""
+    segments_by_id = {seg.segment_id: seg for seg in response_plan.segments}
+    names = []
+    for seg_result in exec_result.segment_results:
+        segment = segments_by_id.get(seg_result.segment_id)
+        if segment is not None and segment.gesture_name and seg_result.gesture_success:
+            names.append(segment.gesture_name)
+    return names
 
 
 def main(args=None):

@@ -11,5 +11,6 @@ string tested_status                # draft | dry_run_validated | live_validated
 float32 duration_s
 string[] allowed_interaction_states  # leer = in jedem Zustand erlaubt
 bool requires_stationary
+bool affects_head            # true = bewegt Kopfgelenke, waehrend mapping_active gesperrt
 bool system_only            # true = nur interne/Systemablaeufe, nie LLM-waehlbar
 bool selectable_by_llm       # false = strukturell nie an LLM 2 als Option gegeben

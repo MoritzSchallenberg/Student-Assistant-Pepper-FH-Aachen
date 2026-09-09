@@ -18,11 +18,32 @@ class GestureRelation(str, Enum):
 
 
 @dataclass
+class GestureOption:
+    """EIN Kandidat aus der Gesten-Vektordatenbank, so wie LLM 2 ihn zu
+    sehen bekommt (Entwicklungsauftrag 04-B, AP5A, Abschnitt 5) -- NUR
+    beschreibende Felder. Bewusst KEIN Feld fuer Gelenke/Winkel/
+    Zeitachsen/Trajektorien/ROS2-/qicli-Befehle; diese Klasse dient
+    ausschliesslich der Prompt-Befuellung, nicht der Ausfuehrung."""
+
+    name: str
+    description: str = ""
+    duration_s: float = 0.0
+    score: float = 0.0
+    allowed_interaction_states: list = field(default_factory=list)
+
+
+@dataclass
 class GesturePlanRequest:
     schema_version: int = SCHEMA_VERSION
     answer_brief: str = ""  # Kurzfassung aus Stufe 1 + gefundene Quellen
     robot_situation: str = ""  # z.B. "IDLE", "CONVERSATION_READY"
-    allowed_gesture_names: list = field(default_factory=list)  # Allowlist von aussen
+    allowed_gesture_names: list = field(default_factory=list)  # Allowlist von aussen (deterministische Validierungsgrundlage)
+    # Entwicklungsauftrag 04-B, AP5A: strukturierte Kandidaten aus der
+    # Gesten-Vektordatenbank (list[GestureOption]) -- gibt LLM 2 genug
+    # Kontext (Beschreibung/Dauer/Aehnlichkeit/erlaubte Zustaende), um
+    # sinnvoll auszuwaehlen, OHNE dass allowed_gesture_names als
+    # deterministische Pruefgrundlage (siehe validate()) ersetzt wird.
+    gesture_options: list = field(default_factory=list)  # list[GestureOption]
 
     def to_dict(self) -> dict:
         return asdict(self)

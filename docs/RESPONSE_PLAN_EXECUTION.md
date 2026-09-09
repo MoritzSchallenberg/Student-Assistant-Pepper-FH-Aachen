@@ -79,3 +79,16 @@ Halbduplex-Sperre exakt bis zum Ende inkl. Nachlaufzeit, kein
 Doppelstart, Segmentstatus für jedes Segment veröffentlicht. Zusätzlich
 live-E2E-geprüft über `run_dialogue_action_server.py` (siehe
 `docs/DEVELOPMENT_ORDER_03_REPORT.md`, AP11).
+
+## Zusätzlicher Recheck vor `gesture_fn` (Entwicklungsauftrag 04-B, AP5A)
+
+`run_dialogue_action_server.py::_gesture_and_wait()` (die konkrete
+`gesture_fn`-Implementierung) ruft vor jedem tatsächlichen
+`PlayGesture`-Aufruf `_recheck_before_gesture()` auf -- der Executor
+selbst weiß nichts davon (bleibt unverändert ROS-frei und generisch),
+die zusätzliche Sicherheitsprüfung sitzt ausschließlich in der
+Callback-Implementierung. Schlägt der Recheck fehl, liefert `gesture_fn`
+`False` zurück -- der Executor behandelt das identisch zu jedem anderen
+Gestenfehler (Segment als `failed` markiert, Sprache läuft weiter, siehe
+oben). Siehe `docs/LLM_RUNTIME_ARCHITECTURE.md` für die genauen
+Prüfschritte.

@@ -45,7 +45,7 @@ class _FakeNode:
     def __init__(self, params=None, pipeline_fn=None, gesture_fn=None):
         self._params = params or {}
         self.gesture_calls = []
-        self._pipeline_fn = pipeline_fn or (lambda *a: ("plan", None))
+        self._pipeline_fn = pipeline_fn or (lambda *a: ("plan", None, {"final_allowlist": set(), "head_gesture_names": set(), "allowed_interaction_states_for_gestures": {}, "current_interaction_state": "CONVERSATION_READY"}))
         self._gesture_fn_override = gesture_fn
 
     def get_parameter(self, name):
@@ -61,8 +61,8 @@ class _FakeNode:
         time.sleep(0.05)  # simuliert eine kurze, aber echte Ausfuehrungsdauer
         return True
 
-    def _run_pipeline(self, question, session_id, person_context):
-        return self._pipeline_fn(question, session_id, person_context)
+    def _run_pipeline(self, question, session_id, person_context, recent_gestures):
+        return self._pipeline_fn(question, session_id, person_context, recent_gestures)
 
 
 # _acknowledge_and_run_pipeline() ruft self._run_acknowledge_gesture()/
@@ -166,9 +166,9 @@ def test_fast_pipeline_never_starts_thinking_loop():
     feedback, feedback_calls = _make_feedback_recorder()
 
     result = RunDialogueActionServer._acknowledge_and_run_pipeline(
-        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False})
+        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False}, [])
 
-    assert result == ("plan", None)
+    assert result[:2] == ("plan", None)
     assert "thinking_loop_subtle" not in node.gesture_calls
     assert "acknowledge_nod_small" in node.gesture_calls
     states = [name for _val, name in feedback_calls]
@@ -178,9 +178,9 @@ def test_fast_pipeline_never_starts_thinking_loop():
 def test_slow_pipeline_starts_thinking_loop_and_stops_when_pipeline_finishes():
     pipeline_done = threading.Event()
 
-    def slow_pipeline(question, session_id, person_context):
+    def slow_pipeline(question, session_id, person_context, recent_gestures):
         pipeline_done.wait(timeout=2.0)
-        return ("plan", "summary")
+        return ("plan", "summary", {"final_allowlist": set(), "head_gesture_names": set(), "allowed_interaction_states_for_gestures": {}, "current_interaction_state": "CONVERSATION_READY"})
 
     node = _FakeNode(params={
         "thinking_loop_delay_s": 0.1,
@@ -196,9 +196,9 @@ def test_slow_pipeline_starts_thinking_loop_and_stops_when_pipeline_finishes():
 
     threading.Thread(target=_finish_pipeline_soon, daemon=True).start()
     result = RunDialogueActionServer._acknowledge_and_run_pipeline(
-        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False})
+        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False}, [])
 
-    assert result == ("plan", "summary")
+    assert result[:2] == ("plan", "summary")
     assert "thinking_loop_subtle" in node.gesture_calls
     states = [name for _val, name in feedback_calls]
     assert states == ["ACKNOWLEDGING", "THINKING", "WAITING_FOR_RESPONSE"]
@@ -207,9 +207,9 @@ def test_slow_pipeline_starts_thinking_loop_and_stops_when_pipeline_finishes():
 def test_cancel_request_stops_thinking_loop_early():
     pipeline_done = threading.Event()
 
-    def slow_pipeline(question, session_id, person_context):
+    def slow_pipeline(question, session_id, person_context, recent_gestures):
         pipeline_done.wait(timeout=3.0)
-        return ("plan", None)
+        return ("plan", None, {"final_allowlist": set(), "head_gesture_names": set(), "allowed_interaction_states_for_gestures": {}, "current_interaction_state": "CONVERSATION_READY"})
 
     node = _FakeNode(params={
         "thinking_loop_delay_s": 0.05,
@@ -228,7 +228,7 @@ def test_cancel_request_stops_thinking_loop_early():
     threading.Thread(target=_cancel_then_finish, daemon=True).start()
     start = time.time()
     RunDialogueActionServer._acknowledge_and_run_pipeline(
-        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False})
+        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False}, [])
     elapsed = time.time() - start
 
     # Die Denkschleife wurde vorzeitig gestoppt -- deutlich weniger als
