@@ -11,8 +11,17 @@ import pytest
 
 from ihk_pepper_audio.audio_focus import AudioFocusMode, AudioFocusStateMachine
 from ihk_pepper_audio.audio_focus_node import AudioFocusNode, transform_person_position_to_azimuth
+from ihk_pepper_audio.group_speaker_selection import ActiveSpeakerSelector
 from ihk_pepper_interaction.interaction_state import InteractionState
-from ihk_pepper_interfaces.msg import AudioVisualTarget, PersonTrack, PersonTrackArray, WakewordEvent
+from ihk_pepper_interfaces.msg import (
+    AudioVisualTarget,
+    ConversationGroup,
+    ConversationGroupArray,
+    PersonTrack,
+    PersonTrackArray,
+    SoundDirection,
+    WakewordEvent,
+)
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import Bool, UInt8
 
@@ -60,16 +69,24 @@ class _FakeNode:
     _on_interaction_state = AudioFocusNode._on_interaction_state
     _on_visual_target = AudioFocusNode._on_visual_target
     _on_person_tracks = AudioFocusNode._on_person_tracks
+    _on_sound_direction = AudioFocusNode._on_sound_direction
+    _on_groups = AudioFocusNode._on_groups
+    _stable_group_for = AudioFocusNode._stable_group_for
     _tick_and_publish = AudioFocusNode._tick_and_publish
 
-    def __init__(self, tf_lookup_fn=None, params=None):
+    def __init__(self, tf_lookup_fn=None, params=None, active_speaker_selector=None):
         self._machine = AudioFocusStateMachine(target_loss_timeout_s=2.0)
         self.focus_pub = _FakePublisher()
         self._tf_lookup_fn = tf_lookup_fn or (lambda t, s, st: _identity_transform())
+        self._latest_groups = None
+        self._latest_doa = None
+        self._active_speaker_selector = active_speaker_selector or ActiveSpeakerSelector(
+            required_confirming_frames=1)
         self._params = params or {
             "base_frame": "base_link",
             "respeaker_frame_id": "respeaker_link",
             "tf_timeout_s": 0.2,
+            "group_wide_mode_max_span_rad": math.radians(40.0),
         }
 
     def get_parameter(self, name):
@@ -284,3 +301,122 @@ def test_transform_person_position_none_transform_returns_none():
     az = transform_person_position_to_azimuth(
         1.0, 0.0, 0.0, "base_link", "respeaker_link", "stamp", lambda t, s, st: None)
     assert az is None
+
+
+# ---- Gruppen-Audiofokus (Entwicklungsauftrag 04-B, AP7, Abschnitt 17) ----
+
+def _group(group_id="g1", member_track_ids=(7, 8), stable=True, angular_span_rad=0.1,
+           center_x=1.0, center_y=0.0):
+    g = ConversationGroup()
+    g.group_id = group_id
+    g.member_track_ids = list(member_track_ids)
+    g.stable = stable
+    g.angular_span_rad = angular_span_rad
+    g.center_position.x = center_x
+    g.center_position.y = center_y
+    return g
+
+
+def _sound_direction(azimuth_rad=0.0, valid=True, vad_active=True):
+    msg = SoundDirection()
+    msg.azimuth_rad = azimuth_rad
+    msg.valid = valid
+    msg.vad_active = vad_active
+    return msg
+
+
+def _confirm_track_7(node):
+    node._on_wakeword_event(_wakeword_event(azimuth_rad=0.5, direction_valid=True))
+    node._on_visual_target(_visual_target(valid=True, track_id=7, azimuth_rad_base=0.0, distance_m=1.0))
+
+
+def test_no_group_uses_the_confirmed_persons_own_position_unchanged():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    array = PersonTrackArray(tracks=[_person_track(track_id=7, x=1.0, y=1.0)])
+    node._on_person_tracks(array)
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(math.radians(45.0), abs=1e-3)
+
+
+def test_unstable_group_is_ignored_uses_own_position():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    node._on_groups(ConversationGroupArray(groups=[_group(stable=False)]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=1.0), _person_track(track_id=8, x=5.0, y=0.0),
+    ])
+    node._on_person_tracks(array)
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(math.radians(45.0), abs=1e-3)
+
+
+def test_group_wide_mode_targets_the_group_center_not_the_confirmed_person():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    node._on_groups(ConversationGroupArray(groups=[
+        _group(member_track_ids=(7, 8), stable=True, angular_span_rad=0.1, center_x=2.0, center_y=2.0),
+    ]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=0.0), _person_track(track_id=8, x=3.0, y=0.0),
+    ])
+    node._on_person_tracks(array)
+    # Peilung zum Gruppenzentrum (2,2), NICHT zur Einzelposition von Track 7 (1,0).
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(math.radians(45.0), abs=1e-3)
+
+
+def test_session_identity_stays_the_original_anchor_even_in_group_wide_mode():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    node._on_groups(ConversationGroupArray(groups=[_group(member_track_ids=(7, 8))]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=0.0), _person_track(track_id=8, x=3.0, y=0.0),
+    ])
+    node._on_person_tracks(array)
+    assert node._machine.snapshot().selected_track_id == 7  # NIE auf 8 umgesprungen
+
+
+def test_active_speaker_mode_targets_the_confirmed_speaker_after_enough_frames():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    # Grosse Winkelspanne -- ACTIVE_SPEAKER statt GROUP_WIDE.
+    node._on_groups(ConversationGroupArray(groups=[
+        _group(member_track_ids=(7, 8), angular_span_rad=math.radians(90.0)),
+    ]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=0.0), _person_track(track_id=8, x=0.0, y=1.0),
+    ])
+    # DoA zeigt auf Track 8 (90 Grad) -- required_confirming_frames=1 im Fake.
+    node._on_sound_direction(_sound_direction(azimuth_rad=math.radians(90.0)))
+    node._on_person_tracks(array)
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(math.radians(90.0), abs=1e-3)
+    assert node._machine.snapshot().selected_track_id == 7  # Sitzungsidentitaet unveraendert
+
+
+def test_active_speaker_mode_falls_back_to_original_anchor_before_confirmation():
+    node = _FakeNode(active_speaker_selector=ActiveSpeakerSelector(required_confirming_frames=3))
+    _confirm_track_7(node)
+    node._on_groups(ConversationGroupArray(groups=[
+        _group(member_track_ids=(7, 8), angular_span_rad=math.radians(90.0)),
+    ]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=0.0), _person_track(track_id=8, x=0.0, y=1.0),
+    ])
+    node._on_sound_direction(_sound_direction(azimuth_rad=math.radians(90.0)))
+    node._on_person_tracks(array)
+    # Noch nicht genug bestaetigende Frames -- bleibt sicher bei Track 7.
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(0.0, abs=1e-3)
+
+
+def test_active_speaker_never_targets_a_direction_outside_the_group():
+    node = _FakeNode()
+    _confirm_track_7(node)
+    node._on_groups(ConversationGroupArray(groups=[
+        _group(member_track_ids=(7, 8), angular_span_rad=math.radians(90.0)),
+    ]))
+    array = PersonTrackArray(tracks=[
+        _person_track(track_id=7, x=1.0, y=0.0), _person_track(track_id=8, x=0.0, y=1.0),
+    ])
+    # DoA zeigt WEIT ausserhalb jeder Gruppenperson.
+    node._on_sound_direction(_sound_direction(azimuth_rad=math.radians(179.0)))
+    node._on_person_tracks(array)
+    # Kein Kandidat passt -- bleibt beim urspruenglichen Anker (Track 7, 0 Grad).
+    assert node._machine.snapshot().target_azimuth_rad == pytest.approx(0.0, abs=1e-3)

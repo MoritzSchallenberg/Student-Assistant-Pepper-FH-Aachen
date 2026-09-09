@@ -34,7 +34,20 @@ Absturz.
 IMMER im respeaker_link-Frame (vorher: zuletzt bekannter Wakeword-Wert,
 noch im base_frame) -- audio_node.py::_on_focus_state() gibt diesen Wert
 direkt an das aktive SteerableDirectionalAudioBackend weiter.
-"""
+
+Entwicklungsauftrag 04-B, AP7, Abschnitt 17: innerhalb einer bestaetigten,
+stabilen Gesprächsgruppe (/perception/conversation_groups) steuert
+_on_person_tracks() nicht mehr zwingend auf die urspruenglich bestaetigte
+Person -- GROUP_WIDE (kleine Winkelspanne) zielt auf das Gruppenzentrum,
+ACTIVE_SPEAKER (grosse Winkelspanne) waehlt per ActiveSpeakerSelector
+(group_speaker_selection.py) unter den bestaetigten Gruppenmitgliedern.
+Die SITZUNGSIDENTITAET (selected_track_id, an audio_focus.py uebergeben)
+bleibt dabei IMMER die urspruenglich bestaetigte Person -- nur der
+WINKEL darf innerhalb der Gruppe wandern, nie die Identitaet selbst.
+Der Kopf bewegt sich dabei NIE (Kopforientierung ist ausschliesslich an
+Wakeword-Ereignisse gebunden, siehe orient_to_sound_node.py -- ein
+Sprecherwechsel innerhalb der Gruppe beeinflusst nur das elektronische
+Beamforming-Ziel)."""
 import math
 
 import rclpy
@@ -46,9 +59,17 @@ from rclpy.node import Node
 from std_msgs.msg import Bool, UInt8
 
 from ihk_pepper_interaction.interaction_state import InteractionState
-from ihk_pepper_interfaces.msg import AudioFocusState, AudioVisualTarget, PersonTrackArray, WakewordEvent
+from ihk_pepper_interfaces.msg import (
+    AudioFocusState,
+    AudioVisualTarget,
+    ConversationGroupArray,
+    PersonTrackArray,
+    SoundDirection,
+    WakewordEvent,
+)
 
 from .audio_focus import AudioFocusMode, AudioFocusStateMachine
+from .group_speaker_selection import ActiveSpeakerSelector, GroupMemberBearing
 
 FOCUS_PUBLISH_INTERVAL_S = 0.2
 
@@ -90,9 +111,25 @@ class AudioFocusNode(Node):
         self.declare_parameter("base_frame", "base_link")
         self.declare_parameter("respeaker_frame_id", "respeaker_link")
         self.declare_parameter("tf_timeout_s", 0.2)
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 17: GROUP_WIDE, solange
+        # die Gruppen-Winkelspanne darunter bleibt, sonst ACTIVE_SPEAKER.
+        self.declare_parameter("group_wide_mode_max_span_rad", math.radians(40.0))
+        self.declare_parameter("active_speaker_maximum_angular_error_deg", 20.0)
+        self.declare_parameter("active_speaker_minimum_ambiguity_margin_deg", 10.0)
+        self.declare_parameter("active_speaker_required_confirming_frames", 3)
 
         self._machine = AudioFocusStateMachine(
             target_loss_timeout_s=self.get_parameter("target_loss_timeout_s").value)
+        self._active_speaker_selector = ActiveSpeakerSelector(
+            maximum_angular_error_rad=math.radians(
+                self.get_parameter("active_speaker_maximum_angular_error_deg").value),
+            minimum_ambiguity_margin_rad=math.radians(
+                self.get_parameter("active_speaker_minimum_ambiguity_margin_deg").value),
+            required_confirming_frames=self.get_parameter(
+                "active_speaker_required_confirming_frames").value,
+        )
+        self._latest_groups: ConversationGroupArray = None
+        self._latest_doa: SoundDirection = None
 
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
@@ -110,6 +147,12 @@ class AudioFocusNode(Node):
         # _on_person_tracks) -- selected_track_id==-1 verwirft jedes Update.
         self.create_subscription(
             PersonTrackArray, "/perception_node/person_tracks", self._on_person_tracks, 10)
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 17: fuer
+        # ACTIVE_SPEAKER-Vergleich (kanonisch, bereits nach base_link
+        # transformiert, siehe sound_direction_transform_node.py).
+        self.create_subscription(SoundDirection, "/audio/sound_direction", self._on_sound_direction, 10)
+        self.create_subscription(
+            ConversationGroupArray, "/perception/conversation_groups", self._on_groups, 10)
 
         self.create_timer(FOCUS_PUBLISH_INTERVAL_S, self._tick_and_publish)
 
@@ -159,29 +202,86 @@ class AudioFocusNode(Node):
             return
         self._machine.on_person_confirmed(msg.track_id, azimuth_respeaker)
 
+    def _on_sound_direction(self, msg: SoundDirection):
+        self._latest_doa = msg
+
+    def _on_groups(self, msg: ConversationGroupArray):
+        self._latest_groups = msg
+
+    def _stable_group_for(self, track_id: int):
+        """None, wenn keine BESTAETIGTE (stable=True), aktuell verfolgte
+        Gruppe track_id enthaelt -- eine gerade erst entstehende Gruppe
+        loest noch keinen Moduswechsel aus (Auftrag Abschnitt 14: "ueber
+        mehrere Frames stabil")."""
+        if self._latest_groups is None:
+            return None
+        for group in self._latest_groups.groups:
+            if group.stable and track_id in group.member_track_ids:
+                return group
+        return None
+
     def _on_person_tracks(self, msg: PersonTrackArray):
-        """Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5: haelt das
-        Fokus-Ziel waehrend des Gespraechs aktuell -- NUR fuer denselben
-        bestaetigten Track (audio_focus.py::on_target_track_update()
-        verwirft jeden anderen track_id bereits selbst, hier zusaetzlich
-        VOR jeder TF-Transformation gefiltert, um unnoetige Arbeit fuer
-        fremde Tracks zu vermeiden)."""
+        """Entwicklungsauftrag 04-B, AP6.1, Abschnitt 5 + AP7, Abschnitt
+        17: haelt das Fokus-Ziel waehrend des Gespraechs aktuell -- NUR
+        fuer denselben bestaetigten Track wird
+        audio_focus.py::on_target_track_update() aufgerufen (verwirft
+        jeden anderen track_id bereits selbst) -- ABER der dabei
+        uebergebene WINKEL darf innerhalb einer bestaetigten Gruppe auf
+        ein ANDERES Mitglied zeigen (GROUP_WIDE: Gruppenzentrum,
+        ACTIVE_SPEAKER: bestaetigter aktiver Sprecher) -- die
+        Sitzungsidentitaet (selected_track_id) bleibt dabei IMMER die
+        urspruenglich bestaetigte Person, NIE ein Fremdtrack."""
         selected_id = self._machine.snapshot().selected_track_id
         if selected_id == -1:
             return
         base_frame = self.get_parameter("base_frame").value
         respeaker_frame = self.get_parameter("respeaker_frame_id").value
-        for track in msg.tracks:
-            if int(track.track_id) != selected_id:
-                continue
-            if not track.has_3d_position or track.frame_id != base_frame:
-                continue
-            azimuth_respeaker = transform_person_position_to_azimuth(
-                track.position_3d.x, track.position_3d.y, track.position_3d.z,
-                base_frame, respeaker_frame, track.last_seen, self._tf_lookup_fn)
-            if azimuth_respeaker is not None:
-                self._machine.on_target_track_update(selected_id, azimuth_respeaker)
-            break
+
+        tracks_by_id = {int(t.track_id): t for t in msg.tracks
+                        if t.has_3d_position and t.frame_id == base_frame}
+        if selected_id not in tracks_by_id:
+            return
+        selected_track = tracks_by_id[selected_id]
+
+        group = self._stable_group_for(selected_id)
+        target_x, target_y, target_stamp = (
+            selected_track.position_3d.x, selected_track.position_3d.y, selected_track.last_seen)
+
+        if group is not None:
+            max_span = self.get_parameter("group_wide_mode_max_span_rad").value
+            if group.angular_span_rad <= max_span:
+                # GROUP_WIDE: Kopf/Beamforming bleibt auf das Gruppenzentrum
+                # ausgerichtet -- kein staendiges Umschalten pro Sprecher.
+                target_x, target_y = group.center_position.x, group.center_position.y
+            else:
+                # ACTIVE_SPEAKER: nur unter bestaetigten Gruppenmitgliedern
+                # vergleichen -- eine fremde Richtung ausserhalb der
+                # Gruppe kann strukturell nie gewinnen.
+                members = [
+                    GroupMemberBearing(track_id=tid, bearing_rad=math.atan2(t.position_3d.y, t.position_3d.x))
+                    for tid, t in tracks_by_id.items() if tid in group.member_track_ids
+                ]
+                doa = self._latest_doa
+                result = self._active_speaker_selector.observe(
+                    vad_active=bool(doa.vad_active) if doa is not None else False,
+                    doa_azimuth_rad=doa.azimuth_rad if doa is not None else 0.0,
+                    doa_valid=bool(doa.valid) if doa is not None else False,
+                    members=members,
+                )
+                speaker_id = result.selected_track_id
+                if speaker_id in tracks_by_id:
+                    speaker_track = tracks_by_id[speaker_id]
+                    target_x, target_y = speaker_track.position_3d.x, speaker_track.position_3d.y
+                    target_stamp = speaker_track.last_seen
+                # Kein bestaetigter Sprecher (-1) oder dessen Track gerade
+                # nicht sichtbar: sicherer Rueckfall auf die urspruenglich
+                # bestaetigte Person -- NIE stillschweigend auf den
+                # lautesten Kandidaten wechseln.
+
+        azimuth_respeaker = transform_person_position_to_azimuth(
+            target_x, target_y, 0.0, base_frame, respeaker_frame, target_stamp, self._tf_lookup_fn)
+        if azimuth_respeaker is not None:
+            self._machine.on_target_track_update(selected_id, azimuth_respeaker)
 
     def _on_interaction_state(self, msg: UInt8):
         if msg.data == InteractionState.IDLE:
