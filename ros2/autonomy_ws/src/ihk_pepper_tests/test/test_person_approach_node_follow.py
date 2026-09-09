@@ -263,6 +263,7 @@ class _FakeNode:
     _drive_to_pose = PersonApproachNode._drive_to_pose
     _validate_target = PersonApproachNode._validate_target
     _get_robot_position_in_frame = PersonApproachNode._get_robot_position_in_frame
+    _get_robot_pose_in_frame = PersonApproachNode._get_robot_pose_in_frame
     _build_follow_safety_context = PersonApproachNode._build_follow_safety_context
     _execute_follow = PersonApproachNode._execute_follow
 

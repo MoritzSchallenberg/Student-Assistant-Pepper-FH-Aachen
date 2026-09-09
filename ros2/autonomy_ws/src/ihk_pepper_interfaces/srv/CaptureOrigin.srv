@@ -1,0 +1,17 @@
+# Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: sichert die aktuelle
+# Roboterpose im "map"-Frame als Rueckkehrpunkt einer Sitzung, BEVOR sich
+# Pepper einer Person/Gruppe naehert. Rein sitzungsgebunden (kein
+# Persistieren ueber einen Neustart hinaus, siehe origin_session.py) --
+# der zurueckgegebene origin_id wird spaeter an ReturnToOrigin.action
+# uebergeben.
+#
+# Request
+string session_id
+uint32 initial_track_id
+string person_id
+string group_id
+---
+# Response
+bool success
+string origin_id
+string reason

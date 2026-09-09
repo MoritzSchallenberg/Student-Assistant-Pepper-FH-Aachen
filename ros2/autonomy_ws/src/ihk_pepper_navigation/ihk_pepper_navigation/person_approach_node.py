@@ -53,8 +53,10 @@ from ament_index_python.packages import get_package_share_directory
 from std_msgs.msg import Bool
 
 from ihk_pepper_interfaces.msg import AuthorizationGrant, PersonTrackArray, SafetyState, SystemHealth
-from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson
-from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
+from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson, ReturnToOrigin
+from ihk_pepper_interfaces.srv import (
+    AcquireActuatorLease, CaptureOrigin, ReleaseActuatorLease, RenewActuatorLease,
+)
 
 from ihk_pepper_interaction.actuator_arbiter import BASE, PRIORITY_NAVIGATION
 
@@ -65,6 +67,8 @@ from .follow_person_safety import (
     check_follow_person_safety,
     is_crowd_ambiguous,
 )
+from .origin_session import OriginStore
+from .return_to_origin_safety import ReturnToOriginSafetyContext, check_return_to_origin_safety
 from .zone_config import load_all_zones, point_in_any_keepout
 
 MAX_TRACK_AGE_S = 2.0
@@ -133,6 +137,13 @@ class PersonApproachNode(Node):
         self.declare_parameter("robot_base_frame", "base_link")
         self.declare_parameter("tf_lookup_timeout_s", 0.5)
 
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: ReturnToOrigin.
+        # max_origin_age_s=0 im Goal bedeutet "kein Limit" -- dieser
+        # Parameter ist nur der Rueckfallwert, wenn das Goal-Feld leer
+        # (0.0) gelassen wird.
+        self.declare_parameter("return_to_origin_max_age_default_s", 1800.0)
+        self.declare_parameter("return_to_origin_timeout_default_s", 120.0)
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
@@ -150,12 +161,19 @@ class PersonApproachNode(Node):
         # kein gemeinsamer Prozessspeicher noetig (siehe
         # authorization_grant_cache.py-Moduldoku).
         self._grant_cache = AuthorizationGrantCache()
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: sitzungsgebundene
+        # Ursprungspunkte + Ungueltigkeitszustand (Kartenwechsel/neu
+        # initialisierte Lokalisierung), siehe origin_session.py-Moduldoku.
+        self._origin_store = OriginStore()
+        self._mapping_active = False
+        self._localization_was_valid = None  # None = noch kein SafetyState empfangen
 
         self.create_subscription(PersonTrackArray, "/perception_node/person_tracks",
                                   self._on_tracks, 10)
         self.create_subscription(SafetyState, "/safety_state", self._on_safety_state, 10)
         self.create_subscription(SystemHealth, "system_health", self._on_system_health, 10)
         self.create_subscription(AuthorizationGrant, "/authorization/grants", self._on_grant, 10)
+        self.create_subscription(Bool, "/mapping_active", self._on_mapping_active, 10)
 
         # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt, muessen
         # Arm-/Kopfgesten gesperrt sein (gesture_catalog.py::play() kann
@@ -200,6 +218,21 @@ class PersonApproachNode(Node):
             cancel_callback=self._cancel_callback,
             callback_group=cb_group,
         )
+
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: Ursprungspose
+        # sichern/zurueckkehren -- IMMER registriert (wie ApproachPerson),
+        # nicht hinter enable_follow_person, da ReturnToOrigin fuer JEDE
+        # Interaktion gebraucht wird, nicht nur beim Folgen.
+        self.capture_origin_srv = self.create_service(
+            CaptureOrigin, "capture_origin", self._on_capture_origin,
+            callback_group=cb_group,
+        )
+        self.return_to_origin_server = ActionServer(
+            self, ReturnToOrigin, "return_to_origin",
+            execute_callback=self._execute_return_to_origin,
+            cancel_callback=self._cancel_callback,
+            callback_group=cb_group,
+        )
         if self.get_parameter("enable_follow_person").value:
             self.get_logger().warn(
                 "enable_follow_person=true -- FollowPerson ist EXPERIMENTELL "
@@ -226,10 +259,36 @@ class PersonApproachNode(Node):
             self._tracks[t.track_id] = (t, now)
 
     def _on_safety_state(self, msg: SafetyState):
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 12: eine neu
+        # initialisierte Lokalisierung (False->True-Uebergang) macht JEDE
+        # gespeicherte Ursprungspose unsicher -- sie koennte sich auf ein
+        # Koordinatensystem VOR der Neuinitialisierung beziehen.
+        if self._localization_was_valid is False and msg.localization_valid:
+            removed = self._origin_store.invalidate_all()
+            if removed:
+                self.get_logger().warn(
+                    f"Lokalisierung neu initialisiert -- {removed} gespeicherte "
+                    "Ursprungspose(n) verworfen."
+                )
+        self._localization_was_valid = msg.localization_valid
         self._safety_state = msg
 
     def _on_system_health(self, msg: SystemHealth):
         self._latest_health = msg
+
+    def _on_mapping_active(self, msg: Bool):
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 12: ein Kartenwechsel
+        # (Kartierung startet) macht JEDE gespeicherte Ursprungspose
+        # unsicher -- gleiches Prinzip wie bei der Lokalisierungs-
+        # Neuinitialisierung oben.
+        if not self._mapping_active and msg.data:
+            removed = self._origin_store.invalidate_all()
+            if removed:
+                self.get_logger().warn(
+                    f"Kartierung gestartet -- {removed} gespeicherte "
+                    "Ursprungspose(n) verworfen."
+                )
+        self._mapping_active = msg.data
 
     def _on_grant(self, msg: AuthorizationGrant):
         if not msg.valid:
@@ -572,31 +631,167 @@ class PersonApproachNode(Node):
         result.abort_reason = "rclpy_shutdown"
         return result
 
+    # ---- CaptureOrigin/ReturnToOrigin (Entwicklungsauftrag 04-B, AP7,
+    #      Abschnitt 9/12) ----
+
+    def _on_capture_origin(self, request, response):
+        """Sichert die AKTUELLE Roboterpose im map-Frame als Rueckkehr-
+        punkt. Waehrend einer laufenden Kartierung wird bewusst
+        abgelehnt, statt eine Pose zu sichern, die sich moeglicherweise
+        auf ein bald ungueltiges Koordinatensystem bezieht (gleiches
+        Prinzip wie die Invalidierung in _on_mapping_active())."""
+        if self._mapping_active:
+            response.success = False
+            response.origin_id = ""
+            response.reason = "kartierung_aktiv"
+            return response
+        x, y, yaw, ok = self._get_robot_pose_in_frame("map")
+        if not ok:
+            response.success = False
+            response.origin_id = ""
+            response.reason = "keine_tf_fuer_ursprungspose"
+            return response
+        record = self._origin_store.capture(
+            session_id=request.session_id, frame_id="map", x=x, y=y, yaw_rad=yaw,
+            initial_track_id=request.initial_track_id,
+            person_id=request.person_id, group_id=request.group_id,
+        )
+        response.success = True
+        response.origin_id = record.origin_id
+        response.reason = ""
+        return response
+
+    def _build_return_to_origin_safety_context(self, origin_valid: bool) -> ReturnToOriginSafetyContext:
+        safety = self._safety_state
+        return ReturnToOriginSafetyContext(
+            origin_valid=origin_valid,
+            allow_motion=safety.allow_motion if safety is not None else False,
+            localization_valid=safety.localization_valid if safety is not None else False,
+            obstacle_data_valid=safety.obstacle_data_valid if safety is not None else False,
+            charging_cable_connected=safety.charging_cable_connected if safety is not None else True,
+            bumper_active=safety.bumper_active if safety is not None else True,
+            emergency_stop=safety.emergency_stop if safety is not None else True,
+            # Siehe follow_person_safety-Verdrahtung oben: echter Lease-
+            # Verlust WAEHREND der Fahrt wird bereits von _drive_to_pose()
+            # selbst erkannt.
+            base_lease_valid=True,
+            mapping_active=self._mapping_active,
+        )
+
+    def _execute_return_to_origin(self, goal_handle):
+        """Faehrt AUSSCHLIESSLICH ueber die bestehende _drive_to_pose()
+        (Nav2 -> Velocity Smoother -> Collision Monitor -> Twist Mux ->
+        Motion Guard -> /cmd_vel, kein direkter Zugriff) zu einer zuvor
+        per CaptureOrigin gesicherten Pose zurueck. Sicheres
+        Fehlverhalten (Auftrag Abschnitt 12): bei JEDER Unsicherheit wird
+        stehengeblieben und ein Fehler gemeldet -- NIE eine
+        Naeherungsfahrt zu einer geschaetzten Pose."""
+        result = ReturnToOrigin.Result()
+        request = goal_handle.request
+
+        def feedback(status):
+            fb = ReturnToOrigin.Feedback()
+            fb.status = status
+            goal_handle.publish_feedback(fb)
+
+        feedback("validating")
+        max_age_s = (
+            request.max_origin_age_s
+            or self.get_parameter("return_to_origin_max_age_default_s").value)
+        timeout_s = (
+            request.timeout_s
+            or self.get_parameter("return_to_origin_timeout_default_s").value)
+
+        origin_ok, origin_reason, record = self._origin_store.validate(
+            request.origin_id, request.session_id, max_age_s)
+        ctx = self._build_return_to_origin_safety_context(origin_valid=origin_ok)
+        ok, reason = check_return_to_origin_safety(ctx)
+        if not ok:
+            feedback("blocked")
+            result.success = False
+            # origin_reason ist der praezisere Grund, falls die
+            # Ursprungspruefung selbst fehlgeschlagen ist.
+            result.abort_reason = origin_reason if not origin_ok else reason
+            goal_handle.abort()
+            return result
+
+        feedback("planning")
+        from geometry_msgs.msg import PoseStamped
+        pose = PoseStamped()
+        pose.header.frame_id = record.frame_id
+        pose.pose.position.x = record.x
+        pose.pose.position.y = record.y
+        qx, qy, qz, qw = _yaw_to_quaternion(record.yaw_rad)
+        pose.pose.orientation.x, pose.pose.orientation.y = qx, qy
+        pose.pose.orientation.z, pose.pose.orientation.w = qz, qw
+
+        started_at_s = time.time()
+
+        def monitor():
+            if time.time() - started_at_s > timeout_s:
+                return False, "zeitueberschreitung"
+            still_ok, still_reason, _rec = self._origin_store.validate(
+                request.origin_id, request.session_id, max_age_s)
+            check_ctx = self._build_return_to_origin_safety_context(origin_valid=still_ok)
+            safety_ok, safety_reason = check_return_to_origin_safety(check_ctx)
+            if not safety_ok:
+                return False, still_reason if not still_ok else safety_reason
+            return True, ""
+
+        feedback("returning")
+        drive_ok, drive_reason = self._drive_to_pose(goal_handle, pose, feedback, monitor_fn=monitor)
+        if not drive_ok:
+            result.success = False
+            result.abort_reason = drive_reason
+            goal_handle.abort()
+            return result
+
+        feedback("reached")
+        result.success = True
+        result.abort_reason = ""
+        result.final_pose = pose
+        goal_handle.succeed()
+        return result
+
     # ---- Nav2-Anbindung (siehe Moduldoku: strukturell vorbereitet, nicht getestet) ----
 
     def _get_robot_position_in_frame(self, frame_id, stamp):
-        """Liefert (x, y, ok). Fehlende/veraltete TF fuehrt IMMER zu
-        ok=False, NIE zu einer geschaetzten Position (Entwicklungsauftrag 2,
-        AP9 -- gleiches Prinzip wie perception_node.py::_transform_to_base_frame).
-        Ist die Person bereits im Basis-Frame des Roboters selbst
-        angegeben (aktueller Stand ohne Lokalisierung, siehe AP1-Bericht),
-        ist keine TF-Lookup noetig -- die Roboterpose ist per Definition
-        der Ursprung dieses Frames."""
+        """Liefert (x, y, ok). Duenner Wrapper um _get_robot_pose_in_frame()
+        fuer die bestehenden Aufrufer, die keine Blickrichtung brauchen."""
+        x, y, _yaw, ok = self._get_robot_pose_in_frame(frame_id, stamp)
+        return x, y, ok
+
+    def _get_robot_pose_in_frame(self, frame_id, stamp=None):
+        """Liefert (x, y, yaw_rad, ok). Fehlende/veraltete TF fuehrt IMMER
+        zu ok=False, NIE zu einer geschaetzten Position (Entwicklungsauftrag
+        2, AP9 -- gleiches Prinzip wie perception_node.py::
+        _transform_to_base_frame). Ist die Person bereits im Basis-Frame
+        des Roboters selbst angegeben (aktueller Stand ohne Lokalisierung,
+        siehe AP1-Bericht), ist keine TF-Lookup noetig -- die Roboterpose
+        ist per Definition der Ursprung dieses Frames.
+
+        stamp=None (Entwicklungsauftrag 04-B, AP7, Abschnitt 9: Ursprung
+        JETZT sichern, nicht zu einem vergangenen Track-Zeitstempel) fragt
+        die neueste verfuegbare TF ab, statt einen bestimmten Zeitpunkt zu
+        verlangen."""
         robot_base_frame = self.get_parameter("robot_base_frame").value
         if frame_id == robot_base_frame:
-            return 0.0, 0.0, True
+            return 0.0, 0.0, 0.0, True
+        lookup_stamp = stamp if stamp is not None else rclpy.time.Time()
         try:
             timeout = rclpy.duration.Duration(
                 seconds=self.get_parameter("tf_lookup_timeout_s").value)
             transform = self.tf_buffer.lookup_transform(
-                frame_id, robot_base_frame, stamp, timeout)
+                frame_id, robot_base_frame, lookup_stamp, timeout)
             t = transform.transform.translation
-            return t.x, t.y, True
+            q = transform.transform.rotation
+            yaw = 2.0 * math.atan2(q.z, q.w)
+            return t.x, t.y, yaw, True
         except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
                 tf2_ros.ExtrapolationException) as e:
             self.get_logger().warn(
                 f"Keine TF {frame_id}->{robot_base_frame} fuer Roboterpose: {e}")
-            return 0.0, 0.0, False
+            return 0.0, 0.0, 0.0, False
 
     def _drive_to_person(self, goal_handle, track, target_distance_m, feedback_cb):
         """Berechnet eine Gespraechs-Zielpose target_distance_m VOR der

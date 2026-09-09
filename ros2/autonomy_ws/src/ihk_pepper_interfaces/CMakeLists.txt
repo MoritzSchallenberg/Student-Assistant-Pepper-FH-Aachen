@@ -51,6 +51,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/ReleaseActuatorLease.srv"
   "srv/CancelActuation.srv"
   "srv/AssociatePersonWithSound.srv"
+  "srv/CaptureOrigin.srv"
   "action/Say.action"
   "action/RunDialogue.action"
   "action/PlayPresentation.action"
