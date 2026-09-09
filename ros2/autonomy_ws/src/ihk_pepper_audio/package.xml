@@ -11,6 +11,11 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
+  <!-- Entwicklungsauftrag 04-B, AP6: InteractionState-Enum fuer die
+       zentrale Gespraechszustandsableitung in audio_node.py (Wakeword
+       darf nicht mehr allein vom lokalen _session_active-Flag
+       abhaengen). -->
+  <depend>ihk_pepper_interaction</depend>
 
   <test_depend>python3-pytest</test_depend>
 
