@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<package format="3">
+  <name>ihk_pepper_identity</name>
+  <version>0.1.0</version>
+  <description>
+    Consent-gated Gesichtserkennung (Entwicklungsauftrag 04-B, AP7,
+    Abschnitt 7): austauschbare FaceIdentityBackend-Familie, getrennte
+    fluechtige (Gruppengespraech) und persistente (eingewilligte
+    Identitaet) Erkennungspfade, biometrische Vorlagen in einer
+    EIGENEN, verschluesselten Ablage -- niemals in der Identity-/
+    Vektordatenbank oder an das LLM weitergereicht.
+  </description>
+  <maintainer email="you@example.com">you</maintainer>
+  <license>BSD</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>ihk_pepper_interfaces</depend>
+  <depend>ihk_pepper_interaction</depend>
+  <depend>ihk_pepper_person_memory</depend>
+  <depend>python3-numpy</depend>
+  <depend>python3-cryptography</depend>
+  <!-- CPU-faehiges lokales Inferenz-Backend (Auftrag Abschnitt 7:
+       "lokal auf dem NUC laufen koennen, CPU-faehig sein") -- bereits
+       installiert (siehe docs/FACE_IDENTITY_AND_PRIVACY.md), als
+       exec_depend, damit ein colcon build dieses Pakets nicht daran
+       haengt, falls es woanders fehlt (gleiches Muster wie
+       realsense2_camera in ihk_pepper_navigation). -->
+  <exec_depend>python3-onnxruntime</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
