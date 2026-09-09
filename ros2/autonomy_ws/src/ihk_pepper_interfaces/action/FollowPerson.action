@@ -1,7 +1,20 @@
-# EXPERIMENTELL, standardmaessig deaktiviert (siehe SafetyState/allow_motion).
+# Bisher EXPERIMENTELL (Entwicklungsauftrag 2/04-B) -- ab Entwicklungsauftrag
+# 04-B, AP7 mit echter, autorisierter Nav2-Anbindung (siehe
+# docs/FOLLOW_PERSON_RUNTIME.md), standardmaessig weiterhin deaktiviert
+# (enable_follow_person=false), siehe SafetyState/allow_motion.
+#
 # Goal
 uint32 track_id
 float32 min_distance_m
+# Entwicklungsauftrag 04-B, AP7, Abschnitt 9: ohne eine gueltige,
+# passende AuthorizationGrant-Referenz (siehe AuthorizationGrant.msg)
+# startet FollowPerson NIE -- kein Umgehen der Rollen-/Bestaetigungspruefung.
+string authorization_grant_id
+string session_id
+float32 desired_follow_distance_m
+float32 max_duration_s
+float32 max_track_loss_timeout_s
+bool return_to_origin_after_end
 ---
 # Result
 bool success

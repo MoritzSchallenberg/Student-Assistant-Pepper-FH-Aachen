@@ -1,0 +1,20 @@
+# Entwicklungsauftrag 04-B, AP7, Abschnitt 9/21/22: kehrt zur zu Beginn
+# der Sitzung gespeicherten Ausgangspose zurueck. Faehrt AUSSCHLIESSLICH
+# ueber Nav2 (Velocity Smoother -> Collision Monitor -> Twist Mux ->
+# Motion Guard -> /cmd_vel) -- kein direkter /cmd_vel-Zugriff, gleiche
+# Kette wie ApproachPerson/FollowPerson.
+#
+# Goal
+string session_id
+string origin_id
+float32 max_origin_age_s
+float32 timeout_s
+---
+# Result
+bool success
+string abort_reason
+geometry_msgs/PoseStamped final_pose
+---
+# Feedback
+# einer aus: validating, planning, returning, blocked, reached
+string status

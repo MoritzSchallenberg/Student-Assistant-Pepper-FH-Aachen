@@ -1,0 +1,29 @@
+# Entwicklungsauftrag 04-B, AP7, Abschnitt 12/13: konfigurierbare
+# Codewoerter -- laufen deterministisch VOR jedem LLM-Aufruf, siehe
+# command_router_node.py/codeword_config.py fuer die Validierungs-
+# regeln (keine doppelten Phrasen, command nur aus einer festen
+# Allowlist, keine ROS2-Befehle/Shellcode/LLM-Prompts moeglich).
+codewords:
+  # "Eisenbahn" -- Auftrag Abschnitt 12: bricht den laufenden Dialog
+  # kontrolliert ab und schaut in die Schallrichtung. KEINE
+  # Mitarbeiterrolle noetig (required_role: student = fuer jede
+  # aktive Gespraechsperson verfuegbar), ist KEIN Not-Stopp und
+  # veraendert KEINE Sicherheitsfreigaben.
+  - phrase: eisenbahn
+    command: interrupt_and_look
+    required_role: student
+    stop_dialogue: true
+    stop_navigation: true
+    orient_to_source: true
+    requires_secondary_confirmation: false
+
+  # "Pepper, komm mal mit" -- Auftrag Abschnitt 11: nur fuer
+  # freigeschaltete Mitarbeiter/Admins, zusaetzlich zur Rolle wird eine
+  # kurzzeitige Bestaetigung verlangt (siehe authorization_policy.py).
+  - phrase: pepper komm mal mit
+    command: follow_speaker
+    required_role: employee
+    stop_dialogue: false
+    stop_navigation: false
+    orient_to_source: false
+    requires_secondary_confirmation: true

@@ -1,0 +1,11 @@
+# Entwicklungsauftrag 04-B, AP7, Abschnitt 4: Achsenpruefung zwischen
+# Kamera- und Mikrofon-Vorwaertsrichtung (beide gemeinsam am Kopf
+# montiert, siehe sensor_alignment_config.py-Moduldoku). ALLE Werte
+# unten sind Standardwerte, KEINE echte Vermessung -- siehe
+# docs/AP7_HARDWARE_TEST_CHECKLIST.md.
+sensor_alignment:
+  camera_frame: camera_depth_optical_frame
+  microphone_frame: respeaker_link
+  head_frame: Head
+  maximum_forward_axis_error_deg: 5.0
+  require_calibrated_alignment_in_production: true

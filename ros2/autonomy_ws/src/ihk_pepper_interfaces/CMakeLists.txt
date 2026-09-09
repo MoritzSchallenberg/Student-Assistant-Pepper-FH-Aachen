@@ -25,6 +25,13 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/WakewordEvent.msg"
   "msg/AudioFocusState.msg"
   "msg/AudioVisualTarget.msg"
+  "msg/PersonIdentity.msg"
+  "msg/PersonIdentityArray.msg"
+  "msg/InteractionCommand.msg"
+  "msg/AuthorizationGrant.msg"
+  "msg/ConversationGroup.msg"
+  "msg/ConversationGroupArray.msg"
+  "msg/InteractionLifecycleState.msg"
   "srv/SetSystemMode.srv"
   "srv/SelectDailyTopic.srv"
   "srv/ReloadKnowledge.srv"
@@ -53,6 +60,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/PlayGesture.action"
   "action/SetHeadPose.action"
   "action/OrientToSound.action"
+  "action/ReturnToOrigin.action"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces action_msgs
 )
 

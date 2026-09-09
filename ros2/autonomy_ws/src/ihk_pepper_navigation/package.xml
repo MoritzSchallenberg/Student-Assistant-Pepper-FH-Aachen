@@ -71,6 +71,9 @@
        dieses Pakets nicht daran haengt, falls es woanders fehlt. -->
   <exec_depend>realsense2_camera</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 4: Achsenpruefung
+       Kamera-/Mikrofon-Vorwaertsrichtung (sensor_alignment_config.py). -->
+  <depend>tf2_geometry_msgs</depend>
   <!-- Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: dynamische
        base_link->torso->Neck->Head-Kette aus /joint_states (siehe
        pepper_robot_state.launch.py). Das URDF selbst liegt im separaten

@@ -12,6 +12,9 @@
   <depend>std_msgs</depend>
   <depend>geometry_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
+  <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 13: codeword_config.py
+       laedt/validiert codewords.yaml. -->
+  <depend>python3-yaml</depend>
 
   <test_depend>python3-pytest</test_depend>
 
