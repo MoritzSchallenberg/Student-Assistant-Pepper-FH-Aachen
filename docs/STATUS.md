@@ -334,7 +334,7 @@ getestet, siehe `IMPLEMENTATION_REPORT.md`).
 aus) -- Software-Verhalten/Zustandsmaschinen/Sicherheitslogik sind real
 verifiziert, echte SSH/qicli-Kommunikation mit dem Roboter NICHT.
 
-## ReSpeaker Core v2.0/Wakeword (Entwicklungsauftrag 04-B, AP6, Stand 2026-09-09)
+## ReSpeaker Core v2.0/Wakeword (Entwicklungsauftrag 04-B, AP6+AP6.1, Stand 2026-09-09)
 
 Neue Fähigkeit: Wakeword-gesteuerte Begrüßung ("Pepper" sagen → Kopf
 dreht sich vorsichtig zur groben Schallrichtung → RealSense bestätigt
@@ -349,7 +349,18 @@ erreichbar** -- alle neuen Module (`ihk_pepper_audio/respeaker_transport.py`,
 Behavior-Tree-Knoten) sind ausschließlich gegen Fakes/Mocks/synthetische
 Signale getestet. Fünf Hardware-Testphasen definiert, KEINE davon
 durchgeführt -- siehe `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`.
-Bekannte, offen dokumentierte Lücke: die TF-Transformation der
-Schallrichtung von `respeaker_link` nach `base_link` ist noch nicht
-implementiert (siehe `docs/RESPEAKER_CORE_V2_INTEGRATION.md`, Abschnitt
-TF).
+
+**AP6.1 (Nachfolgeauftrag) hat die in AP6 offen dokumentierte
+TF-Transformations-Lücke vollständig geschlossen**: die Schallrichtung
+wird jetzt tatsächlich von `respeaker_link` nach `base_link`
+transformiert (`sound_direction_transform_node.py`, dynamische TF-Kette
+aus `robot_state_publisher`+`/joint_states`), das audiovisuelle
+Zuordnungsergebnis erreicht `audio_focus_node.py` jetzt echt (nicht
+mehr immer `selected_track_id=-1`), Wakeword-Ereignisse werden im
+Behavior Tree exactly-once verarbeitet, und die front/back-mehrdeutige
+Zwei-Mikrofon-Schätzung darf nie mehr ohne explizite,
+in Produktion gesperrte Freigabe eine Kopfbewegung auslösen. Details:
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, Abschnitt AP6.1. Weiterhin
+offen: alle fünf Hardware-Testphasen, echte Vermessung der
+ReSpeaker-/RealSense-Montage, front/back-Mehrdeutigkeit selbst
+(strukturell markiert, nicht aufgelöst).

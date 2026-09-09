@@ -1,6 +1,8 @@
 # ReSpeaker Core v2.0: Gesamtarchitektur
 
-Stand: 2026-09-09. Entwicklungsauftrag 04-B, AP6.
+Stand: 2026-09-09. Entwicklungsauftrag 04-B, AP6; AP6.1 (echte
+Frame-Transformation, siehe Abschnitt "TF/Koordinatensysteme" unten --
+ersetzt den in AP6 offen gelassenen Stand vollständig).
 Siehe auch (Details je Teilbereich): `docs/RESPEAKER_TRANSPORT.md`
 (Hardware-/Transportanalyse, `ReSpeakerAudioTransport`-Familie),
 `docs/AUDIO_FOCUS_AND_BEAMFORMING.md` (DoA-Backends, Konversationsfokus),
@@ -15,8 +17,8 @@ SetHeadPose-Cancel), `docs/BEHAVIOR_TREE.md` (Wakeword-Begrüßungsablauf),
 |---|---|
 | 1. Pepper wartet | `/interaction_state == IDLE` (bestehend, Auftrag 1) |
 | 2. „Pepper" gesagt | `ihk_pepper_audio/wakeword.py::WakewordDetector` (bestehend) + `wakeword_gate.py::WakewordGate` (neu, AP6) |
-| 3. Aktivierungswort + Richtung erkannt | `directional_audio.py` (`PassthroughTestBackend`/`GccPhatDelayAndSumBackend`) + `audio_node.py` veröffentlicht `WakewordEvent` auf `/audio/wakeword_event` |
-| 4. Kopf dreht sich vorsichtig | BT: `WaitForFreshWakeword` → `IsHeadOrientationAllowed` → `OrientHeadToSound` → `orient_to_sound_node.py` → `SetHeadPose`-Action (`bridge_node.py`, HEAD-Lease) |
+| 3. Aktivierungswort + Richtung erkannt | `directional_audio.py` (`PassthroughTestBackend`/`GccPhatDelayAndSumBackend`) + `audio_node.py` veröffentlicht `WakewordEvent` auf `/audio/wakeword_event_raw` (RAW, `frame_id=respeaker_link`) → `sound_direction_transform_node.py` transformiert nach `/audio/wakeword_event` (kanonisch, `frame_id=base_link`, siehe AP6.1-Abschnitt unten) |
+| 4. Kopf dreht sich vorsichtig | BT: `WaitForFreshWakeword` (kanonisches Topic, exactly-once, siehe unten) → `IsHeadOrientationAllowed` → `OrientHeadToSound` → `orient_to_sound_node.py` → `SetHeadPose`-Action (`bridge_node.py`, HEAD-Lease) |
 | 5. RealSense sucht Person im Bereich | BT: `FindPersonNearSoundRay` → `audiovisual_association_node.py` (`AssociatePersonWithSound`-Service) |
 | 6. Eindeutige Bestätigung nötig | `audiovisual_association.py::associate_person_to_sound()` -- Mehrdeutigkeit → keine Auswahl |
 | 7. Pepper winkt | BT: bestehende `PlayCatalogGesture gesture_name="wave_right"` (unverändert) |
@@ -50,39 +52,89 @@ SetHeadPose-Cancel), `docs/BEHAVIOR_TREE.md` (Wakeword-Begrüßungsablauf),
 - **Mapping/Nav2 blockieren die Kopfausrichtung**:
   `IsHeadOrientationAllowed` (BT) + `orient_to_sound_node.py::
   _safety_ok_for_orientation()` (serverseitig, vollständig).
+- **Ein Wakeword-Ereignis löst höchstens EINEN Ausrichtungsversuch aus**
+  (AP6.1, bestätigter Fund behoben): `WaitForFreshWakeword` (BT, C++)
+  verarbeitet jede `event_id` GENAU EINMAL (begrenzter Cache
+  verbrauchter IDs) und akzeptiert nur Ereignisse mit
+  `frame_id==base_frame` -- nach einem gescheiterten Versuch muss die
+  Person erneut "Pepper" sagen, kein Wiederverwenden eines alten
+  Ereignisses über einen erneuten BT-Tick.
 
-## TF/Koordinatensysteme -- ehrlicher, unvollständiger Stand
+## TF/Koordinatensysteme (AP6.1: implementiert)
 
-Der Auftrag (Abschnitt 11) verlangt eine vollständige TF-Kette
-(`base_link → head_link → camera_link → camera_depth_optical_frame`,
-`head_link → respeaker_link`) und einen expliziten Ablauf: Schallstrahl
-im `respeaker_link` erfassen → mit der zum Messzeitpunkt gültigen
-Kopfpose nach `base_link` transformieren → erst danach den Kopf bewegen
-→ RealSense-Tracks danach mit demselben Strahl vergleichen.
+Der Auftrag (Abschnitt 11) verlangt eine vollständige TF-Kette und einen
+expliziten Ablauf: Schallstrahl im `respeaker_link` erfassen → mit der
+zum Messzeitpunkt gültigen Kopfpose nach `base_link` transformieren →
+erst danach den Kopf bewegen → RealSense-Tracks danach mit demselben
+Strahl vergleichen. **In AP6 war das NICHT implementiert** (der
+Rohwinkel wurde unverändert als "bereits in base_link" weitergereicht) --
+AP6.1 hat diesen bestätigten Fund vollständig behoben:
 
-**Diese TF-Transformation ist in AP6 NICHT implementiert.** Die
-Schnittstellen (`WakewordEvent.azimuth_rad`, `OrientToSound.
-azimuth_rad_base_link`, `AssociatePersonWithSound.sound_azimuth_rad`)
-sind bereits so benannt/geschnitten, dass ein späterer TF-Transformations-
-schritt dazwischengeschoben werden kann, OHNE die bestehenden
-Schnittstellen zu ändern -- aktuell wird der vom `DirectionalAudioBackend`
-gelieferte Rohwinkel (relativ zur mechanischen Vorwärtsrichtung des
-Mikrofonarrays) UNVERÄNDERT als "bereits in base_link" weitergereicht.
-Das ist nur dann exakt korrekt, wenn `respeaker_link` und `base_link`
-dieselbe Yaw-Ausrichtung haben UND der Kopf zum Messzeitpunkt in
-Neutralstellung war -- beides ist am realen Aufbau nicht verifiziert.
+**Volle TF-Kette** (dynamisch, aus `robot_state_publisher` +
+`/joint_states`, siehe `pepper_robot_state.launch.py`):
 
-**Empfohlener nächster Schritt** (nicht Teil dieses Arbeitspakets):
-ein neuer, kleiner ROS-Knoten (oder eine Erweiterung von `audio_node.py`),
-der bei Erhalt eines `WakewordEvent` sofort `tf2_ros::Buffer::
-lookupTransform("base_link", "respeaker_link", event_stamp)` aufruft
-und NUR bei erfolgreicher, aktueller Transformation ein `WakewordEvent`
-mit `direction_valid=true` erzeugt (fehlender/zu alter TF → `direction_valid=false`,
-fail-closed wie überall sonst in diesem Projekt). Die
-`respeaker_link`/`head_link`-`static_transform_publisher`-Einträge
-(mechanischer Montagewinkel, siehe `docs/RESPEAKER_CALIBRATION.md`)
-müssten dafür ebenfalls noch in der URDF/den Launch-Dateien ergänzt
-werden -- aktuell nicht vorhanden.
+```
+map -> odom -> base_link -> torso -> Neck -> Head
+                                        |
+                                        +-> realsense_mount_link -> camera_link (RealSense-Treiber ab hier)
+                                        +-> respeaker_link (ReSpeaker-Mikrofonarray)
+```
+
+`base_link -> torso` ist FEST (URDF), `torso -> Neck` trägt `HeadYaw`,
+`Neck -> Head` trägt `HeadPitch` (beide aus `pepper_description`, dem
+ECHTEN, bereits vorhandenen Pepper-URDF im separaten Workspace
+`ros2/robot_model` -- bewusst wiederverwendet statt eine zweite,
+möglicherweise abweichende Kinematik-Quelle anzulegen).
+`Head -> realsense_mount_link`/`Head -> respeaker_link` sind STARR
+(Montagepunkte, Werte aktuell Platzhalter, siehe
+`docs/RESPEAKER_CALIBRATION.md`/`docs/REALSENSE_CALIBRATION.md`).
+
+**Zweiter, unabhängig gefundener Fund** (analog zum
+`actuator_arbiter_node`-Launch-Fund aus AP6): `robot_state_publisher`
+wurde in `autonomy_ws` nie gestartet, und KEIN Node hat je
+`/joint_states` publiziert -- `camera_pose_gate_node.py`/
+`head_pose_gate.py` konsumieren dieses Topic bereits seit
+Entwicklungsauftrag 1 fail-closed, `head_navigation_pose_valid` war
+dadurch in jedem echten Einsatz vermutlich immer `False`. Behoben:
+`bridge_node.py::_publish_joint_states()` liest `HeadYaw`/`HeadPitch`
+periodisch über `pepper.get_angle()`.
+
+**Strikte RAW/kanonische Topic-Trennung**: `audio_node.py` publiziert
+NUR `/audio/sound_direction_raw` + `/audio/wakeword_event_raw` (immer
+`frame_id=respeaker_link`, das reale Mikrofonarray-relative Maß,
+UNVERÄNDERT). Der neue `sound_direction_transform_node.py` ist der
+EINZIGE Publisher der kanonischen Topics `/audio/sound_direction` +
+`/audio/wakeword_event` (`frame_id=base_link`) -- eine reine VEKTOR-
+Transformation (`tf2_geometry_msgs.do_transform_vector3`, KEINE
+Translation, weil eine Richtung keine Position ist) zum ORIGINALEN
+Messzeitpunkt, nicht zum Empfangszeitpunkt. Fail-closed
+(`valid=False`/`direction_valid=False`, NIE ein erfundener Winkel) bei:
+leerem/unbekanntem Frame, fehlender/veralteter/zukünftiger TF, invalider
+Quaternion, nicht-endlichem Ergebnis, zu altem Original-Messzeitpunkt.
+`audio_focus_node.py`/`WaitForFreshWakeword` (Behavior Tree) abonnieren
+NUR die kanonischen Topics.
+
+Für echte Personenpositionen (KEINE reine Richtung, sondern eine echte
+Position mit Translation) verwendet `audio_focus_node.py::
+transform_person_position_to_azimuth()` dagegen `do_transform_point`
+(Translation UND Rotation) -- transformiert die bestätigte
+Personenposition von `base_link` nach `respeaker_link`, bevor sie als
+Beamforming-Ziel weitergegeben wird (siehe
+`docs/AUDIO_FOCUS_AND_BEAMFORMING.md`).
+
+**Wichtig**: die bestehende Navigationssperre bei abweichender Kopfpose
+(`camera_pose_gate_node.py`) bleibt als Verteidigung in der Tiefe
+bestehen -- AP6.1 schaltet KEINE automatische Kopfbewegungsfreigabe für
+Navigation frei, nur weil die TF-Kette jetzt korrekt ist.
+
+**Noch offen (hwverificationrequired)**: `respeaker_extrinsics.yaml`/
+`realsense_extrinsics.yaml` bleiben Platzhalter (Translation 0, Rotation
+Identität, `is_calibrated: false`) -- keine echte Vermessung am realen
+Aufbau in dieser Session. Die front/back-mehrdeutige Zwei-Mikrofon-
+GCC-PHAT-Schätzung selbst bleibt außerdem strukturell als unsicher
+markiert (`provides_unambiguous_direction=False`, siehe
+`docs/AUDIO_FOCUS_AND_BEAMFORMING.md`) -- eine korrekte TF-Transformation
+macht eine mehrdeutige Messung nicht zu einer eindeutigen.
 
 ## Datenschutz
 
@@ -91,9 +143,9 @@ Kein vollständiges Whisper-Transkript im Idle-Modus (siehe
 gültigen `WakewordGate`-Ereignis aufgerufen). Keine dauerhafte
 Speicherung der Idle-Aufnahme (Ringpuffer bleibt flüchtig, siehe
 `ring_buffer.py`, unverändert seit Auftrag 1). Kein rohes Audiosignal
-wird standardmäßig als ROS-Topic veröffentlicht (`/audio/sound_direction`/
-`/audio/wakeword_event`/`/audio/focus_state` enthalten nur Zahlen/Strings,
-keine PCM-Daten).
+wird standardmäßig als ROS-Topic veröffentlicht (`/audio/sound_direction(_raw)`/
+`/audio/wakeword_event(_raw)`/`/audio/focus_state`/`/audio/visual_target`
+enthalten nur Zahlen/Strings, keine PCM-Daten).
 
 ## Getestet / nicht getestet
 

@@ -15,7 +15,8 @@ konfigurierbare Parameter hinterlegt sind (keine davon ist als
 |---|---|---|
 | Mikrofonabstand (fürs GCC-PHAT-Zeitfenster) | `mic_spacing_m` | `directional_audio.py::GccPhatDelayAndSumBackend` |
 | Welche zwei Kanäle für GCC-PHAT | `microphone_channels[0]`/`[1]` | dito, `audio_node.py`-Parameter `respeaker_microphone_channels` |
-| Mechanischer Montagewinkel (ReSpeaker relativ zu `base_link`) | -- | **noch nicht als TF-Transform implementiert**, siehe `docs/RESPEAKER_CORE_V2_INTEGRATION.md`, Abschnitt TF |
+| Mechanischer Montagewinkel (ReSpeaker relativ zu `Head`) | `translation_m`/`rotation_rpy_rad` (Platzhalter, `is_calibrated: false`) | `ihk_pepper_navigation/config/respeaker_extrinsics.yaml` -- TF-Transformation SELBST ist seit AP6.1 implementiert (siehe `docs/RESPEAKER_CORE_V2_INTEGRATION.md`, Abschnitt TF), nur die konkreten Werte sind noch unvermessen |
+| Kanalgeometrie fürs echte Beamforming-Steering (AP6.1) | `respeaker_mic_geometry_channels`/`_x_m`/`_y_m` (alle drei leer = kein Steering) | `audio_node.py` -> `directional_audio.py::MicrophoneGeometry` |
 | Wakeword-Mindestkonfidenz | `wakeword_min_confidence` | `audio_node.py` |
 | Wakeword-Cooldown | `wakeword_cooldown_s` | `audio_node.py`/`wakeword_gate.py::WakewordGate` |
 | DoA-Mindestkonfidenz | `min_confidence` | `directional_audio.py::GccPhatDelayAndSumBackend` |
@@ -47,11 +48,19 @@ konfigurierbare Parameter hinterlegt sind (keine davon ist als
    eine Serie von echten "Pepper"-Aussprachen UND Fremdwörtern
    einstellen (Ziel: möglichst wenige Falschauslösungen pro Teststunde,
    siehe Auftrag Abschnitt 21).
-6. **Montagewinkel bestimmen**: sobald die TF-Transformation
-   implementiert ist (siehe `docs/RESPEAKER_CORE_V2_INTEGRATION.md`),
-   den mechanischen Offset zwischen ReSpeaker-Vorwärtsrichtung und
-   `base_link`-Vorwärtsrichtung messen und als statische Transformation
-   eintragen.
+6. **Montagewinkel bestimmen**: den mechanischen Offset zwischen
+   ReSpeaker-Vorwärtsrichtung und `Head`-Vorwärtsrichtung messen und in
+   `respeaker_extrinsics.yaml` eintragen (`is_calibrated: true` erst
+   nach echter Vermessung setzen -- die TF-Transformation selbst ist
+   seit AP6.1 implementiert, siehe
+   `docs/RESPEAKER_CORE_V2_INTEGRATION.md`).
+6a. **Kanalgeometrie vermessen** (AP6.1, für echtes Beamforming-Steering):
+   Position jedes fürs Steering genutzten Mikrofonkanals relativ zum
+   Array-Ursprung (Meter, `x`=vorwärts/`y`=links) messen, in
+   `respeaker_mic_geometry_channels`/`_x_m`/`_y_m` eintragen. Ohne diese
+   drei Arrays (alle leer, Default) bleibt `GccPhatDelayAndSumBackend`
+   beim alten, ungerichteten Delay-and-Sum -- kein Steering, aber auch
+   kein Fehlverhalten.
 7. **Seitliche Dämpfung messen**: Referenzperson vorne, Störsprecher
    seitlich -- Pegeldifferenz zwischen `output_rms_dbfs` (fokussiert)
    und einer unbeamformten Referenzaufnahme messen. Zielwert: mindestens

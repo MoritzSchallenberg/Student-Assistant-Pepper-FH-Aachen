@@ -350,6 +350,16 @@ def generate_launch_description():
                 "respeaker_password": respeaker_password,
                 "respeaker_device_name": respeaker_device_name,
                 "respeaker_backend_kind": respeaker_backend_kind,
+                # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 7/13: bestaetigter
+                # Fund -- ohne diese Zeile blieb production_mode IMMER beim
+                # Node-internen Default (false), auch in mode=production. Die
+                # in Commit 1/5 eingefuehrten Start-Guards (continuous_development/
+                # allow_ambiguous_direction_for_head_orientation in Produktion
+                # gesperrt) haetten dadurch in der echten production-Launch NIE
+                # gegriffen. Gleiches Muster wie gesture_memory_node oben.
+                "production_mode": PythonExpression([
+                    "'true' if '", mode, "' == 'production' else 'false'"
+                ]),
             }],
             condition=_cond(1),
         ),

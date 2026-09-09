@@ -598,3 +598,271 @@ Unabhängig davon aus dem ursprünglichen Gesamtplan weiterhin offen:
 AP13 (ID-Trennung + echte Retriever-Anbindung verifizieren), AP8
 (weitere kinematisch entwickelte Gesten), AP14 (Emotion-Gating). Die
 endgültige Priorisierung bleibt beim Auftraggeber.
+
+## AP6.1: Frame-korrekte Audiofusion und echte personengebundene Gesprächsfokussierung
+
+Nachfolgeauftrag zu AP6 -- benennt 7 in AP6 selbst als offen
+dokumentierte, jetzt vom Auftraggeber **bestätigte** Lücken (Auftrag
+Abschnitt 3) und verlangt sie geschlossen, bevor AP7/weitere Gesten/
+Hardware-Phase B-E begonnen werden. Umgesetzt in 7 Commits auf
+demselben Branch (`order-04b-kiconnect-gesture-memory-lifecycle-audio`),
+direkt auf dem AP6-Abschluss-Commit (`23c5c3b`) aufbauend -- Baseline
+davor erneut verifiziert (Branch/Commit/working tree sauber, 870/870
+Python-Tests, BT.CPP 23/0/0/4).
+
+### Commit 1/7 (`ff7ae69`): preserve audio timestamps and enforce fail-closed activation
+
+Bestätigter Fund 3.2 (teilweise) behoben: `_publish_sound_direction_if_available()`
+vergab bislang für jede Probe den Empfangszeitpunkt statt eines
+eigenen, echten Zeitstempels; `WaitForFreshWakeword` überschrieb den
+echten `WakewordEvent.header.stamp` zusätzlich mit dem BT-Tick-
+Zeitpunkt (zweite Hälfte dieses Funds erst in Commit 6 behoben, siehe
+dort). Neuer `direction_sample_buffer.py::DirectionSampleBuffer` --
+zeitfensterbasierte, konfidenzgewichtete Zirkularmittelung (`atan2`)
+ersetzt eine einzelne globale "letzte Richtung"-Variable.
+
+Bestätigter Fund 3.4 behoben: `audio_node.py::_session_active()` hatte
+`if not self.wakeword.enabled: return True` -- ohne geladenes
+Wakeword-Modell wurde DAUERHAFT transkribiert, statt nie. Ersetzt durch
+einen expliziten `activation_mode`-Zustand
+(`wakeword_required`/`push_to_talk`/`continuous_development`),
+`continuous_development` in `production_mode=true` beim Start hart
+gesperrt (`RuntimeError`). 25 neue Tests (14
+`test_direction_sample_buffer.py`, 11 `test_audio_node_wakeword.py`
+neu/geändert). **889/889 Python-Tests, BT.CPP unverändert 23/0/0/4.**
+
+### Commit 2/7 (`f752edb`): add dynamic head-mounted sensor frames
+
+Zweiter, unabhängig gefundener Fund (analog zum
+`actuator_arbiter_node`-Launch-Fund aus AP6): `robot_state_publisher`
+wurde in `autonomy_ws` nie gestartet, kein Node hat je `/joint_states`
+publiziert -- `camera_pose_gate_node.py`/`head_pose_gate.py` konsumieren
+das seit Entwicklungsauftrag 1 fail-closed, `head_navigation_pose_valid`
+war dadurch vermutlich immer `False`. Neues
+`pepper_robot_state.launch.py` (startet `robot_state_publisher` mit
+Peppers echtem URDF aus dem SEPARATEN Workspace `ros2/robot_model` --
+bewusst wiederverwendet statt eine zweite Kinematik-Quelle anzulegen),
+`bridge_node.py::_publish_joint_states()` (neuer `/joint_states`-
+Publisher, `HeadYaw`/`HeadPitch`, fail-closed). `realsense_extrinsics.yaml`s
+`parent_frame` von `base_link` auf `Head` umgestellt (die Kamera sitzt
+tatsächlich am beweglichen Kopf), neues `respeaker_extrinsics.yaml`/
+`respeaker_static_tf.launch.py` analog. Die bestehende Navigationssperre
+bei abweichender Kopfpose bleibt ausdrücklich bestehen -- kein
+automatisches Freischalten der Navigation für Kopfbewegungen. 25 neue
+Tests. **914/917 Python-Tests (3 unverändert übersprungen), BT.CPP
+unverändert 23/0/0/4.**
+
+### Commit 3/7 (`78c931d`): transform sound rays from ReSpeaker to base frame
+
+Bestätigter Fund 3.1 behoben: der von `audio_node.py` geschätzte Winkel
+ist relativ zum Mikrofonarray selbst, wurde aber unverändert als
+bereits-in-`base_link`-Winkel weitergereicht. Strikte RAW/kanonische
+Topic-Trennung: `audio_node.py` publiziert seither NUR
+`/audio/sound_direction_raw` + `/audio/wakeword_event_raw` (immer
+`frame_id=respeaker_link`). Neuer `sound_direction_transform_node.py`
+ist der EINZIGE Publisher der kanonischen Topics
+`/audio/sound_direction` + `/audio/wakeword_event`
+(`frame_id=base_link`) -- reine VEKTOR-Transformation
+(`tf2_geometry_msgs.do_transform_vector3`, keine Translation) zum
+ORIGINALEN Messzeitpunkt. Fail-closed bei leerem/unbekanntem Frame,
+fehlender/veralteter/zukünftiger TF, invalider Quaternion,
+nicht-endlichem Ergebnis, zu altem Original-Messzeitpunkt. 24 neue
+Tests (14 `test_sound_ray_transform.py`, 10
+`test_sound_direction_transform_node.py`). **938/941 Python-Tests (3
+übersprungen), BT.CPP unverändert 23/0/0/4.**
+
+### Commit 4/7 (`3cf7957`): publish frame-validated audiovisual targets
+
+Zwei bestätigte Funde behoben: (3.5) das Zuordnungsergebnis von
+`audiovisual_association_node.py` lag bislang nur im
+Service-Antwortformat auf dem BT-Blackboard -- `audio_focus_node.py`
+bekam es nie mit. (11) `has_3d_position=True` allein wurde als
+ausreichend behandelt, ohne `frame_id`/`source_camera` zu prüfen. Neues
+`AudioVisualTarget.msg`, veröffentlicht auf `/audio/visual_target` für
+JEDEN Zuordnungsversuch (auch Ablehnungen). `AssociatePersonWithSound.srv`
+um ein `event_id`-Feld erweitert, `FindPersonNearSoundRay` (C++)
+bekommt einen neuen `wakeword_event_id`-Input-Port.
+`audiovisual_association.py` verwirft Tracks in einem anderen
+Frame/von einer anderen Kamera jetzt fail-closed
+(`required_frame_id`/`required_source_camera`). 10 neue Tests. **948/951
+Python-Tests (3 übersprungen), BT.CPP unverändert 23/0/0/4.**
+
+### Commit 5/7 (`1a6da08`): steer conversation audio toward confirmed person
+
+Zwei bestätigte Funde behoben (3.6/3.7): `audio_focus_node.py` steuerte
+nie ein Backend tatsächlich an (`selected_track_id` blieb immer `-1`,
+Übergang lief über einen `/interaction_state`-Behelf); die
+front/back-mehrdeutige GCC-PHAT-Schätzung galt nirgends als unsicher.
+`audio_focus_node.py` abonniert jetzt `/audio/visual_target` (echte
+Bestätigung) und, während eines bestätigten Fokus,
+`/perception_node/person_tracks` (NUR Updates für denselben `track_id`
+-- ein anderer/lauterer Sprecher kann nie selbst zum neuen Fokus
+werden). Neue `transform_person_position_to_azimuth()` (echte
+Punkt-Transformation, Translation UND Rotation) transformiert die
+bestätigte Personenposition nach `respeaker_link`.
+`SteerableDirectionalAudioBackend`-Schnittstelle (neu) +
+`MicrophoneGeometry`: `GccPhatDelayAndSumBackend` implementiert echtes,
+geometriebasiertes Delay-and-Sum-Steering auf ein festes,
+bestätigtes Ziel (die DoA-Messung selbst bleibt davon unabhängig).
+Neues Klassenattribut `provides_unambiguous_direction` (Default
+`False`) -- `audio_node.py` setzt `direction_valid` zurück, wenn die
+aktive Quelle mehrdeutig ist, außer ein Parameter
+`allow_ambiguous_direction_for_head_orientation` (in `production_mode`
+hart gesperrt) erlaubt es explizit. 27 neue Tests. **975/978
+Python-Tests (3 übersprungen), BT.CPP unverändert 23/0/0/4.**
+
+### Commit 6/7 (`eb33d54`): make wakeword events exactly-once in behavior tree
+
+Bestätigter Fund 3.2 (zweite Hälfte) behoben: `WaitForFreshWakeword`
+(C++) gab `measured_at_sec` bislang als `system_clock::now()` aus, nie
+den echten Original-Messzeitpunkt -- UND es gab keine
+Exactly-once-Sicherung (derselbe `event_id` hätte bei einem erneuten
+BT-Tick ein zweites Mal `SUCCESS` auslösen können). Jetzt: akzeptiert
+nur Nachrichten mit `frame_id==wakeword_base_frame` (neuer Knoten-
+Parameter, Default `base_link`), begrenzter Cache verbrauchter
+`event_id`s (FIFO, max. 64), `measured_at_sec` ist der echte
+Original-Zeitstempel. Keine neuen Python-Tests (reine C++-/XML-
+Änderung) -- **ehrlich dokumentierter Test-Gap**: dieses Projekt deckt
+BT-Aktionsknoten dieser Art konsequent nur über Python-ROS-Wrapper-Tests
++ XML-Strukturprüfung ab, kein dediziertes gtest für
+`WaitForFreshWakeword` selbst (verifiziert nur durch Code-Review +
+grüne Gesamt-BT.CPP-Suite). **975/978 Python-Tests unverändert, BT.CPP
+unverändert 23/0/0/4.**
+
+### Commit 7/7 (dieser Commit): add launch validation, regression tests and report
+
+Bestätigter Fund behoben: `audio_node`s `production_mode`-Parameter
+wurde in `interaction_full_safe.launch.py` NIE gesetzt (blieb immer
+beim Node-internen Default `false`, auch in `mode=production`) -- die
+in Commit 1/5 eingeführten Start-Guards hätten in der echten
+Produktions-Launch dadurch nie gegriffen. Jetzt nach demselben Muster
+wie `gesture_memory_node` verdrahtet. Neue Tests: `test_half_duplex.py`
+(7, bisher UNGETESTETES Modul -- die strukturelle Sicherung dafür, dass
+Peppers eigene Sprache nie selbst ein Wakeword auslöst), 3 neue
+Launch-Struktur-Tests (genau ein `audio_node`/
+`sound_direction_transform_node`, Transform-Node läuft in jedem Modus
+wie `audio_node`, `production_mode`-Verdrahtung).
+
+### Baseline/Endstand (gemessen)
+
+| | Python-Tests | BT.CPP |
+|---|---|---|
+| Vor AP6.1 | 870/870 | 23/0/0/4 |
+| Nach AP6.1 | 985/988 (3 unverändert übersprungen) | 23/0/0/4 (unverändert -- siehe Commit 6 für den Grund) |
+
+### Raw-/kanonische Topics (Abschnitt 4/12)
+
+| Topic | frame_id | Publisher |
+|---|---|---|
+| `/audio/sound_direction_raw` | `respeaker_link` | `audio_node.py` (einzig) |
+| `/audio/wakeword_event_raw` | `respeaker_link` | `audio_node.py` (einzig) |
+| `/audio/sound_direction` (kanonisch) | `base_link` | `sound_direction_transform_node.py` (einzig) |
+| `/audio/wakeword_event` (kanonisch) | `base_link` | `sound_direction_transform_node.py` (einzig) |
+| `/audio/visual_target` | -- (kein Frame-Feld, Winkel bereits `base_link`-relativ) | `audiovisual_association_node.py` (einzig) |
+| `/audio/focus_state` | -- (`target_azimuth_rad` ist `respeaker_link`-relativ) | `audio_focus_node.py` (einzig) |
+
+### Volle TF-Kette (dynamisch, Abschnitt 6)
+
+```
+map -> odom -> base_link -> torso -> Neck -> Head
+                                        |
+                                        +-> realsense_mount_link -> camera_link (RealSense-Treiber ab hier)
+                                        +-> respeaker_link (ReSpeaker-Mikrofonarray)
+```
+
+`base_link -> torso` fest (URDF), `torso -> Neck` trägt `HeadYaw`,
+`Neck -> Head` trägt `HeadPitch` (aus `pepper_description`, separater
+Workspace `ros2/robot_model` -- Sourcing-Voraussetzung dokumentiert in
+`pepper_robot_state.launch.py`). `Head -> realsense_mount_link`/
+`Head -> respeaker_link` starr (Montagepunkte, Werte Platzhalter).
+`map -> odom` aus RTAB-Map-Lokalisierung (AP5), `odom -> base_link` aus
+RTAB-Map-Odometrie (AP4) -- unverändert seit Auftrag 2.
+
+### Timestamp-Erhaltung -- Nachweis
+
+`audio_node.py::_try_wakeword_activation()` verwendet
+`direction_sample.ros_stamp_ns` (den ECHTEN Messzeitpunkt aus dem
+Puffer) für `WakewordEvent.header.stamp`, niemals
+`self.get_clock().now()` im Erfolgsfall (siehe
+`test_handle_utterance_carries_direction_sample_into_event`).
+`sound_direction_transform_node.py` übernimmt `msg.header.stamp`
+unverändert in die kanonische Ausgabe (siehe
+`test_canonical_output_preserves_original_timestamp`). `WaitForFreshWakeword`
+(C++) berechnet `measured_at_sec` seit Commit 6 aus
+`header.stamp.sec`/`.nanosec`, nicht mehr aus `system_clock::now()`.
+
+### Fehlende TF / fehlendes Wakeword-Modell -- Verhalten
+
+Fehlende/veraltete/zukünftige TF: `transform_direction()`/
+`transform_person_position_to_azimuth()` geben `valid=False`/`None`
+zurück, NIE einen erfundenen Winkel (siehe `test_sound_ray_transform.py`/
+`test_audio_focus_node.py`). Fehlendes Wakeword-Modell:
+`activation_mode=wakeword_required` ohne geladenes Modell verarbeitet
+NIE eine Äußerung (siehe `test_wakeword_required_without_model_never_processes`,
+AP6.1 Commit 1) -- kein Fail-Open mehr.
+
+### Exactly-once-Verarbeitung / echte Track-ID-Weitergabe / echtes Steering
+
+Siehe Commits 6, 4 bzw. 5 oben für die jeweilige Implementierung und
+Testabdeckung. Kurzfassung: ein `event_id` löst höchstens einen
+Ausrichtungsversuch aus (begrenzter Cache in `WaitForFreshWakeword`);
+`audio_focus_node.py`s `selected_track_id` ist seit Commit 4/5 der
+ECHTE, von `audiovisual_association_node.py` bestätigte Track (nicht
+mehr immer `-1`); `GccPhatDelayAndSumBackend` steuert das
+Ausgangssignal seit Commit 5 tatsächlich auf ein bestätigtes Ziel,
+sofern eine Kanalgeometrie konfiguriert ist (Default: keine, daher
+unverändertes altes Verhalten).
+
+### Front/Back-Ambiguität -- Status
+
+Weiterhin ungelöst (Auftrag erlaubt das, verlangt nur die Kennzeichnung):
+`GccPhatDelayAndSumBackend.provides_unambiguous_direction = False`.
+`audio_node.py` verweigert eine darauf gestützte Kopfbewegung per
+Default (`allow_ambiguous_direction_for_head_orientation=false`), in
+`production_mode=true` unübersteuerbar gesperrt. Für eine echte
+360-Grad-Auflösung bräuchte es mehrere kombinierte Mikrofonpaare
+(nicht implementiert) oder die Herstellerbibliothek
+(`ReSpeakerVendorBackend`, weiterhin `NotImplementedError`).
+
+### Ehrlicher Stand / bekannte Lücken
+
+- Alle fünf Hardwaretestphasen (A-E) weiterhin NICHT durchgeführt --
+  kein ReSpeaker Core v2.0/RealSense/Pepper-Kopf in dieser Session real
+  angesprochen, siehe `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`.
+- `respeaker_extrinsics.yaml`/`realsense_extrinsics.yaml` bleiben
+  Platzhalter (`is_calibrated: false`) -- keine echte Vermessung.
+  `respeaker_mic_geometry_channels`/`_x_m`/`_y_m` bleiben in jeder
+  Launch-Konfiguration leer -- echtes Beamforming-Steering nur gegen
+  synthetische Testsignale verifiziert, nicht gegen echte Hardware.
+- Front/back-Mehrdeutigkeit der Zwei-Mikrofon-Schätzung bleibt bestehen
+  (siehe oben) -- eine korrekte TF-Kette macht eine mehrdeutige Messung
+  nicht eindeutig.
+- Die Keepout-Zonen-Prüfung in der audiovisuellen Zuordnung bleibt
+  unverdrahtet (unverändert seit AP6, siehe
+  `docs/AUDIO_VISUAL_PERSON_ASSOCIATION.md`).
+- `WaitForFreshWakeword`s Exactly-once-/Frame-Gate-Logik ist NICHT per
+  gtest abgedeckt (siehe Commit 6 oben).
+- Kein AEC implementiert (unverändert seit AP6, Auftrag erlaubt das
+  ausdrücklich).
+- Kein `/cmd_vel`-Zugriff, keine Nav2-Live-Fahrt, kein
+  `navigation_live.launch.py` in irgendeinem Commit dieses
+  Arbeitspakets -- durchgängig per Grep gegen jeden geänderten/neuen
+  Code geprüft.
+- Working Tree nach Abschluss dieses Arbeitspakets sauber, 7 klar
+  abgegrenzte Commits, kein Push/PR ohne expliziten Wunsch.
+
+### Empfehlung für AP7
+
+Alle 7 in Auftrag AP6.1 benannten bestätigten Lücken sind geschlossen.
+Vor AP7 (weitere Gesten) oder Hardware-Phase B-E: eine echte
+ReSpeaker-Core-v2.0-Einheit + Pepper-Kopfzugriff beschaffen, um Phase A
+(Kalibrierung nach `docs/RESPEAKER_CALIBRATION.md`) tatsächlich
+durchzuführen -- ohne echte Extrinsics/Kanalgeometrie bleibt jede
+TF-Transformation/jedes Steering nur gegen synthetische Daten
+verifiziert. Unabhängig von Hardware: ein dediziertes C++-Testgerüst
+für `WaitForFreshWakeword` (exactly-once, frame_id-Gate) wäre die
+naheliegende nächste Verbesserung der Testabdeckung selbst. Aus dem
+ursprünglichen Gesamtplan weiterhin offen: AP13 (ID-Trennung + echte
+Retriever-Anbindung verifizieren), AP8 (weitere kinematisch entwickelte
+Gesten), AP14 (Emotion-Gating). Die endgültige Priorisierung bleibt
+beim Auftraggeber.

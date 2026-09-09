@@ -364,3 +364,71 @@ def test_respeaker_static_tf_included_only_for_respeaker_audio_modes(launch_modu
     ctx = LaunchContext()
     ctx.launch_configurations["mode"] = mode
     assert include.condition.evaluate(ctx) is expected
+
+
+# ---- Entwicklungsauftrag 04-B, AP6.1 (7/7): "Produktionsvalidierung" --
+# strukturelle Launch-Pruefung statt eines Laufzeit-Supervisors (dieses
+# Projekt validiert Launch-Beschreibungen konsequent so, siehe
+# test_gesture_memory_node_always_runs_together_with_run_dialogue_action_server
+# oben) -- garantiert GENAU einen Publisher je RAW-/kanonischem Audio-
+# Richtungstopic, da genau ein Node() -- audio_node bzw.
+# sound_direction_transform_node -- je generierter Launch-Beschreibung
+# existiert (keine doppelte Deklaration moeglich).
+
+def test_exactly_one_audio_node_and_one_sound_direction_transform_node_declared(launch_module):
+    ld = launch_module.generate_launch_description()
+    executables = [e.node_executable for e in ld.entities if isinstance(e, Node)]
+    # audio_node.py ist der EINZIGE Publisher der RAW-Topics
+    # (/audio/sound_direction_raw, /audio/wakeword_event_raw),
+    # sound_direction_transform_node.py der EINZIGE Publisher der
+    # kanonischen Topics (/audio/sound_direction, /audio/wakeword_event) --
+    # siehe deren Moduldoku (AP6.1 Commit 3). Mehr als ein Node()-Eintrag
+    # mit demselben Executable-Namen wuerde diese Garantie strukturell
+    # verletzen.
+    assert executables.count("audio_node") == 1
+    assert executables.count("sound_direction_transform_node") == 1
+
+
+def test_sound_direction_transform_node_runs_in_every_mode_audio_node_does(launch_module):
+    # AP6.1 Abschnitt 12: der Transform-Node muss ueberall mitlaufen, wo
+    # audio_node aktiv ist -- sonst blieben RAW-Nachrichten unverarbeitet
+    # und WaitForFreshWakeword saehe nie ein kanonisches Ereignis.
+    ld = launch_module.generate_launch_description()
+    nodes_by_executable = {n.node_executable: n for n in ld.entities if isinstance(n, Node)}
+    audio_condition = nodes_by_executable["audio_node"].condition
+    transform_condition = nodes_by_executable["sound_direction_transform_node"].condition
+    for mode in launch_module.VALID_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        assert audio_condition.evaluate(ctx) == transform_condition.evaluate(ctx)
+
+
+def test_audio_node_production_mode_locked_to_true_only_in_production(launch_module):
+    # Entwicklungsauftrag 04-B, AP6.1, Abschnitt 7/13 -- bestaetigter Fund:
+    # audio_node bekam production_mode bislang NIE ueber dieses Launch-File
+    # gesetzt (blieb IMMER beim Node-internen Default false, auch in
+    # mode=production) -- die in Commit 1/5 eingefuehrten Start-Guards
+    # (continuous_development bzw. allow_ambiguous_direction_for_head_
+    # orientation in Produktion gesperrt) haetten dadurch in der echten
+    # production-Launch nie gegriffen. Gleiches Pruefmuster wie
+    # test_gesture_memory_node_production_mode_locked_to_true_only_in_production.
+    # Wie _resolve_source_kind() oben: NUR den production_mode-Eintrag
+    # selbst aufloesen -- die uebrigen audio_node-Parameter
+    # (respeaker_host/_user/_password/...) haetten in einem minimalen
+    # LaunchContext (ohne die restlichen DeclareLaunchArgument-Defaults)
+    # keinen aufgeloesten Wert, siehe _resolve_source_kind()-Kommentar.
+    from launch.utilities import perform_substitutions
+    ld = launch_module.generate_launch_description()
+    audio_node = next(
+        n for n in ld.entities if isinstance(n, Node) and n.node_executable == "audio_node")
+    param_dict = audio_node._Node__parameters[0]
+    for mode, expected in [("offline_test", "false"), ("microphone_test", "false"),
+                            ("production", "true")]:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        resolved = None
+        for key, value in param_dict.items():
+            if perform_substitutions(ctx, list(key)) == "production_mode":
+                resolved = perform_substitutions(ctx, list(value))
+                break
+        assert resolved == expected, f"mode={mode}"
