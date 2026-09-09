@@ -19,7 +19,7 @@
   <depend>rclpy</depend>
   <depend>ihk_pepper_interfaces</depend>
   <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 6: roles.py
-       (ROLE_STUDENT/VALID_ROLES) -- keine Zirkelabhaengigkeit,
+       (ROLE_STUDENT/VALID_ROLES) – keine Zirkelabhaengigkeit,
        ihk_pepper_interaction haengt nicht von diesem Paket ab. -->
   <depend>ihk_pepper_interaction</depend>
 

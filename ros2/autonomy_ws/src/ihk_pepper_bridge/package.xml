@@ -15,7 +15,7 @@
   <depend>sensor_msgs</depend>
   <depend>ihk_pepper_interfaces</depend>
   <!-- Entwicklungsauftrag 04-B, AP5B: Aktuator-Arbiter-Ressourcenableitung
-       (resource_derivation.py) -- ihk_pepper_interaction haengt selbst
+       (resource_derivation.py) – ihk_pepper_interaction haengt selbst
        NICHT von ihk_pepper_bridge ab, keine zirkulaere Abhaengigkeit. -->
   <depend>ihk_pepper_interaction</depend>
   <depend>ament_index_python</depend>

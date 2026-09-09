@@ -77,7 +77,7 @@
   <!-- Entwicklungsauftrag 04-B, AP6.1, Abschnitt 6: dynamische
        base_link->torso->Neck->Head-Kette aus /joint_states (siehe
        pepper_robot_state.launch.py). Das URDF selbst liegt im separaten
-       Workspace ros2/robot_model (Paket pepper_description) -- siehe
+       Workspace ros2/robot_model (Paket pepper_description) – siehe
        Docstring dort fuer die Sourcing-Voraussetzung. -->
   <exec_depend>robot_state_publisher</exec_depend>
 

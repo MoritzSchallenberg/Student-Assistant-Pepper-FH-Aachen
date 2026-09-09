@@ -26,12 +26,16 @@ Backend-Familie existiert, die Laufzeit-Verdrahtung folgt in einem
 spaeteren Commit) -- follow_speaker bleibt deshalb bis dahin IMMER
 "identity_unknown", NICHT stillschweigend autorisiert.
 """
+import time
+import uuid
+
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Bool
 
 from ihk_pepper_interfaces.msg import (
     AudioFocusState,
+    AuthorizationGrant,
     InteractionCommand,
     PersonIdentityArray,
     SafetyState,
@@ -43,6 +47,14 @@ from .command_priority import priority_for_command
 from .roles import ROLE_STUDENT
 
 
+def _seconds_to_stamp(seconds: float):
+    from builtin_interfaces.msg import Time as TimeMsg
+    stamp = TimeMsg()
+    stamp.sec = int(seconds)
+    stamp.nanosec = int((seconds % 1) * 1e9)
+    return stamp
+
+
 class CommandRouterNode(Node):
     def __init__(self):
         super().__init__("command_router")
@@ -50,6 +62,12 @@ class CommandRouterNode(Node):
         self.declare_parameter("production_mode", False)
         self.declare_parameter("privileged_motion_policy", POLICY_ROLE_ONLY_DEVELOPMENT)
         self.declare_parameter("minimum_recognition_confidence", 0.8)
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 8/9/19: kurzlebige
+        # Referenz-ID, an person_id+track_id+command GEBUNDEN -- der
+        # eigentliche Verbraucher (person_approach_node.py::FollowPerson)
+        # validiert ausschliesslich gegen eine per Topic empfangene Kopie
+        # dieses Grants, kein gemeinsamer Prozessspeicher noetig.
+        self.declare_parameter("grant_validity_s", 30.0)
 
         policy = self.get_parameter("privileged_motion_policy").value
         production_mode = self.get_parameter("production_mode").value
@@ -65,6 +83,7 @@ class CommandRouterNode(Node):
 
         self.command_pub = self.create_publisher(
             InteractionCommand, "/interaction/authorized_command", 10)
+        self.grant_pub = self.create_publisher(AuthorizationGrant, "/authorization/grants", 10)
 
         self.create_subscription(InteractionCommand, "/interaction/command", self._on_command, 10)
         self.create_subscription(AudioFocusState, "/audio/focus_state", self._on_focus_state, 10)
@@ -150,6 +169,28 @@ class CommandRouterNode(Node):
         if decision.authorization_status == "denied":
             self.get_logger().info(
                 f"Befehl '{msg.command}' (event_id={msg.event_id}) abgelehnt: {decision.reason}")
+        elif decision.authorization_status == "granted":
+            self._issue_grant(person_id, track_id, msg.command)
+
+    def _issue_grant(self, person_id: str, track_id: int, command: str):
+        """Entwicklungsauftrag 04-B, AP7, Abschnitt 8/9: kurzlebig, an
+        person_id+track_id+command GEBUNDEN -- veroeffentlicht KEINEN
+        geheimen Schluessel, nur eine zufaellige Referenz-ID. Der
+        Verbraucher (person_approach_node.py) validiert genau diese
+        Bindung, siehe authorization_grant_cache.py."""
+        now_s = time.time()
+        validity_s = self.get_parameter("grant_validity_s").value
+        grant = AuthorizationGrant()
+        grant.grant_id = str(uuid.uuid4())
+        grant.person_id = person_id
+        grant.track_id = track_id
+        grant.command = command
+        grant.session_id = ""  # Sitzungsbindung folgt mit InteractionSession, AP7 Commit 9
+        grant.created_at = _seconds_to_stamp(now_s)
+        grant.expires_at = _seconds_to_stamp(now_s + validity_s)
+        grant.valid = True
+        grant.reason = ""
+        self.grant_pub.publish(grant)
 
 
 def main(args=None):

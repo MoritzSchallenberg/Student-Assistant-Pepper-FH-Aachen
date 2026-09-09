@@ -52,13 +52,19 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from ament_index_python.packages import get_package_share_directory
 from std_msgs.msg import Bool
 
-from ihk_pepper_interfaces.msg import PersonTrackArray, SafetyState
+from ihk_pepper_interfaces.msg import AuthorizationGrant, PersonTrackArray, SafetyState, SystemHealth
 from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
 
 from ihk_pepper_interaction.actuator_arbiter import BASE, PRIORITY_NAVIGATION
 
-from .approach_pose import compute_approach_pose, is_track_fresh
+from .approach_pose import compute_approach_pose, is_track_fresh, should_replan
+from .authorization_grant_cache import AuthorizationGrantCache
+from .follow_person_safety import (
+    FollowPersonSafetyContext,
+    check_follow_person_safety,
+    is_crowd_ambiguous,
+)
 from .zone_config import load_all_zones, point_in_any_keepout
 
 MAX_TRACK_AGE_S = 2.0
@@ -78,6 +84,11 @@ def _yaw_to_quaternion(yaw_rad: float):
     """Reine 2D-Yaw->Quaternion-Konvertierung (roll=pitch=0), keine externe
     tf_transformations-Abhaengigkeit noetig fuer diesen einfachen Fall."""
     return 0.0, 0.0, math.sin(yaw_rad / 2.0), math.cos(yaw_rad / 2.0)
+
+
+def _angle_diff_rad(a: float, b: float) -> float:
+    """Kuerzeste Winkeldifferenz a-b, auf [-pi, pi] normiert."""
+    return (a - b + math.pi) % (2 * math.pi) - math.pi
 
 
 def _default_zones_dir():
@@ -100,6 +111,22 @@ class PersonApproachNode(Node):
         self.declare_parameter("nav2_connect_timeout_s", 2.0)
         self.declare_parameter("enable_follow_person", False)  # Abschnitt 3.2: experimentell, aus per Default
 
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 19: FollowPerson-
+        # Parameter exakt nach Auftrag -- enabled bleibt bis zu
+        # erfolgreichen Hardwaretests Standard false (enable_follow_person
+        # oben ist der bestehende, uebergeordnete Schalter).
+        self.declare_parameter("follow_person_target_distance_m", 1.2)
+        self.declare_parameter("follow_person_minimum_distance_m", 0.8)
+        self.declare_parameter("follow_person_maximum_distance_m", 4.0)
+        self.declare_parameter("follow_person_goal_update_rate_hz", 1.0)
+        self.declare_parameter("follow_person_minimum_goal_shift_m", 0.25)
+        self.declare_parameter("follow_person_minimum_goal_yaw_change_rad", 0.20)
+        self.declare_parameter("follow_person_loss_timeout_s", 2.0)
+        self.declare_parameter("follow_person_maximum_duration_s", 300.0)
+        self.declare_parameter("follow_person_allow_in_crowds", False)
+        self.declare_parameter("follow_person_crowd_proximity_m", 1.0)
+        self.declare_parameter("follow_person_minimum_battery_percent", 20.0)
+
         # Entwicklungsauftrag 2, AP9: Annaeherungszielpose-Parameter.
         self.declare_parameter("minimum_person_distance_m", 0.5)
         self.declare_parameter("maximum_approach_distance_m", 8.0)
@@ -117,10 +144,18 @@ class PersonApproachNode(Node):
 
         self._tracks = {}  # track_id -> (PersonTrack, empfangszeit)
         self._safety_state = None
+        self._latest_health = None
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 8/9/19: gespeiste
+        # Kopie der von command_router_node.py ausgestellten Grants --
+        # kein gemeinsamer Prozessspeicher noetig (siehe
+        # authorization_grant_cache.py-Moduldoku).
+        self._grant_cache = AuthorizationGrantCache()
 
         self.create_subscription(PersonTrackArray, "/perception_node/person_tracks",
                                   self._on_tracks, 10)
         self.create_subscription(SafetyState, "/safety_state", self._on_safety_state, 10)
+        self.create_subscription(SystemHealth, "system_health", self._on_system_health, 10)
+        self.create_subscription(AuthorizationGrant, "/authorization/grants", self._on_grant, 10)
 
         # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt, muessen
         # Arm-/Kopfgesten gesperrt sein (gesture_catalog.py::play() kann
@@ -193,15 +228,27 @@ class PersonApproachNode(Node):
     def _on_safety_state(self, msg: SafetyState):
         self._safety_state = msg
 
+    def _on_system_health(self, msg: SystemHealth):
+        self._latest_health = msg
+
+    def _on_grant(self, msg: AuthorizationGrant):
+        if not msg.valid:
+            return
+        expires_at_s = msg.expires_at.sec + msg.expires_at.nanosec / 1e9
+        self._grant_cache.add(msg.grant_id, msg.person_id, msg.track_id, msg.command, expires_at_s)
+
     # ---- Zielpersonen-Validierung (Auftrag Abschnitt 7) ----
 
-    def _validate_target(self, track_id: int):
-        """Gibt (track, None) bei Erfolg zurueck, sonst (None, Grund)."""
+    def _validate_target(self, track_id: int, max_track_age_s: float = MAX_TRACK_AGE_S):
+        """Gibt (track, None) bei Erfolg zurueck, sonst (None, Grund).
+        max_track_age_s ist optional ueberschreibbar (Entwicklungsauftrag
+        04-B, AP7: FollowPerson.Goal.max_track_loss_timeout_s) -- Default
+        bleibt fuer alle bestehenden Aufrufer unveraendert."""
         entry = self._tracks.get(track_id)
         if entry is None:
             return None, "person_lost"
         track, received_at = entry
-        if not is_track_fresh(time.time() - received_at, MAX_TRACK_AGE_S):
+        if not is_track_fresh(time.time() - received_at, max_track_age_s):
             return None, "person_lost"
         if track.confidence < self.get_parameter("min_confidence").value:
             return None, "confidence_zu_niedrig"
@@ -309,22 +356,103 @@ class PersonApproachNode(Node):
         goal_handle.succeed()
         return result
 
-    # ---- FollowPerson (experimentell, siehe enable_follow_person) ----
+    # ---- FollowPerson (Entwicklungsauftrag 04-B, AP7, Abschnitt 19/20;
+    #      standardmaessig deaktiviert, siehe enable_follow_person) ----
 
     def _goal_callback_follow_person(self, goal_request):
-        self.get_logger().warn(
-            "FollowPerson-Ziel angenommen -- EXPERIMENTELL, nicht getestet, "
-            "siehe docs/IMPLEMENTATION_REPORT.md."
-        )
         return GoalResponse.ACCEPT
 
+    def _build_follow_safety_context(self, track_id: int, authorization_valid: bool,
+                                      target_x: float, target_y: float) -> FollowPersonSafetyContext:
+        """Verteidigung in der Tiefe -- Motion Guard blockiert einen
+        Fahrbefehl ohnehin bei fehlender Freigabe, diese Pruefung stoppt
+        FollowPerson zusaetzlich VORHER (gleiches Prinzip wie
+        _safety_ok_for_approach(), um die Auftrag-Abschnitt-20-Bedingungen
+        erweitert)."""
+        safety = self._safety_state
+        other_positions = [
+            (t.position_3d.x, t.position_3d.y) for tid, (t, _) in self._tracks.items()
+            if tid != track_id and t.has_3d_position
+        ]
+        crowd = is_crowd_ambiguous(
+            target_x, target_y, other_positions,
+            crowd_proximity_m=self.get_parameter("follow_person_crowd_proximity_m").value,
+            allow_in_crowds=self.get_parameter("follow_person_allow_in_crowds").value,
+        )
+        in_keepout = point_in_any_keepout(self.zones, target_x, target_y)
+        battery = self._latest_health.battery_percent if self._latest_health is not None else -1.0
+        return FollowPersonSafetyContext(
+            authorization_valid=authorization_valid,
+            allow_motion=safety.allow_motion if safety is not None else False,
+            allow_person_approach=safety.allow_person_approach if safety is not None else False,
+            localization_valid=safety.localization_valid if safety is not None else False,
+            obstacle_data_valid=safety.obstacle_data_valid if safety is not None else False,
+            person_depth_valid=safety.person_depth_valid if safety is not None else False,
+            charging_cable_connected=safety.charging_cable_connected if safety is not None else True,
+            bumper_active=safety.bumper_active if safety is not None else True,
+            emergency_stop=safety.emergency_stop if safety is not None else True,
+            # BASE-Lease-Verlust WAEHREND der Fahrt wird bereits von
+            # _drive_to_pose() selbst erkannt (periodische Erneuerung,
+            # bricht bei Fehlschlag ab, siehe dort) -- dieses Feld deckt
+            # nur den Vorab-Zustand ab, bevor ueberhaupt eine Lease
+            # angefragt wurde.
+            base_lease_valid=True,
+            target_track_fresh=True,  # bereits durch _validate_target() vor dem Aufruf sichergestellt
+            target_not_in_keepout=not in_keepout,
+            crowd_ambiguous=crowd,
+            battery_percent=battery,
+            minimum_battery_percent=self.get_parameter("follow_person_minimum_battery_percent").value,
+        )
+
     def _execute_follow(self, goal_handle):
-        """Kein dedizierter Nav2-'Follow'-Server in ROS2 Jazzy vorausgesetzt
-        -- eigener periodischer Ziel-Update-Loop als Fallback (Auftrag
-        Abschnitt 7). Bricht bei jedem Sicherheitsproblem sofort ab."""
+        """Echte, autorisierte Nav2-Anbindung (Auftrag Abschnitt 19):
+        1. AuthorizationGrant validieren, 2. SafetyState/weitere
+        Bedingungen pruefen (wiederholt, nicht nur einmalig), 3.-7. Ziel-
+        track validieren + Folgepose berechnen + fahren (ueber die
+        bestehende _drive_to_pose(), die Lease-Erwerb/-Erneuerung/
+        -Freigabe bereits pro Fahrsegment uebernimmt), 8. Ziel nur bei
+        relevanter Personenbewegung aktualisieren (siehe monitor()
+        unten), 9.-11. laufend ueberwachen/bei Abbruch Nav2 canceln
+        (monitor_fn von _drive_to_pose() ruft cancel_goal_async() und
+        wartet auf Bestaetigung, siehe dort).
+
+        Bei Trackverlust wird NUR abgebrochen -- KEINE automatische
+        Basisrotation, kein Kopf-Suchverhalten in diesem Commit (Auftrag
+        Abschnitt 20: "hoechstens den Kopf vorsichtig suchen lassen" ist
+        NICHT Teil dieser Implementierung, ehrlich offen dokumentiert)."""
         result = FollowPerson.Result()
-        track_id = goal_handle.request.track_id
-        min_distance = goal_handle.request.min_distance_m or 1.0
+        request = goal_handle.request
+        track_id = request.track_id
+        target_distance_m = (
+            request.desired_follow_distance_m
+            or self.get_parameter("follow_person_target_distance_m").value)
+
+        def feedback(status, distance=0.0):
+            fb = FollowPerson.Feedback()
+            fb.status = status
+            fb.current_distance_m = distance
+            goal_handle.publish_feedback(fb)
+
+        feedback("validating")
+
+        # 1. AuthorizationGrant validieren -- OHNE gueltigen, passenden
+        # Grant startet FollowPerson NIE (kein Umgehen der Rollen-/
+        # Bestaetigungspruefung aus command_router_node.py).
+        grant_ok, grant_reason = self._grant_cache.validate_and_consume(
+            request.authorization_grant_id, track_id, "follow_speaker")
+        if not grant_ok:
+            feedback("safety_abort")
+            result.success = False
+            result.abort_reason = f"authorization_denied:{grant_reason}"
+            goal_handle.abort()
+            return result
+
+        max_duration_s = (
+            request.max_duration_s or self.get_parameter("follow_person_maximum_duration_s").value)
+        loss_timeout_s = (
+            request.max_track_loss_timeout_s
+            or self.get_parameter("follow_person_loss_timeout_s").value)
+        started_at_s = time.time()
 
         while rclpy.ok():
             if goal_handle.is_cancel_requested:
@@ -333,30 +461,112 @@ class PersonApproachNode(Node):
                 goal_handle.canceled()
                 return result
 
-            ok, reason = self._safety_ok_for_approach()
-            if not ok:
-                fb = FollowPerson.Feedback()
-                fb.status = "safety_abort"
-                goal_handle.publish_feedback(fb)
+            if time.time() - started_at_s > max_duration_s:
                 result.success = False
-                result.abort_reason = f"safety_abort:{reason}"
+                result.abort_reason = "maximum_follow_duration_exceeded"
                 goal_handle.abort()
                 return result
 
-            track, reason = self._validate_target(track_id)
-            fb = FollowPerson.Feedback()
+            track, reason = self._validate_target(track_id, max_track_age_s=loss_timeout_s)
             if track is None:
-                fb.status = reason
-                goal_handle.publish_feedback(fb)
+                feedback(reason)
                 result.success = False
                 result.abort_reason = reason
                 goal_handle.abort()
                 return result
 
-            fb.status = "following"
-            fb.current_distance_m = track.distance_m
-            goal_handle.publish_feedback(fb)
-            time.sleep(0.5)
+            ctx = self._build_follow_safety_context(
+                track_id, authorization_valid=True,
+                target_x=track.position_3d.x, target_y=track.position_3d.y)
+            ok, reason = check_follow_person_safety(ctx)
+            if not ok:
+                feedback("safety_abort")
+                result.success = False
+                result.abort_reason = f"safety_abort:{reason}"
+                goal_handle.abort()
+                return result
+
+            frame_id = track.frame_id or "map"
+            robot_x, robot_y, tf_ok = self._get_robot_position_in_frame(frame_id, track.last_seen)
+            if not tf_ok:
+                result.success = False
+                result.abort_reason = "keine_tf_fuer_roboterpose"
+                goal_handle.abort()
+                return result
+
+            pose_result = compute_approach_pose(
+                robot_x=robot_x, robot_y=robot_y,
+                person_x=track.position_3d.x, person_y=track.position_3d.y,
+                target_distance_m=target_distance_m,
+                minimum_person_distance_m=self.get_parameter("follow_person_minimum_distance_m").value,
+                maximum_approach_distance_m=self.get_parameter("follow_person_maximum_distance_m").value,
+                zones=self.zones,
+            )
+            if not pose_result.valid:
+                feedback("path_blocked")
+                result.success = False
+                result.abort_reason = pose_result.reason
+                goal_handle.abort()
+                return result
+
+            if pose_result.already_within_distance:
+                feedback("reached", 0.0)
+                time.sleep(1.0 / self.get_parameter("follow_person_goal_update_rate_hz").value)
+                continue
+
+            from geometry_msgs.msg import PoseStamped
+            pose = PoseStamped()
+            pose.header.frame_id = frame_id
+            pose.pose.position.x = pose_result.target_x
+            pose.pose.position.y = pose_result.target_y
+            qx, qy, qz, qw = _yaw_to_quaternion(pose_result.target_yaw_rad)
+            pose.pose.orientation.x, pose.pose.orientation.y = qx, qy
+            pose.pose.orientation.z, pose.pose.orientation.w = qz, qw
+            feedback("moving", math.hypot(
+                pose_result.target_x - robot_x, pose_result.target_y - robot_y))
+
+            origin_person_x, origin_person_y = track.position_3d.x, track.position_3d.y
+            origin_yaw_rad = pose_result.target_yaw_rad
+            plan_robot_x, plan_robot_y = robot_x, robot_y
+
+            def monitor():
+                # 8./9.: nur bei relevanter Personenbewegung neu planen
+                # (Positions- ODER Richtungsaenderung ueber der jeweiligen
+                # Schwelle), sonst kontinuierlich Person/Sicherheit/
+                # Autorisierung ueberwachen (Auftrag Abschnitt 19/20).
+                fresh_track, reason = self._validate_target(track_id, max_track_age_s=loss_timeout_s)
+                if fresh_track is None:
+                    return False, reason
+                ctx = self._build_follow_safety_context(
+                    track_id, authorization_valid=True,
+                    target_x=fresh_track.position_3d.x, target_y=fresh_track.position_3d.y)
+                ok, reason = check_follow_person_safety(ctx)
+                if not ok:
+                    return False, f"safety_abort:{reason}"
+                if should_replan(
+                        origin_person_x, origin_person_y,
+                        fresh_track.position_3d.x, fresh_track.position_3d.y,
+                        self.get_parameter("follow_person_minimum_goal_shift_m").value):
+                    return False, "replan_needed"
+                yaw_now = math.atan2(
+                    fresh_track.position_3d.y - plan_robot_y,
+                    fresh_track.position_3d.x - plan_robot_x)
+                yaw_delta = abs(_angle_diff_rad(yaw_now, origin_yaw_rad))
+                if yaw_delta >= self.get_parameter("follow_person_minimum_goal_yaw_change_rad").value:
+                    return False, "replan_needed"
+                return True, ""
+
+            drive_ok, drive_reason = self._drive_to_pose(goal_handle, pose, feedback, monitor_fn=monitor)
+            if drive_ok:
+                feedback("reached", 0.0)
+                time.sleep(1.0 / self.get_parameter("follow_person_goal_update_rate_hz").value)
+                continue
+            if drive_reason == "monitor_abort:replan_needed":
+                continue  # neue Pose berechnen und erneut fahren -- kein echter Abbruch
+            result.success = False
+            result.abort_reason = drive_reason
+            goal_handle.abort()
+            return result
 
         result.success = False
         result.abort_reason = "rclpy_shutdown"

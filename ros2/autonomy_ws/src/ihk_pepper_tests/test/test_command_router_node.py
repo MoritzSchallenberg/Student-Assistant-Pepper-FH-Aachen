@@ -43,16 +43,20 @@ class _FakeNode:
     _lookup_identity = CommandRouterNode._lookup_identity
     _safety_state_valid = CommandRouterNode._safety_state_valid
     _on_command = CommandRouterNode._on_command
+    _issue_grant = CommandRouterNode._issue_grant
 
-    def __init__(self, policy=POLICY_ROLE_PLUS_CONFIRMATION, minimum_confidence=0.8):
+    def __init__(self, policy=POLICY_ROLE_PLUS_CONFIRMATION, minimum_confidence=0.8,
+                 grant_validity_s=30.0):
         self._latest_identities = None
         self._latest_focus_track_id = -1
         self._safety_state = None
         self._secondary_confirmation_valid = False
         self.command_pub = _FakePublisher()
+        self.grant_pub = _FakePublisher()
         self._params = {
             "privileged_motion_policy": policy,
             "minimum_recognition_confidence": minimum_confidence,
+            "grant_validity_s": grant_validity_s,
         }
 
     def get_parameter(self, name):
@@ -191,3 +195,43 @@ def test_output_preserves_event_id_and_direction():
     assert out.event_id == "evt-42"
     assert out.direction_valid is True
     assert out.direction_azimuth_rad_base == 0.3
+
+
+# ---- AuthorizationGrant-Ausstellung (Entwicklungsauftrag 04-B, AP7, Abschnitt 8/9) ----
+
+def test_granted_command_issues_an_authorization_grant():
+    node = _FakeNode()
+    node._on_identities(PersonIdentityArray(identities=[_identity()]))
+    node._on_safety_state(_safety_state())
+    node._on_secondary_confirmation(Bool(data=True))
+    node._on_command(_command(command="follow_speaker", track_id=5))
+    assert len(node.grant_pub.messages) == 1
+    grant = node.grant_pub.messages[0]
+    assert grant.person_id == "p1"
+    assert grant.track_id == 5
+    assert grant.command == "follow_speaker"
+    assert grant.valid is True
+    assert grant.grant_id  # nicht leer
+
+
+def test_denied_command_issues_no_grant():
+    node = _FakeNode()
+    node._on_command(_command(command="follow_speaker", track_id=5))
+    assert node.grant_pub.messages == []
+
+
+def test_rollenfreier_befehl_ohne_grant():
+    node = _FakeNode()
+    node._on_command(_command(command="stop"))
+    assert node.grant_pub.messages == []
+
+
+def test_each_grant_gets_a_unique_id():
+    node = _FakeNode()
+    node._on_identities(PersonIdentityArray(identities=[_identity()]))
+    node._on_safety_state(_safety_state())
+    node._on_secondary_confirmation(Bool(data=True))
+    node._on_command(_command(command="follow_speaker", track_id=5, event_id="evt-1"))
+    node._on_command(_command(command="follow_speaker", track_id=5, event_id="evt-2"))
+    ids = {g.grant_id for g in node.grant_pub.messages}
+    assert len(ids) == 2
