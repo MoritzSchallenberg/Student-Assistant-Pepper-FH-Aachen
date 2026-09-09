@@ -204,3 +204,60 @@ class ThreadSafePepperClient:
             if self._connected:
                 self._client.close()
                 self._connected = False
+
+
+class PepperInterruptChannel:
+    """Unabhaengiger ZWEITER SSH-Kanal, AUSSCHLIESSLICH fuer Abbruchbefehle
+    (Entwicklungsauftrag 04-B, AP5B, Abschnitt 2.3/10). Teilt sich NIE
+    den Lock/die Verbindung von ThreadSafePepperClient -- ein Abbruch
+    darf nicht hinter einem lange laufenden TTS-/Trajektorienaufruf auf
+    dem Hauptkanal warten. Eigene, separate qicli-SSH-Verbindung, eigener
+    Lock.
+
+    Ehrlicher Stand: dry_run_validated, NICHT live_validated -- kein
+    Pepper in dieser Session erreichbar. stop_speech()/stop_motion()
+    rufen reale NAOqi-Primitive (ALTextToSpeech.stopAll/ALMotion.stopMove)
+    auf, die nie gegen echte Hardware verifiziert wurden (siehe
+    docs/ACTION_CANCELLATION.md, hwverificationrequired)."""
+
+    def __init__(self, host=None, user=None, password=None):
+        self._host = host or _cfg.QI_HOST
+        self._user = user or _cfg.QI_USER
+        self._password = password or _cfg.QI_PW
+        self._lock = threading.RLock()
+        self._client = qicli(self._host, self._user, self._password)
+        self._connected = False
+
+    def _ensure_connected(self):
+        if not self._connected:
+            self._client.connect()
+            self._connected = True
+
+    def stop_speech(self) -> bool:
+        with self._lock:
+            self._ensure_connected()
+            return self._client.stop_speech()
+
+    def stop_motion(self) -> bool:
+        with self._lock:
+            self._ensure_connected()
+            return self._client.stop_motion()
+
+    def send_hold_position(self, joint_names, angles, duration_s: float = 0.05) -> bool:
+        """Sendet EINEN synchronen play_trajectory()-Aufruf, der jedes
+        Gelenk auf seinen aktuell uebergebenen Winkel haelt (Best-Effort-
+        Halteposition nach einem Abbruch, siehe
+        motion_transport.py::QicliTrajectoryTransport.cancel())."""
+        for joint_name, angle in zip(joint_names, angles):
+            validate_angle_with_margin(joint_name, angle)
+        with self._lock:
+            self._ensure_connected()
+            self._client.play_trajectory(
+                list(joint_names), [[a] for a in angles], [[duration_s] for _ in angles])
+            return True
+
+    def close(self):
+        with self._lock:
+            if self._connected:
+                self._client.close()
+                self._connected = False

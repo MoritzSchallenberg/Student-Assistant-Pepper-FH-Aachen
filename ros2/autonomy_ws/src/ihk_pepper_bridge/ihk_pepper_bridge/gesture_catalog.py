@@ -262,6 +262,7 @@ class GestureCatalog:
         self, pepper_client, name: str, speed_scale: float = None, feedback_cb=None,
         dry_run: bool = False, current_interaction_state: str = None,
         nav2_moving: bool = False, mapping_active: bool = False,
+        cancel_event=None, interrupt_channel=None,
     ) -> PlaybackResult:
         """Fuehrt eine Geste aus (dry_run=True: loggt/liefert nur die
         aufgeloeste Trajektorie zurueck, OHNE jede Hardwareaktion).
@@ -278,7 +279,22 @@ class GestureCatalog:
         (v1). Live-Wiring von nav2_moving/mapping_active aus echten
         SafetyState-/camera_pose_gate-Topics ist vorbereitet, aber nicht
         Teil dieses Aufrufs -- Aufrufer (z.B. ein spaeterer BT-Knoten)
-        muss die aktuellen Werte selbst uebergeben."""
+        muss die aktuellen Werte selbst uebergeben.
+
+        cancel_event (Entwicklungsauftrag 04-B, AP5B, Abschnitt 12):
+        optionales threading.Event, das WAEHREND der Ausfuehrung
+        (bewusst NICHT nur vor dem Start) beobachtet wird. Fuer v1 wird
+        zwischen zwei Einzelschritten geprueft (keine Unterbrechung
+        MITTEN in einem set_angle()-Aufruf moeglich). Fuer v2 wird
+        zwischen kurzen Poll-Intervallen geprueft und bei Bedarf
+        transport.cancel() aufgerufen (siehe motion_transport.py fuer
+        die dort dokumentierten Grenzen einer echten Mid-Flight-
+        Unterbrechung). interrupt_channel wird unveraendert an
+        QicliTrajectoryTransport durchgereicht (unabhaengiger
+        Abbruchkanal, siehe pepper_client.py::PepperInterruptChannel).
+        Beide Parameter bleiben optional -- ohne sie ist das Verhalten
+        unveraendert wie vor diesem Auftrag (blockierender Aufruf bis
+        zum natuerlichen Ende)."""
         gesture = self.get(name)
 
         if gesture.allowed_interaction_states and current_interaction_state is not None:
@@ -296,15 +312,15 @@ class GestureCatalog:
 
         if gesture.schema_version == 1:
             scale = _clamp(speed_scale if speed_scale is not None else 1.0, MIN_SPEED_SCALE_V1, MAX_SPEED_SCALE_V1)
-            return self._play_v1(pepper_client, gesture, scale, feedback_cb, dry_run)
+            return self._play_v1(pepper_client, gesture, scale, feedback_cb, dry_run, cancel_event)
 
         scale = _clamp(
             speed_scale if speed_scale is not None else gesture.speed_scale_default,
             MIN_SPEED_SCALE_V2, MAX_SPEED_SCALE_V2,
         )
-        return self._play_v2(pepper_client, gesture, scale, feedback_cb, dry_run)
+        return self._play_v2(pepper_client, gesture, scale, feedback_cb, dry_run, cancel_event, interrupt_channel)
 
-    def _play_v1(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run):
+    def _play_v1(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run, cancel_event=None):
         planned = [
             {"joint": s["joint"], "angle": s["angle"], "duration": s["duration"] / speed_scale}
             for s in gesture.steps
@@ -318,6 +334,11 @@ class GestureCatalog:
         try:
             total = len(planned)
             for i, step in enumerate(planned):
+                # Zwischen zwei Schritten pruefen (Entwicklungsauftrag
+                # 04-B, AP5B) -- KEINE Unterbrechung mitten in einem
+                # bereits laufenden set_angle()-Aufruf moeglich.
+                if cancel_event is not None and cancel_event.is_set():
+                    break
                 pepper_client.set_angle(step["joint"], step["angle"], step["duration"])
                 if feedback_cb:
                     feedback_cb(f"step_{i}", (i + 1) / total)
@@ -328,14 +349,19 @@ class GestureCatalog:
                 pepper_client.set_breathing(True, part)
         return PlaybackResult(dry_run=False, schema_version=1, plan=planned)
 
-    def _play_v2(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run):
+    def _play_v2(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run,
+                 cancel_event=None, interrupt_channel=None):
         """Nutzt seit Entwicklungsauftrag 3, AP12 den KinematicCompiler +
         QicliTrajectoryTransport statt Keyframes direkt in
         play_trajectory()-Argumente umzurechnen (siehe kinematic_compiler.py-
         Moduldoku fuer die damit behobenen Schwaechen: fehlende Gelenke pro
         Keyframe, undefinierter Startzustand, inkonsistente Zeitachsen je
         Gelenk, fehlende Beschleunigungspruefung, Gelenk-fuer-Gelenk-
-        Wiederherstellung)."""
+        Wiederherstellung).
+
+        cancel_event/interrupt_channel (Entwicklungsauftrag 04-B, AP5B):
+        siehe play()-Docstring. Ohne cancel_event blockiert diese Methode
+        weiterhin unveraendert bis zum natuerlichen Ende (transport.wait())."""
         compiler = KinematicCompiler()
 
         if dry_run:
@@ -348,10 +374,18 @@ class GestureCatalog:
         transport = None
         try:
             plan = compiler.compile(gesture, speed_scale=speed_scale, start_pose=snapshot)
-            transport = QicliTrajectoryTransport(pepper_client)
+            transport = QicliTrajectoryTransport(pepper_client, interrupt_channel=interrupt_channel)
             transport.prepare(plan, restore_snapshot=snapshot)
             transport.start()
-            status = transport.wait()
+            if cancel_event is None:
+                status = transport.wait()
+            else:
+                status = transport.poll()
+                while status == TransportStatus.RUNNING:
+                    if cancel_event.is_set():
+                        status = transport.cancel().final_transport_state
+                        break
+                    status = transport.wait(timeout_s=0.1)
             if feedback_cb:
                 feedback_cb("trajectory_sent", 1.0)
             if status == TransportStatus.FAILED:

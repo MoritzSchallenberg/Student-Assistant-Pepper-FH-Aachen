@@ -1,4 +1,5 @@
 import os
+import shlex
 import socket
 import paramiko
 import time
@@ -207,11 +208,53 @@ class qicli:
 
     
     def say(self, annotated_text):
-        print(f"qicli call ALAnimatedSpeech.say annotated_text")
-        output, error = self.exec_command(f'qicli call ALAnimatedSpeech.say "{annotated_text}"')
+        # Sicherheitshinweis (Entwicklungsauftrag 04-B, AP5B, Abschnitt 9.2):
+        # annotated_text wurde hier bisher UNGESCHUETZT in doppelte
+        # Anfuehrungszeichen eines Remote-Shellbefehls eingesetzt -- ein
+        # eingebettetes '"', '`' oder '$(...)' haette aus dem
+        # Anfuehrungszeichen ausbrechen und beliebige Shell-Syntax auf
+        # Pepper ausfuehren koennen. shlex.quote() erzeugt eine POSIX-
+        # shell-sichere Einzelquotierung, die das strukturell ausschliesst.
+        # ALAnimatedSpeech.say loest zusaetzlich automatische
+        # Koerperbewegungen aus (nicht ueber den geprueften Gestenkatalog
+        # laufend) -- fuer den Produktionspfad (ROS2-Bridge) siehe
+        # say_text_only() unten (ALTextToSpeech.say, KEINE automatische
+        # Bewegung). Diese Methode bleibt fuer bestehende, nicht-ROS2-
+        # Aufrufer (z.B. apps/web) unveraendert erhalten.
+        safe_text = shlex.quote(annotated_text)
+        print(f"qicli call ALAnimatedSpeech.say {safe_text}")
+        output, error = self.exec_command(f"qicli call ALAnimatedSpeech.say {safe_text}")
         print(f"Output: {output}")
         print(f"Error: {error}")
-        return output, error     
+        return output, error
+
+    def say_text_only(self, text):
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 9.1: reine
+        Sprachausgabe ueber ALTextToSpeech.say -- OHNE die automatischen
+        Koerperbewegungen von ALAnimatedSpeech. Gesten laufen fuer den
+        Produktionspfad ausschliesslich separat ueber PlayGesture/den
+        geprueften Gestenkatalog. Sichere Argumentkodierung wie say()."""
+        safe_text = shlex.quote(text)
+        output, error = self.exec_command(f"qicli call ALTextToSpeech.say {safe_text}")
+        return output, error
+
+    def stop_speech(self):
+        """Bricht eine laufende TTS-Ausgabe ab (ALTextToSpeech.stopAll).
+        dry_run_validated, NICHT live_validated -- kein Pepper in dieser
+        Session erreichbar, siehe docs/ACTION_CANCELLATION.md
+        (hwverificationrequired)."""
+        output, error = self.exec_command("timeout 5 qicli call ALTextToSpeech.stopAll")
+        return error == ""
+
+    def stop_motion(self):
+        """Bricht laufende ALMotion-Bewegungen ab (ALMotion.stopMove).
+        dry_run_validated, NICHT live_validated -- siehe
+        docs/ACTION_CANCELLATION.md (hwverificationrequired). Kein
+        Ersatz fuer eine gezielte Halteposition (siehe
+        motion_transport.py::QicliTrajectoryTransport.cancel()) -- stoppt
+        JEDE laufende Bewegung, nicht nur eine bestimmte Trajektorie."""
+        output, error = self.exec_command("timeout 5 qicli call ALMotion.stopMove")
+        return error == ""
 
     def setVolume(self, value):
         print(f"qicli call ALTextToSpeech.setVolume {value}")

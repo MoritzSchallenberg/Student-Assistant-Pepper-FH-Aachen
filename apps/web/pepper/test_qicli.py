@@ -6,6 +6,7 @@ Deckt genau die in AP2 geforderten Verhaltensweisen ab: kein
 AutoAddPolicy mehr, verstaendliche Fehler bei unbekanntem/veraendertem
 Host-Key, Zeitlimit-Durchsetzung mit Reconnect-Versuch.
 """
+import shlex
 import socket
 from unittest.mock import MagicMock, patch
 
@@ -108,3 +109,60 @@ def test_exec_command_timeout_triggers_reconnect_and_retry():
 
 def test_socket_timeout_errors_includes_socket_timeout():
     assert socket.timeout in socket_timeout_errors()
+
+
+# ---- Entwicklungsauftrag 04-B, AP5B, Abschnitt 9.2: sichere Argumentkodierung ----
+
+def test_say_shell_quotes_the_text_against_injection():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    dangerous_text = 'hallo"; rm -rf / #'
+    with patch.object(client, "exec_command", return_value=("", "")) as mock_exec:
+        client.say(dangerous_text)
+        sent_command = mock_exec.call_args[0][0]
+    # Der urspruengliche Bug: der rohe Text wurde direkt in DOPPELTE
+    # Anfuehrungszeichen eingesetzt (f'"{text}"') -- ein eingebettetes '"'
+    # haette daraus ausbrechen koennen. shlex.quote() quotiert stattdessen
+    # POSIX-shell-sicher in EINFACHE Anfuehrungszeichen -- der urspruenglich
+    # verwundbare doppelt-quotierte Rohtext-Ausdruck darf nicht mehr
+    # auftauchen, und das gesendete Kommando muss exakt der
+    # shlex.quote()-Ausgabe entsprechen.
+    assert f'"{dangerous_text}"' not in sent_command
+    assert sent_command == f"qicli call ALAnimatedSpeech.say {shlex.quote(dangerous_text)}"
+
+
+def test_say_text_only_uses_al_text_to_speech_not_animated_speech():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    with patch.object(client, "exec_command", return_value=("", "")) as mock_exec:
+        client.say_text_only("Hallo, ich bin Pepper.")
+        sent_command = mock_exec.call_args[0][0]
+    assert "ALTextToSpeech.say" in sent_command
+    assert "ALAnimatedSpeech" not in sent_command
+
+
+def test_say_text_only_also_shell_quotes_the_text():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    dangerous_text = "$(echo pwned)"
+    with patch.object(client, "exec_command", return_value=("", "")) as mock_exec:
+        client.say_text_only(dangerous_text)
+        sent_command = mock_exec.call_args[0][0]
+    assert sent_command == f"qicli call ALTextToSpeech.say {shlex.quote(dangerous_text)}"
+
+
+def test_stop_speech_calls_al_text_to_speech_stop_all():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    with patch.object(client, "exec_command", return_value=("", "")) as mock_exec:
+        assert client.stop_speech() is True
+        assert "ALTextToSpeech.stopAll" in mock_exec.call_args[0][0]
+
+
+def test_stop_speech_returns_false_on_error():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    with patch.object(client, "exec_command", return_value=("", "some error")):
+        assert client.stop_speech() is False
+
+
+def test_stop_motion_calls_al_motion_stop_move():
+    client = qicli("10.0.0.1", "nao", "irrelevant")
+    with patch.object(client, "exec_command", return_value=("", "")) as mock_exec:
+        assert client.stop_motion() is True
+        assert "ALMotion.stopMove" in mock_exec.call_args[0][0]

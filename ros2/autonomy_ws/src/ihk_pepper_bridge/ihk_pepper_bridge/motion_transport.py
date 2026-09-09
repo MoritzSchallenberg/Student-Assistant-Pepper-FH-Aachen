@@ -14,10 +14,18 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+# Entwicklungsauftrag 04-B, AP5B, Abschnitt 10: Standard-Obergrenze fuer
+# cancel()s begrenzte Wartezeit auf eine Bestaetigung -- kein
+# unbegrenztes _done_event.wait() mehr (das war der bestaetigte Fund
+# 2.2: cancel() wartete bei einer laufenden synchronen Trajektorie
+# zunaechst UNBEGRENZT).
+DEFAULT_CANCEL_TIMEOUT_S = 2.0
 
 # Zeitdauer (s) fuer den einen synchronen Wiederherstellungsaufruf am
 # Ende einer Geste. Bewusst kurz, aber > 0 (ALMotion.angleInterpolation
@@ -34,6 +42,24 @@ class TransportStatus:
     DONE = "done"
     FAILED = "failed"
     CANCELLED = "cancelled"
+
+
+@dataclass
+class CancelResult:
+    """Strukturiertes Ergebnis von MotionTransport.cancel()
+    (Entwicklungsauftrag 04-B, AP5B, Abschnitt 10) -- ersetzt das
+    bisherige unbegrenzte cancel() -> None. cancel_confirmed=True
+    bedeutet NUR, dass der Transport-Zustand als beendet beobachtet
+    wurde (poll() == CANCELLED/DONE/FAILED) -- KEINE Aussage darueber,
+    ob Pepper sich tatsaechlich bewegt hat oder verstummt ist (siehe
+    docs/ACTION_CANCELLATION.md: "Unterschied zwischen ROS-Cancel und
+    bestaetigtem Hardware-Stopp")."""
+
+    cancel_requested: bool
+    cancel_confirmed: bool
+    final_transport_state: str
+    elapsed_s: float
+    error_message: str = ""
 
 
 @dataclass
@@ -73,10 +99,13 @@ class MotionTransport(ABC):
         """Aktueller TransportStatus, ohne zu blockieren."""
 
     @abstractmethod
-    def cancel(self) -> None:
-        """Bricht so gut wie moeglich ab -- siehe QicliTrajectoryTransport
+    def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
+        """Bricht so gut wie moeglich ab und liefert ein STRUKTURIERTES
+        Ergebnis (nie nur True/False) -- siehe QicliTrajectoryTransport
         fuer die dokumentierten Grenzen einer echten Mid-Flight-
-        Unterbrechung bei einer synchronen qicli-SSH-Anfrage."""
+        Unterbrechung bei einer synchronen qicli-SSH-Anfrage. Wartet
+        HOECHSTENS timeout_s auf eine Bestaetigung -- kein unbegrenztes
+        Blockieren (Entwicklungsauftrag 04-B, AP5B, Abschnitt 10)."""
 
     @abstractmethod
     def restore(self) -> None:
@@ -119,10 +148,11 @@ class MockMotionTransport(MotionTransport):
     def wait(self, timeout_s=None):
         return self._status
 
-    def cancel(self):
+    def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
         self.calls.append(("cancel",))
         if self._status == TransportStatus.RUNNING or self._status == TransportStatus.IDLE:
             self._status = TransportStatus.CANCELLED
+        return CancelResult(True, True, self._status, 0.0)
 
     def restore(self):
         self.calls.append(("restore", self._restore_snapshot))
@@ -157,10 +187,11 @@ class DryRunMotionTransport(MotionTransport):
     def wait(self, timeout_s=None):
         return self._status
 
-    def cancel(self):
+    def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
         self._log.info("[dry-run] Abbruch angefordert (keine Hardwareaktion noetig).")
         if self._status != TransportStatus.DONE:
             self._status = TransportStatus.CANCELLED
+        return CancelResult(True, True, self._status, 0.0)
 
     def restore(self):
         self._log.info("[dry-run] Wiederherstellung waere jetzt gesendet worden (keine Hardwareaktion).")
@@ -177,16 +208,29 @@ class QicliTrajectoryTransport(MotionTransport):
     selbst zu blockieren.
 
     cancel() hat KEIN natives Abbruch-Primitiv fuer eine bereits an NAOqi
-    gesendete synchrone Anfrage: solange start() noch laeuft, wartet
-    cancel() auf deren Ende und sendet DANACH sofort eine Halte-
-    Trajektorie (aktuelle Ist-Position, kurze Dauer) -- eine Naeherung,
-    kein echtes Mid-Flight-Abbrechen. Ehrlich so dokumentiert, nicht als
-    "cancel funktioniert wie ein echter Action-Server" verkauft."""
+    gesendete synchrone Anfrage (Entwicklungsauftrag 04-B, AP5B,
+    Abschnitt 10 -- dokumentierter Capability-Test: qicli exponiert nur
+    synchrone "qicli call"-SSH-Aufrufe, kein ALMotion.post.*-Task-ID-
+    Mechanismus wird von diesem Werkzeug genutzt/ist ohne Hardwarezugriff
+    verifizierbar). cancel() wartet deshalb NICHT mehr unbegrenzt: es
+    sendet SOFORT einen Best-Effort-Interrupt ueber einen unabhaengigen
+    Kanal (interrupt_channel, siehe pepper_client.py::
+    PepperInterruptChannel -- eigene SSH-Verbindung, eigener Lock, blockiert
+    NIE hinter dem Lock des Hauptkanals) und wartet danach HOECHSTENS
+    timeout_s auf eine Bestaetigung, dass die urspruengliche Anfrage
+    tatsaechlich zurueckgekehrt ist. Liefert IMMER ein strukturiertes
+    CancelResult -- kein einfaches True/False, das ein echtes Mid-Flight-
+    Abbrechen vortaeuschen wuerde. Ohne interrupt_channel (aeltere
+    Aufrufer/Tests) faellt cancel() auf das alte Verhalten zurueck
+    (warten bis timeout_s, dann Halteposition ueber denselben Kanal --
+    NICHT mehr unbegrenzt, aber weiterhin ohne echte Nebenlaeufigkeit
+    zum Hauptkanal)."""
 
     CANCEL_HOLD_DURATION_S = 0.05
 
-    def __init__(self, pepper_client):
+    def __init__(self, pepper_client, interrupt_channel=None):
         self._client = pepper_client
+        self._interrupt_channel = interrupt_channel
         self._plan = None
         self._restore_snapshot = None
         self._status = TransportStatus.IDLE
@@ -235,29 +279,76 @@ class QicliTrajectoryTransport(MotionTransport):
         self._done_event.wait(timeout_s)
         return self._status
 
-    def cancel(self):
+    def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
+        start = time.monotonic()
         self._cancel_requested.set()
+
         if self._status == TransportStatus.IDLE:
             self._status = TransportStatus.CANCELLED
             self._done_event.set()
-            return
-        # RUNNING: siehe Klassendoku -- warten, dann Halteposition senden.
-        self._done_event.wait()
+            return CancelResult(True, True, TransportStatus.CANCELLED, time.monotonic() - start)
+
+        if self._done_event.is_set():
+            # Bereits natuerlich fertig (DONE/FAILED/CANCELLED) -- cancel()
+            # kommt zu spaet, um noch etwas zu bewirken.
+            return CancelResult(True, True, self._status, time.monotonic() - start)
+
+        # RUNNING: SOFORT einen Best-Effort-Interrupt ueber den
+        # unabhaengigen Kanal senden -- blockiert NICHT hinter dem Lock
+        # des Hauptkanals (siehe Klassendoku, Auftrag Abschnitt 2.3).
+        interrupt_sent = False
+        interrupt_error = ""
+        if self._interrupt_channel is not None:
+            try:
+                self._interrupt_channel.stop_motion()
+                interrupt_sent = True
+            except Exception as e:  # noqa: BLE001 -- Abbruch darf selbst nicht crashen
+                interrupt_error = str(e)
+                logger.warning("Interrupt-Kanal stop_motion() fehlgeschlagen.", exc_info=True)
+
+        # HOECHSTENS timeout_s auf eine Bestaetigung warten -- kein
+        # unbegrenztes Blockieren mehr (der urspruengliche Fund 2.2).
+        finished = self._done_event.wait(timeout_s)
+        elapsed = time.monotonic() - start
+
+        if not finished:
+            return CancelResult(
+                cancel_requested=True, cancel_confirmed=False,
+                final_transport_state=TransportStatus.RUNNING, elapsed_s=elapsed,
+                error_message=(
+                    "urspruengliche synchrone Anfrage lief nach Ablauf des Timeouts noch -- "
+                    + ("Interrupt-Befehl gesendet" if interrupt_sent
+                       else f"Interrupt-Befehl NICHT gesendet: {interrupt_error or 'kein interrupt_channel konfiguriert'}")
+                ),
+            )
+
         if self._status == TransportStatus.FAILED:
-            return
-        try:
-            joints = list(self._plan.joint_names)
-            current = {j: self._client.get_angle(j) for j in joints}
-            names = [j for j in joints if current.get(j) is not None]
-            if names:
-                self._client.play_trajectory(
-                    names,
-                    [[current[j]] for j in names],
-                    [[self.CANCEL_HOLD_DURATION_S] for _ in names],
-                )
-        except Exception:  # noqa: BLE001 -- Abbruch darf selbst nicht crashen
-            logger.warning("Halteposition nach cancel() konnte nicht gesendet werden.", exc_info=True)
+            # War die Anfrage selbst schon gescheitert (z.B. Verbindungs-
+            # abbruch), zaehlt das Cancel dennoch als "bestaetigt beendet".
+            self._status = TransportStatus.CANCELLED
+            return CancelResult(True, True, TransportStatus.CANCELLED, elapsed,
+                                 error_message=str(self.last_error) if self.last_error else "")
+
+        # Ohne interrupt_channel (aeltere Aufrufer/Tests): Best-Effort-
+        # Halteposition weiterhin ueber denselben Kanal, aber ERST NACHDEM
+        # die urspruengliche Anfrage bestaetigt zurueckgekehrt ist (kein
+        # unbegrenztes Warten mehr davor).
+        if self._interrupt_channel is None:
+            try:
+                joints = list(self._plan.joint_names)
+                current = {j: self._client.get_angle(j) for j in joints}
+                names = [j for j in joints if current.get(j) is not None]
+                if names:
+                    self._client.play_trajectory(
+                        names,
+                        [[current[j]] for j in names],
+                        [[self.CANCEL_HOLD_DURATION_S] for _ in names],
+                    )
+            except Exception:  # noqa: BLE001 -- Abbruch darf selbst nicht crashen
+                logger.warning("Halteposition nach cancel() konnte nicht gesendet werden.", exc_info=True)
+
         self._status = TransportStatus.CANCELLED
+        return CancelResult(True, True, TransportStatus.CANCELLED, elapsed, error_message=interrupt_error)
 
     def restore(self):
         if not self._restore_snapshot:
@@ -293,7 +384,7 @@ class LocalPepperQiHelperTransport(MotionTransport):
     def poll(self):
         raise NotImplementedError("LocalPepperQiHelperTransport ist ein Platzhalter, siehe Klassendoku")
 
-    def cancel(self):
+    def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
         raise NotImplementedError("LocalPepperQiHelperTransport ist ein Platzhalter, siehe Klassendoku")
 
     def restore(self):

@@ -11,6 +11,7 @@ SSH-Kommunikation mit dem echten Roboter NICHT live in dieser Session
 """
 import os
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -21,9 +22,14 @@ from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture
 from ihk_pepper_interfaces.msg import SystemHealth
+from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
-from .pepper_client import ThreadSafePepperClient
+from ihk_pepper_interaction.actuator_arbiter import PRIORITY_DIALOGUE
+from ihk_pepper_interaction.resource_derivation import resources_for_gesture, resources_for_speech
+
+from .pepper_client import PepperInterruptChannel, ThreadSafePepperClient
 from .gesture_catalog import GestureCatalog, GestureValidationError
+from .tts_guard import TtsTextRejected, validate_tts_text
 from . import safety_topics
 
 
@@ -40,6 +46,15 @@ def _default_gesture_dir():
 
 
 DEFAULT_GESTURE_DIR = _default_gesture_dir()
+
+# Entwicklungsauftrag 04-B, AP5B: Poll-Intervalle/Wartezeiten fuer die
+# Cancel-Beobachtung waehrend Say/PlayGesture -- kein unbegrenztes
+# Blockieren mehr (siehe Abschnitt 2.1/2.2).
+SAY_POLL_INTERVAL_S = 0.1
+SAY_CANCEL_GRACE_S = 1.0
+GESTURE_POLL_INTERVAL_S = 0.1
+GESTURE_CANCEL_GRACE_S = 2.0
+OWNER_ID = "pepper_bridge"
 
 
 class PepperBridgeNode(Node):
@@ -71,8 +86,24 @@ class PepperBridgeNode(Node):
         )
 
         self.pepper = ThreadSafePepperClient()
+        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 2.3/10: unabhaengiger
+        # zweiter SSH-Kanal AUSSCHLIESSLICH fuer Abbruchbefehle -- teilt
+        # sich nie den Lock des Hauptkanals, blockiert also nie hinter
+        # einem lange laufenden TTS-/Trajektorienaufruf. Lazy Verbindung
+        # (siehe PepperInterruptChannel), kein Zusatzaufwand, solange nie
+        # abgebrochen wird.
+        self.interrupt_channel = PepperInterruptChannel()
 
         cb_group = ReentrantCallbackGroup()
+
+        # Entwicklungsauftrag 04-B, AP5B: Service-Clients zum zentralen
+        # Aktuator-Arbiter -- jede Say-/PlayGesture-Ausfuehrung MUSS erst
+        # eine Lease erhalten, bevor irgendeine Hardwareaktion angestossen
+        # wird (siehe _acquire_lease()/_release_lease() unten).
+        self.acquire_lease_client = self.create_client(
+            AcquireActuatorLease, "/actuator_arbiter/acquire", callback_group=cb_group)
+        self.release_lease_client = self.create_client(
+            ReleaseActuatorLease, "/actuator_arbiter/release", callback_group=cb_group)
 
         self._say_active = threading.Event()
 
@@ -101,6 +132,7 @@ class PepperBridgeNode(Node):
         self.gesture_action_server = ActionServer(
             self, PlayGesture, "play_gesture",
             execute_callback=self._execute_gesture,
+            goal_callback=self._goal_callback_gesture,
             cancel_callback=self._cancel_callback,
             callback_group=cb_group,
         )
@@ -132,6 +164,54 @@ class PepperBridgeNode(Node):
 
         self.get_logger().info("pepper_bridge Node gestartet.")
 
+    # ---- Aktuator-Arbiter (Entwicklungsauftrag 04-B, AP5B) ----
+
+    def _acquire_lease(self, resources, purpose: str, goal_id: str, ttl_s: float):
+        """Gibt (granted, lease_id, reason) zurueck. Fail-closed: ein
+        nicht erreichbarer/nicht antwortender Arbiter gewaehrt NIE
+        stillschweigend eine Aktuation."""
+        if not self.acquire_lease_client.wait_for_service(timeout_sec=1.0):
+            return False, "", "actuator_arbiter nicht erreichbar"
+        req = AcquireActuatorLease.Request()
+        req.owner_id = OWNER_ID
+        req.resources = sorted(resources)
+        req.purpose = purpose
+        req.priority = PRIORITY_DIALOGUE
+        req.ttl_s = ttl_s
+        req.goal_id = goal_id
+        future = self.acquire_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return False, "", "actuator_arbiter Zeitueberschreitung"
+        try:
+            response = future.result()
+        except Exception as e:
+            return False, "", f"actuator_arbiter Fehler: {e}"
+        return response.granted, response.lease_id, response.reason
+
+    def _release_lease(self, lease_id: str):
+        if not lease_id:
+            return
+        if not self.release_lease_client.wait_for_service(timeout_sec=1.0):
+            self.get_logger().warn(
+                f"Lease '{lease_id}' konnte nicht freigegeben werden (Arbiter nicht erreichbar).")
+            return
+        req = ReleaseActuatorLease.Request()
+        req.lease_id = lease_id
+        future = self.release_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+
+    @staticmethod
+    def _goal_id_str(goal_handle) -> str:
+        try:
+            return str(bytes(goal_handle.goal_id.uuid))
+        except Exception:
+            return ""
+
     # ---- Say ----
 
     def _goal_callback_say(self, goal_request):
@@ -144,30 +224,108 @@ class PepperBridgeNode(Node):
         return CancelResponse.ACCEPT
 
     def _execute_say(self, goal_handle):
-        text = goal_handle.request.text
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 9/12: Text wird an
+        DIESER Grenze nochmal validiert (Abschnitt 9.2, unabhaengig von
+        einer bereits erfolgten Bereinigung im Dialogserver), die
+        eigentliche TTS-Ausgabe laeuft in einem Hintergrund-Thread, damit
+        goal_handle.is_cancel_requested/max_duration_s waehrend des
+        Sprechens tatsaechlich beobachtet werden (vorher: blockierender
+        Aufruf ohne jede Cancel-Beobachtung). SPEECH-Lease wird VOR jeder
+        Hardwareaktion angefordert und in JEDEM Endpfad freigegeben."""
+        result = Say.Result()
+        try:
+            text = validate_tts_text(goal_handle.request.text)
+        except TtsTextRejected as e:
+            self.get_logger().warn(f"Say abgelehnt (Textpruefung an der Bridge-Grenze): {e}")
+            result.success = False
+            result.error_message = str(e)
+            goal_handle.abort()
+            return result
+
+        allow_interrupt = goal_handle.request.allow_interrupt
+        max_duration_s = goal_handle.request.max_duration_s or None
+        goal_id = self._goal_id_str(goal_handle)
+
+        granted, lease_id, reason = self._acquire_lease(
+            resources_for_speech(), purpose="say", goal_id=goal_id,
+            ttl_s=(max_duration_s or 30.0) + 10.0,
+        )
+        if not granted:
+            self.get_logger().warn(f"Say abgelehnt (Aktuator-Arbiter): {reason}")
+            result.success = False
+            result.error_message = f"Ressourcenkonflikt: {reason}"
+            goal_handle.abort()
+            return result
+
         feedback = Say.Feedback()
         feedback.status = "speaking"
         goal_handle.publish_feedback(feedback)
 
-        result = Say.Result()
         self._say_active.set()
         self.speaking_pub.publish(Bool(data=True))
+
+        done_event = threading.Event()
+        outcome = {"error": None}
+
+        def _run():
+            try:
+                if not self.get_parameter("dry_run").value:
+                    self.pepper.say_text_only(text)
+            except Exception as e:  # noqa: BLE001
+                outcome["error"] = e
+            finally:
+                done_event.set()
+
+        thread = threading.Thread(target=_run, daemon=True)
+        t0 = time.time()
+        thread.start()
+
+        final_state = "SUCCEEDED"
         try:
-            import time
-            t0 = time.time()
-            if not self.get_parameter("dry_run").value:
-                self.pepper.say(text)
+            while not done_event.wait(timeout=SAY_POLL_INTERVAL_S):
+                elapsed = time.time() - t0
+                timed_out = max_duration_s is not None and elapsed > max_duration_s
+                # Safety-/Nutzer-Stopp bleiben unabhaengig von
+                # allow_interrupt wirksam (Abschnitt 9.3) -- ein echter
+                # Not-Stopp/Bumper laeuft ueber
+                # actuator_arbiter::emergency_revoke_all() und entzieht
+                # die Lease bereits arbiterseitig; ein normaler
+                # ROS2-Cancel respektiert allow_interrupt=False.
+                user_cancel = goal_handle.is_cancel_requested and allow_interrupt
+                if not (timed_out or user_cancel):
+                    continue
+                reason_text = "max_duration_s ueberschritten" if timed_out else "abgebrochen"
+                self.get_logger().info(f"Say wird beendet: {reason_text}")
+                try:
+                    self.interrupt_channel.stop_speech()
+                except Exception:
+                    self.get_logger().warning(
+                        "stop_speech() ueber Interrupt-Kanal fehlgeschlagen.", exc_info=True)
+                done_event.wait(SAY_CANCEL_GRACE_S)
+                final_state = "TIMED_OUT" if timed_out else "CANCELLED"
+                break
+
             result.duration_s = time.time() - t0
-            result.success = True
-            goal_handle.succeed()
-        except Exception as e:
-            self.get_logger().error(f"Say fehlgeschlagen: {e}")
-            result.success = False
-            result.error_message = str(e)
-            goal_handle.abort()
+            if final_state == "SUCCEEDED" and outcome["error"] is not None:
+                self.get_logger().error(f"Say fehlgeschlagen: {outcome['error']}")
+                result.success = False
+                result.error_message = str(outcome["error"])
+                goal_handle.abort()
+            elif final_state == "SUCCEEDED":
+                result.success = True
+                goal_handle.succeed()
+            elif final_state == "CANCELLED":
+                result.success = False
+                result.error_message = "abgebrochen"
+                goal_handle.canceled()
+            else:
+                result.success = False
+                result.error_message = final_state
+                goal_handle.abort()
         finally:
             self._say_active.clear()
             self.speaking_pub.publish(Bool(data=False))
+            self._release_lease(lease_id)
         return result
 
     def is_speaking(self) -> bool:
@@ -181,7 +339,22 @@ class PepperBridgeNode(Node):
 
     # ---- PlayGesture ----
 
+    def _goal_callback_gesture(self, goal_request):
+        if not goal_request.gesture_name.strip():
+            self.get_logger().warn("PlayGesture-Ziel ohne Gestennamen abgelehnt")
+            return GoalResponse.REJECT
+        return GoalResponse.ACCEPT
+
     def _execute_gesture(self, goal_handle):
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 4/12: Ressourcen
+        werden DETERMINISTISCH aus den tatsaechlich betroffenen Gelenken
+        abgeleitet (nie aus dem Gestennamen/einer LLM-Angabe), ALLE
+        atomar ueber den Aktuator-Arbiter angefordert, BEVOR
+        catalog.play() irgendeine Hardwareaktion anstoesst. Laeuft in
+        einem Hintergrund-Thread, damit ein Cancel waehrend der
+        Ausfuehrung tatsaechlich beobachtet und an
+        catalog.play()s cancel_event durchgereicht wird (vorher: kein
+        Cancel-Handling waehrend der Bewegung)."""
         name = goal_handle.request.gesture_name
         speed = goal_handle.request.speed_scale or 1.0
         result = PlayGesture.Result()
@@ -192,6 +365,36 @@ class PepperBridgeNode(Node):
             fb.progress = progress
             goal_handle.publish_feedback(fb)
 
+        try:
+            gesture = self.catalog.get(name)
+        except KeyError as e:
+            self.get_logger().error(f"PlayGesture '{name}' abgelehnt: {e}")
+            result.success = False
+            result.error_message = str(e)
+            goal_handle.abort()
+            return result
+
+        try:
+            resources = resources_for_gesture(gesture)
+        except ValueError as e:
+            self.get_logger().error(f"PlayGesture '{name}' abgelehnt: {e}")
+            result.success = False
+            result.error_message = str(e)
+            goal_handle.abort()
+            return result
+
+        goal_id = self._goal_id_str(goal_handle)
+        granted, lease_id, reason = self._acquire_lease(
+            resources, purpose=f"play_gesture:{name}", goal_id=goal_id,
+            ttl_s=max(gesture.duration_s() / max(speed, 0.01) + 10.0, 15.0),
+        )
+        if not granted:
+            self.get_logger().warn(f"PlayGesture '{name}' abgelehnt (Aktuator-Arbiter): {reason}")
+            result.success = False
+            result.error_message = f"Ressourcenkonflikt: {reason}"
+            goal_handle.abort()
+            return result
+
         # Entwicklungsauftrag 4, AP4/AP13: schliesst die seit Auftrag 2
         # dokumentierte Luecke -- dieses Topic wurde bisher von KEINEM
         # Node tatsaechlich publiziert. True fuer die volle Dauer der
@@ -199,29 +402,57 @@ class PepperBridgeNode(Node):
         # es ist erst "vorbei", wenn play() zurueckkehrt), garantiert per
         # finally auf False zurueckgesetzt.
         self.gesture_in_progress_pub.publish(Bool(data=True))
+        cancel_event = threading.Event()
         try:
-            self.catalog.play(
-                self.pepper, name, speed, feedback_cb,
-                dry_run=self.get_parameter("dry_run").value,
-                # Entwicklungsauftrag 2, AP10: jetzt tatsaechlich live
-                # verdrahtet (vorher dokumentierte Luecke aus Auftrag 1,
-                # siehe docs/GESTURE_AUTHORING.md "Live-Wiring-Stand").
-                nav2_moving=self._nav2_moving,
-            )
-            result.success = True
-            goal_handle.succeed()
-        except (KeyError, GestureValidationError) as e:
-            self.get_logger().error(f"PlayGesture '{name}' abgelehnt: {e}")
-            result.success = False
-            result.error_message = str(e)
-            goal_handle.abort()
-        except Exception as e:
-            self.get_logger().error(f"PlayGesture '{name}' fehlgeschlagen: {e}")
-            result.success = False
-            result.error_message = str(e)
-            goal_handle.abort()
+            done_event = threading.Event()
+            outcome = {"error": None}
+
+            def _run():
+                try:
+                    self.catalog.play(
+                        self.pepper, name, speed, feedback_cb,
+                        dry_run=self.get_parameter("dry_run").value,
+                        # Entwicklungsauftrag 2, AP10: jetzt tatsaechlich
+                        # live verdrahtet (vorher dokumentierte Luecke aus
+                        # Auftrag 1, siehe docs/GESTURE_AUTHORING.md
+                        # "Live-Wiring-Stand").
+                        nav2_moving=self._nav2_moving,
+                        cancel_event=cancel_event,
+                        interrupt_channel=self.interrupt_channel,
+                    )
+                except Exception as e:  # noqa: BLE001
+                    outcome["error"] = e
+                finally:
+                    done_event.set()
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            while not done_event.wait(timeout=GESTURE_POLL_INTERVAL_S):
+                if goal_handle.is_cancel_requested:
+                    self.get_logger().info(f"PlayGesture '{name}' wird abgebrochen.")
+                    cancel_event.set()
+                    done_event.wait(GESTURE_CANCEL_GRACE_S)
+                    break
+
+            if outcome["error"] is not None:
+                e = outcome["error"]
+                if isinstance(e, (KeyError, GestureValidationError)):
+                    self.get_logger().error(f"PlayGesture '{name}' abgelehnt: {e}")
+                else:
+                    self.get_logger().error(f"PlayGesture '{name}' fehlgeschlagen: {e}")
+                result.success = False
+                result.error_message = str(e)
+                goal_handle.abort()
+            elif goal_handle.is_cancel_requested:
+                result.success = False
+                result.error_message = "abgebrochen"
+                goal_handle.canceled()
+            else:
+                result.success = True
+                goal_handle.succeed()
         finally:
             self.gesture_in_progress_pub.publish(Bool(data=False))
+            self._release_lease(lease_id)
         return result
 
     # ---- Health ----
