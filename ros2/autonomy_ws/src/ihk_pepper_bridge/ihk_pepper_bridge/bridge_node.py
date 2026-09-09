@@ -20,15 +20,16 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from std_msgs.msg import String, Bool, Float32
 from ament_index_python.packages import get_package_share_directory
 
-from ihk_pepper_interfaces.action import Say, PlayGesture
+from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
 from ihk_pepper_interfaces.msg import SystemHealth
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
-from ihk_pepper_interaction.actuator_arbiter import PRIORITY_DIALOGUE
+from ihk_pepper_interaction.actuator_arbiter import HEAD, PRIORITY_ATTRACT, PRIORITY_DIALOGUE
 from ihk_pepper_interaction.resource_derivation import resources_for_gesture, resources_for_speech
 
 from .pepper_client import PepperInterruptChannel, ThreadSafePepperClient
 from .gesture_catalog import GestureCatalog, GestureValidationError
+from .joint_limits import validate_angle_with_margin
 from .tts_guard import TtsTextRejected, validate_tts_text
 from . import safety_topics
 
@@ -55,6 +56,22 @@ SAY_CANCEL_GRACE_S = 1.0
 GESTURE_POLL_INTERVAL_S = 0.1
 GESTURE_CANCEL_GRACE_S = 2.0
 OWNER_ID = "pepper_bridge"
+
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 7/12: SetHeadPose ist der
+# sichere Hardware-Grenzpunkt fuer JEDE Kopfbewegung -- konservative
+# operative Grenzen ENGER als die vollen Gelenkgrenzen aus
+# joint_limits.py (JOINT_LIMITS["HeadYaw"]=(-2.0857, 2.0857),
+# ["HeadPitch"]=(-0.7068, 0.4451)). Werte sind ein bewusst vorsichtiger
+# Startpunkt, keine kalibrierte Endgrenze -- siehe
+# docs/RESPEAKER_CALIBRATION.md.
+HEAD_YAW_OPERATIONAL_MIN_RAD = -1.2
+HEAD_YAW_OPERATIONAL_MAX_RAD = 1.2
+HEAD_PITCH_OPERATIONAL_MIN_RAD = -0.3
+HEAD_PITCH_OPERATIONAL_MAX_RAD = 0.2
+HEAD_MOVE_BASE_DURATION_S = 1.5
+HEAD_POLL_INTERVAL_S = 0.1
+HEAD_CANCEL_GRACE_S = 1.0
+HEAD_LEASE_TTL_S = 10.0
 
 
 class PepperBridgeNode(Node):
@@ -136,6 +153,13 @@ class PepperBridgeNode(Node):
             cancel_callback=self._cancel_callback,
             callback_group=cb_group,
         )
+        self.set_head_pose_action_server = ActionServer(
+            self, SetHeadPose, "set_head_pose",
+            execute_callback=self._execute_set_head_pose,
+            goal_callback=self._goal_callback_set_head_pose,
+            cancel_callback=self._cancel_callback,
+            callback_group=cb_group,
+        )
 
         self.health_pub = self.create_publisher(SystemHealth, "system_health", 10)
         interval = self.get_parameter("health_publish_interval_s").value
@@ -166,17 +190,21 @@ class PepperBridgeNode(Node):
 
     # ---- Aktuator-Arbiter (Entwicklungsauftrag 04-B, AP5B) ----
 
-    def _acquire_lease(self, resources, purpose: str, goal_id: str, ttl_s: float):
+    def _acquire_lease(self, resources, purpose: str, goal_id: str, ttl_s: float,
+                        priority: int = PRIORITY_DIALOGUE):
         """Gibt (granted, lease_id, reason) zurueck. Fail-closed: ein
         nicht erreichbarer/nicht antwortender Arbiter gewaehrt NIE
-        stillschweigend eine Aktuation."""
+        stillschweigend eine Aktuation. priority (Entwicklungsauftrag
+        04-B, AP6): Say/PlayGesture bleiben bei PRIORITY_DIALOGUE (Default,
+        unveraendert), SetHeadPose nutzt PRIORITY_ATTRACT (siehe Auftrag
+        Abschnitt 12: "im Idle-Modus Prioritaet ATTRACT")."""
         if not self.acquire_lease_client.wait_for_service(timeout_sec=1.0):
             return False, "", "actuator_arbiter nicht erreichbar"
         req = AcquireActuatorLease.Request()
         req.owner_id = OWNER_ID
         req.resources = sorted(resources)
         req.purpose = purpose
-        req.priority = PRIORITY_DIALOGUE
+        req.priority = priority
         req.ttl_s = ttl_s
         req.goal_id = goal_id
         future = self.acquire_lease_client.call_async(req)
@@ -454,6 +482,133 @@ class PepperBridgeNode(Node):
             self.gesture_in_progress_pub.publish(Bool(data=False))
             self._release_lease(lease_id)
         return result
+
+    # ---- SetHeadPose (Entwicklungsauftrag 04-B, AP6, Abschnitt 7/12) ----
+
+    def _goal_callback_set_head_pose(self, goal_request):
+        return GoalResponse.ACCEPT
+
+    def _execute_set_head_pose(self, goal_handle):
+        """Sicherer Hardware-Grenzpunkt fuer JEDE Kopfbewegung --
+        ausschliesslich HeadYaw/HeadPitch, NIEMALS die Basis. Erwirbt vor
+        jeder Bewegung eine HEAD-Lease, klemmt auf konservative operative
+        Grenzen (enger als die vollen Gelenkgrenzen), verwirft veraltete
+        Quelldaten fail-closed, und bricht bei Cancel ueber den
+        Interrupt-Kanal ab (gleiches Muster wie _execute_say/_execute_gesture)."""
+        result = SetHeadPose.Result()
+        request = goal_handle.request
+
+        source_time_s = request.source_stamp.sec + request.source_stamp.nanosec / 1e9
+        now_time_s = self.get_clock().now().nanoseconds / 1e9
+        age_s = now_time_s - source_time_s
+        if request.max_source_age_s > 0.0 and age_s > request.max_source_age_s:
+            result.success = False
+            result.error_message = (
+                f"Quelldaten zu alt ({age_s:.2f}s > {request.max_source_age_s:.2f}s) -- "
+                f"keine Bewegung auf Basis veralteter Daten."
+            )
+            goal_handle.abort()
+            return result
+
+        target_yaw = max(HEAD_YAW_OPERATIONAL_MIN_RAD, min(HEAD_YAW_OPERATIONAL_MAX_RAD, request.head_yaw_rad))
+        target_pitch = max(HEAD_PITCH_OPERATIONAL_MIN_RAD, min(HEAD_PITCH_OPERATIONAL_MAX_RAD, request.head_pitch_rad))
+        clamped = (target_yaw != request.head_yaw_rad) or (target_pitch != request.head_pitch_rad)
+        try:
+            validate_angle_with_margin("HeadYaw", target_yaw)
+            validate_angle_with_margin("HeadPitch", target_pitch)
+        except Exception as e:
+            result.success = False
+            result.error_message = f"Zielwinkel ausserhalb der Sicherheitsmarge: {e}"
+            goal_handle.abort()
+            return result
+
+        feedback = SetHeadPose.Feedback()
+        feedback.status = "acquiring_lease"
+        feedback.current_head_yaw_rad = 0.0
+        feedback.current_head_pitch_rad = 0.0
+        goal_handle.publish_feedback(feedback)
+
+        # request.owner_id ist rein informativ (Diagnose/purpose-Feld) --
+        # die tatsaechliche Lease-Eigentuemerschaft bleibt konsistent bei
+        # OWNER_ID="pepper_bridge", wie bei Say/PlayGesture: die Bridge
+        # selbst ist der Aktuator-Eigentuemer, nicht der semantische
+        # Aufrufer (z.B. orient_to_sound_node.py).
+        purpose = f"set_head_pose:{request.owner_id}" if request.owner_id else "set_head_pose"
+        granted, lease_id, reason = self._acquire_lease(
+            {HEAD}, purpose=purpose, goal_id=self._goal_id_str(goal_handle),
+            ttl_s=HEAD_LEASE_TTL_S, priority=PRIORITY_ATTRACT,
+        )
+        if not granted:
+            self.get_logger().warn(f"SetHeadPose abgelehnt (Aktuator-Arbiter): {reason}")
+            result.success = False
+            result.error_message = f"HEAD-Lease verweigert: {reason}"
+            goal_handle.abort()
+            return result
+
+        try:
+            feedback.status = "moving"
+            goal_handle.publish_feedback(feedback)
+
+            speed_scale = request.max_speed_scale if request.max_speed_scale > 0.0 else 1.0
+            speed_scale = max(0.05, min(1.0, speed_scale))
+            duration = HEAD_MOVE_BASE_DURATION_S / speed_scale
+
+            done_event = threading.Event()
+            outcome = {"error": None}
+
+            def _run():
+                try:
+                    if not self.get_parameter("dry_run").value:
+                        self.pepper.play_trajectory(
+                            ["HeadYaw", "HeadPitch"], [[target_yaw], [target_pitch]],
+                            [[duration], [duration]], is_absolute=True,
+                        )
+                except Exception as e:  # noqa: BLE001
+                    outcome["error"] = e
+                finally:
+                    done_event.set()
+
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+
+            cancelled = False
+            while not done_event.wait(timeout=HEAD_POLL_INTERVAL_S):
+                if goal_handle.is_cancel_requested:
+                    self.get_logger().info("SetHeadPose wird abgebrochen.")
+                    try:
+                        self.interrupt_channel.stop_motion()
+                    except Exception:
+                        self.get_logger().warning(
+                            "stop_motion() ueber Interrupt-Kanal fehlgeschlagen.", exc_info=True)
+                    done_event.wait(HEAD_CANCEL_GRACE_S)
+                    cancelled = True
+                    break
+
+            final_yaw, final_pitch = target_yaw, target_pitch
+            try:
+                if not self.get_parameter("dry_run").value:
+                    final_yaw = self.pepper.get_angle("HeadYaw") or target_yaw
+                    final_pitch = self.pepper.get_angle("HeadPitch") or target_pitch
+            except Exception:
+                pass  # Diagnose-Bestwertversuch -- Ergebnis faellt sonst auf das Ziel zurueck
+
+            result.final_head_yaw_rad = final_yaw
+            result.final_head_pitch_rad = final_pitch
+            if cancelled:
+                result.success = False
+                result.error_message = "abgebrochen"
+                goal_handle.canceled()
+            elif outcome["error"] is not None:
+                result.success = False
+                result.error_message = str(outcome["error"])
+                goal_handle.abort()
+            else:
+                result.success = True
+                result.error_message = "auf operative Grenze geklemmt" if clamped else ""
+                goal_handle.succeed()
+            return result
+        finally:
+            self._release_lease(lease_id)
 
     # ---- Health ----
 
