@@ -36,43 +36,67 @@ def test_valid_modes_match_required_set(launch_module):
     assert launch_module.VALID_MODES == (
         "offline_test", "microphone_test", "realsense_test",
         "pepper_gesture_test", "navigation_dry_run", "production",
+        "respeaker_offline_test", "respeaker_hardware_test",
+        "audio_visual_test", "respeaker_head_test",
+    )
+
+
+def _validate(launch_module, ctx, mode, production_confirm="false", head_test_confirm="false"):
+    return launch_module._validate_mode_and_guards(
+        ctx, TextSubstitution(text=mode), TextSubstitution(text=production_confirm),
+        TextSubstitution(text=head_test_confirm),
     )
 
 
 def test_unknown_mode_raises_before_any_node_is_declared(launch_module):
     ctx = LaunchContext()
     with pytest.raises(RuntimeError, match="unbekannter mode"):
-        launch_module._validate_mode_and_guards(
-            ctx, TextSubstitution(text="not_a_real_mode"), TextSubstitution(text="false"),
-        )
+        _validate(launch_module, ctx, "not_a_real_mode")
 
 
 def test_production_without_confirmation_flag_raises(launch_module):
     ctx = LaunchContext()
     with pytest.raises(RuntimeError, match="i_confirm_hardware_acceptance_complete"):
-        launch_module._validate_mode_and_guards(
-            ctx, TextSubstitution(text="production"), TextSubstitution(text="false"),
-        )
+        _validate(launch_module, ctx, "production", production_confirm="false")
 
 
 def test_production_with_confirmation_flag_does_not_raise(launch_module):
     ctx = LaunchContext()
-    result = launch_module._validate_mode_and_guards(
-        ctx, TextSubstitution(text="production"), TextSubstitution(text="true"),
-    )
+    result = _validate(launch_module, ctx, "production", production_confirm="true")
     assert result  # eine LogInfo-Aktion, kein Fehler
+
+
+def test_respeaker_head_test_without_confirmation_flag_raises(launch_module):
+    ctx = LaunchContext()
+    with pytest.raises(RuntimeError, match="i_confirm_head_test_supervised"):
+        _validate(launch_module, ctx, "respeaker_head_test", head_test_confirm="false")
+
+
+def test_respeaker_head_test_with_confirmation_flag_does_not_raise(launch_module):
+    ctx = LaunchContext()
+    result = _validate(launch_module, ctx, "respeaker_head_test", head_test_confirm="true")
+    assert result
 
 
 @pytest.mark.parametrize("mode", [
     "offline_test", "microphone_test", "realsense_test", "navigation_dry_run",
+    "respeaker_offline_test", "respeaker_hardware_test", "audio_visual_test",
 ])
 def test_non_production_modes_never_need_the_confirmation_flag(launch_module, mode):
     ctx = LaunchContext()
-    # production_confirm bleibt bei "false" -- darf fuer jeden anderen
-    # Modus NIE einen Fehler ausloesen (nur mode=="production" prueft das).
-    result = launch_module._validate_mode_and_guards(
-        ctx, TextSubstitution(text=mode), TextSubstitution(text="false"),
-    )
+    # production_confirm/head_test_confirm bleiben bei "false" -- darf
+    # fuer jeden anderen Modus NIE einen Fehler ausloesen.
+    result = _validate(launch_module, ctx, mode)
+    assert result
+
+
+@pytest.mark.parametrize("mode", [
+    "offline_test", "microphone_test", "realsense_test", "navigation_dry_run",
+    "respeaker_offline_test", "respeaker_hardware_test", "audio_visual_test",
+])
+def test_non_head_test_modes_never_need_the_head_test_confirmation_flag(launch_module, mode):
+    ctx = LaunchContext()
+    result = _validate(launch_module, ctx, mode, head_test_confirm="false")
     assert result
 
 
@@ -86,6 +110,11 @@ def test_motion_capable_and_enable_live_motion_default_to_false(launch_module):
     assert declares["i_confirm_hardware_acceptance_complete"].default_value[0].perform(
         LaunchContext()) == "false"
     assert declares["mode"].default_value[0].perform(LaunchContext()) == "offline_test"
+    # Entwicklungsauftrag 04-B, AP6.
+    assert declares["i_confirm_head_test_supervised"].default_value[0].perform(
+        LaunchContext()) == "false"
+    assert declares["respeaker_transport_kind"].default_value[0].perform(LaunchContext()) == "mock"
+    assert declares["respeaker_backend_kind"].default_value[0].perform(LaunchContext()) == "passthrough"
 
 
 def test_dialog_manager_node_is_never_referenced(launch_module):
@@ -187,6 +216,69 @@ def test_gesture_memory_node_always_runs_together_with_run_dialogue_action_serve
     dialog_enabled = nodes_by_executable["run_dialogue_action_server"].condition.evaluate(ctx)
     gesture_memory_enabled = nodes_by_executable["gesture_memory_node"].condition.evaluate(ctx)
     assert dialog_enabled == gesture_memory_enabled
+
+
+def test_respeaker_head_test_mode_is_the_only_one_with_bridge_live(launch_module):
+    # (perception, audio, real_camera, real_nav2, bridge_dry_run)
+    for mode_name, flags in launch_module._MODE_FLAGS.items():
+        bridge_dry_run = flags[4]
+        real_nav2 = flags[3]
+        if mode_name == "respeaker_head_test":
+            assert bridge_dry_run is False
+        # Keiner der vier neuen respeaker_*-Modi darf JEMALS real_nav2
+        # aktivieren (Auftrag: "kein Nav2" in allen vier Phasen).
+        if mode_name in launch_module.RESPEAKER_AUDIO_MODES:
+            assert real_nav2 is False
+
+
+@pytest.mark.parametrize("mode,expected_perception", [
+    ("respeaker_offline_test", False),
+    ("respeaker_hardware_test", False),
+    ("audio_visual_test", True),
+    ("respeaker_head_test", False),
+])
+def test_respeaker_mode_perception_flag_matches_spec(launch_module, mode, expected_perception):
+    perception, *_rest = launch_module._MODE_FLAGS[mode]
+    assert perception is expected_perception
+
+
+def test_actuator_arbiter_node_is_always_started(launch_module):
+    # Bestaetigter Fund (AP5B/AP6): Say/PlayGesture/SetHeadPose brauchen
+    # seit AP5B/AP6 zwingend eine Lease vom Aktuator-Arbiter -- kein
+    # Modus darf ohne ihn starten.
+    ld = launch_module.generate_launch_description()
+    executables = {e.node_executable for e in ld.entities if isinstance(e, Node)}
+    assert "actuator_arbiter_node" in executables
+
+
+def _resolve_source_kind(ld, mode):
+    audio_node = next(
+        n for n in ld.entities if isinstance(n, Node) and n.node_executable == "audio_node")
+    from launch.utilities import perform_substitutions
+    param_dict = audio_node._Node__parameters[0]
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = mode
+    ctx.launch_configurations["audio_source_kind"] = "microphone"
+    for key, value in param_dict.items():
+        # Nur den source_kind-Eintrag selbst aufloesen -- die uebrigen
+        # Parameter (respeaker_host/_user/_password/...) haetten in
+        # diesem minimalen LaunchContext (ohne die restlichen
+        # DeclareLaunchArgument-Defaults) keinen aufgeloesten Wert.
+        if perform_substitutions(ctx, list(key)) == "source_kind":
+            return perform_substitutions(ctx, list(value))
+    raise AssertionError("source_kind nicht in audio_node-Parametern gefunden")
+
+
+@pytest.mark.parametrize("mode", ["respeaker_offline_test", "respeaker_hardware_test",
+                                   "audio_visual_test", "respeaker_head_test"])
+def test_respeaker_modes_resolve_audio_source_kind_to_respeaker_core_v2(launch_module, mode):
+    ld = launch_module.generate_launch_description()
+    assert _resolve_source_kind(ld, mode) == "respeaker_core_v2"
+
+
+def test_non_respeaker_modes_keep_the_configured_audio_source_kind(launch_module):
+    ld = launch_module.generate_launch_description()
+    assert _resolve_source_kind(ld, "microphone_test") == "microphone"
 
 
 def test_gesture_memory_node_production_mode_locked_to_true_only_in_production(launch_module):

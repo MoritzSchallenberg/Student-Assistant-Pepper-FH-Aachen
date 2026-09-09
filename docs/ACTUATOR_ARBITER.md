@@ -131,6 +131,18 @@ Freigabe in JEDEM Ausstiegspfad (Erfolg/Fehler/Zeitüberschreitung/
 Cancel). Bumper/Not-Halt widerrufen die Lease bereits generisch über
 `emergency_revoke_all()`.
 
+## HEAD-Lease/SetHeadPose-Integration (Entwicklungsauftrag 04-B, AP6)
+
+`bridge_node.py::_execute_set_head_pose()` (die `SetHeadPose`-Action)
+erwirbt eine `HEAD`-Lease mit `PRIORITY_ATTRACT` (Owner `"pepper_bridge"`,
+`purpose="set_head_pose:<Aufrufer>"`) VOR jeder Kopfbewegung -- verweigert
+der Arbiter die Lease, wird `play_trajectory()` nie aufgerufen. TTL fest
+bei 10s (`HEAD_LEASE_TTL_S`, keine Erneuerung nötig -- eine einzelne
+Kopfausrichtung ist kurz genug). Freigabe in JEDEM Ausstiegspfad
+(Erfolg/Fehler/Zeitüberschreitung/Cancel). `orient_to_sound_node.py`
+(die semantische Schicht darüber) verwaltet selbst KEINE eigene Lease --
+delegiert vollständig an `SetHeadPose`.
+
 ## Serverseitiges Vertrauensmodell
 
 `actuator_arbiter_node.py` ist der einzige Ort, der Prioritäten
@@ -153,5 +165,8 @@ Priorität/`safety_ok`, Präferenzstufen-Rückstufung nicht
 vertrauenswürdiger Owner, `TORSO`/`BASE`-gegenseitiger Ausschluss,
 `renew()`/`release()`-Idempotenz. Weitere 12 Tests in
 `test_person_approach_base_lease.py` für die BASE-Lease-Integration
-(inkl. End-zu-Ende gegen ein Fake-Nav2). **Nicht live gegen echten
+(inkl. End-zu-Ende gegen ein Fake-Nav2). Weitere 11 Tests in
+`test_bridge_node_set_head_pose.py` (Entwicklungsauftrag 04-B, AP6) für
+die HEAD-Lease-Integration (Klemmung auf operative Grenzen,
+Lease-Verweigerung, Cancel, Freigabe in jedem Pfad). **Nicht live gegen echten
 Pepper getestet** -- kein Roboter in dieser Session erreichbar.

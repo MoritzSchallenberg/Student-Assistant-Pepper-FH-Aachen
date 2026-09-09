@@ -50,7 +50,8 @@ Pepper (NAOqi) --SSH/qicli--> apps/web/pepper/qicli.py
                                         +---------------+----------------+
                                         |               |                |
                               ihk_pepper_audio  ihk_pepper_dialog  ihk_pepper_perception
-                              (Zuhören/Whisper)  (FAQ+AnythingLLM)  (YOLO-Personentracking)
+                        (Zuhören/Whisper/Wakeword/  (FAQ+AnythingLLM)  (YOLO-Personentracking +
+                         ReSpeaker-Richtung*)                          audiovisuelle Zuordnung*)
                                         |               |                |
                                         +-------+-------+----------------+
                                                 |
@@ -68,6 +69,10 @@ Pepper (NAOqi) --SSH/qicli--> apps/web/pepper/qicli.py
 Alle Pakete unter `ros2/autonomy_ws/src/`, Gesamtstart über
 `ihk_pepper_bringup`. Details, Topic-/Service-/Action-Liste und
 Testabdeckung: [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md).
+
+\* ReSpeaker Core v2.0/Wakeword-gesteuerte Begrüßung (Entwicklungsauftrag
+04-B, AP6) -- kein ReSpeaker/Pepper in der Entwicklungssession
+erreichbar, siehe [`docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`](docs/RESPEAKER_HARDWARE_ACCEPTANCE.md).
 
 ## Verzeichnisse
 
@@ -96,6 +101,9 @@ Testabdeckung: [`docs/IMPLEMENTATION_REPORT.md`](docs/IMPLEMENTATION_REPORT.md).
   Sicherheitshinweise, Next Steps
 - [`docs/GITHUB_DEPLOYMENT_REPORT.md`](docs/GITHUB_DEPLOYMENT_REPORT.md) --
   ehrlicher Statusbericht zu GitHub-Repo/Ansible-Deployment/NUC-Betrieb
+- [`docs/RESPEAKER_CORE_V2_INTEGRATION.md`](docs/RESPEAKER_CORE_V2_INTEGRATION.md) --
+  Wakeword-gesteuerte Begrüßung, ReSpeaker-Gesamtarchitektur
+  (Entwicklungsauftrag 04-B, AP6)
 
 ## Deployment auf einen Pepper-NUC
 

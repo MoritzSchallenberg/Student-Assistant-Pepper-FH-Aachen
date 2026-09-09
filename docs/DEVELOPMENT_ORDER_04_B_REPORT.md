@@ -410,3 +410,191 @@ Als Nächstes ausdrücklich vorgesehen: **AP6** (ReSpeaker Core v2.0, DoA,
 Beamforming, Wakeword) -- laut Auftrag ausdrücklich erst NACH einem
 abgeschlossenen AP5B ("Dieses Arbeitspaket ist die zwingende
 Sicherheitsgrundlage für AP6").
+
+## AP6: ReSpeaker Core v2.0, gerichtetes Hören und audiovisuelle Gesprächseröffnung
+
+Umgesetzt in 7 Commits auf demselben Branch
+(`order-04b-kiconnect-gesture-memory-lifecycle-audio`), direkt auf dem
+AP5B-Abschluss-Commit (`5eab935`) aufbauend -- Baseline vor AP6 erneut
+verifiziert (Branch/Commit/working tree sauber, 692/692 Python-Tests,
+BT.CPP 23/0/0/4).
+
+### Commit 1/7: audit ReSpeaker hardware and define audio contracts
+
+Kein ReSpeaker Core v2.0 in dieser Session erreichbar -- die geforderte
+Hardware-/Transportanalyse (Abschnitt 4) ist ein ehrlicher,
+literaturbasierter Befund (`docs/RESPEAKER_TRANSPORT.md`), keine
+Live-Sondierung. Neue ROS2-Schnittstellen: `SoundDirection.msg`
+(bewusst ohne Elevationsfeld), `WakewordEvent.msg`, `AudioFocusState.msg`,
+`SetHeadPose.action`, `OrientToSound.action`. Neue Vertragsmodule
+(`ihk_pepper_audio/respeaker_transport.py`, `directional_audio.py`,
+`ssh_hardening.py`) mit den abstrakten Basen + sofort funktionsfähigen
+Referenzimplementierungen (`MockPcmTransport`, `PassthroughTestBackend`).
+26 neue Tests.
+
+### Commit 2/7: add ReSpeaker multichannel source and transports
+
+Die drei konkreten Transporte (`LocalAlsaTransport`/`SshPcmTransport`/
+`NetworkPcmTransport`) implementiert -- alle drei
+`hwverificationrequired`. Neue `ReSpeakerCoreV2Source(AudioSource)`:
+validiert Kanalzahl fail-closed, erkennt Paketverluste, verwirft
+veraltete Frames, hält den Mono-Puffer begrenzt, veröffentlicht
+Diagnosedaten als Attribute. Bestätigter Fund behoben:
+`PepperPulseAudioSource.connect()` verwendete `paramiko.AutoAddPolicy()`
+-- auf dieselbe Härtung wie `qicli.py` (Entwicklungsauftrag 4)
+umgestellt. 26 neue Tests.
+
+### Commit 3/7: implement wakeword, DoA and directional audio backend
+
+Neue `GccPhatDelayAndSumBackend` -- Standard-GCC-PHAT zwischen zwei
+konfigurierten Mikrofonkanälen (Richtung) + einfaches Delay-and-Sum
+(Mono-Signal), ehrlich als Zwei-Mikrofon-Halbebenen-Näherung
+dokumentiert. Neues `wakeword_gate.py::WakewordGate` (Mindestkonfidenz/
+Cooldown/Gesprächszustand). **Bestätigter Fund behoben**: das bisherige
+`_session_active`-Flag in `audio_node.py` war ein EWIGER Ratchet --
+einmal per Wakeword gesetzt, nie zurückgesetzt (jede folgende Äußerung
+wäre für den Rest des Prozesslaufs transkribiert worden). Ersetzt durch
+eine begrenzte Sitzungsdauer (`session_active_timeout_s`) UND ein neues
+Abonnement von `/interaction_state` als zentrale Wahrheitsquelle für den
+Gesprächszustand (fail-closed bei fehlenden/veralteten Daten). 34 neue
+Tests.
+
+### Commit 4/7: add safe sound-oriented head action with HEAD lease
+
+Neue `SetHeadPose`-Action (`bridge_node.py`) -- sicherer Hardware-
+Grenzpunkt, ausschließlich `HeadYaw`/`HeadPitch`, erwirbt eine
+`HEAD`-Lease (`PRIORITY_ATTRACT`), klemmt auf konservative operative
+Grenzen (enger als die vollen Gelenkgrenzen), verwirft Bewegungen auf
+Basis veralteter Quelldaten, bricht bei Cancel über den bestehenden
+Interrupt-Kanal ab. Neuer Node `orient_to_sound_node.py`
+(`ihk_pepper_interaction`) -- semantische Schicht, berechnet ein
+sicheres Kopfziel, prüft VOR jedem Versuch alle Sicherheitsvorbedingungen
+(Gesprächszustand, Mapping, Nav2, Pepper-Verbindung, SafetyState/
+Not-Halt/Bumper), HeadPitch wird NIE aus der Schallrichtung berechnet
+(keine Elevation verfügbar). 31 neue Tests.
+
+### Commit 5/7: implement audio-visual person association
+
+Neues `audiovisual_association.py` (reine Logik) + Node +
+`AssociatePersonWithSound`-Service: ordnet eine Schallrichtung genau
+EINER RealSense-Person zu oder KEINER bei Mehrdeutigkeit -- keine
+Gesichtserkennung zum Auflösen von Mehrdeutigkeit. Ehrlich dokumentiert:
+Keepout-Zonen-Prüfung im Funktionsvertrag vorbereitet, im ROS-Wrapper
+NICHT verdrahtet (fehlende Map-Frame-Transformation der Tracks). 19 neue
+Tests.
+
+### Commit 6/7: integrate wakeword greeting subtree and conversation focus
+
+`GreetAndApproachSubtree` wählt keine Person mehr selbstständig
+(`SelectStablePerson` entfernt) -- `target_track_id` kommt von
+`FindPersonNearSoundRay`. Fünf neue BT-Knoten
+(`WaitForFreshWakeword`/`IsHeadOrientationAllowed`/`OrientHeadToSound`/
+`FindPersonNearSoundRay`/`IsUnsolicitedAttractAllowed`), eine
+Wiederverwendung (`IsConversationInactive` = bestehende
+`InteractionStateCondition` unter neuem Namen). Das bisherige ungefragte
+Winken in `IdleAttractSubtree` ist per Default gesperrt
+(`allow_unsolicited_attract=false`). Neues `audio_focus.py` --
+vollständige, reine Zustandsmaschine für den Gesprächsfokus
+(`IDLE_WIDE` → ... → `CONVERSATION_FOCUS`/`PEPPER_SPEAKING` →
+`RETURNING_TO_IDLE`, plus `AUDIO_DEGRADED` bei Zielverlust). Ehrlich
+dokumentiert: der Übergang zu `CONVERSATION_FOCUS` ist im Node
+vereinfacht (reagiert auf `CONVERSATION_READY`, kennt aber noch nicht
+die konkrete `track_id`/Richtung aus `FindPersonNearSoundRay`). 19 neue
+Tests, BT.CPP unverändert 23/0/0/4 (kein neuer funktionaler gtest für
+die fünf neuen Knoten -- derselbe, bereits in AP5B dokumentierte
+Mock-Action-Server-Harness-Mangel).
+
+### Commit 7/7: add launch modes, tests, Ansible config and documentation
+
+Vier neue Launch-Modi in `interaction_full_safe.launch.py`
+(`respeaker_offline_test`/`respeaker_hardware_test`/`audio_visual_test`/
+`respeaker_head_test`) -- `respeaker_head_test` als einziger mit echter
+Kopfbewegung (`bridge_dry_run=False`), hinter einer eigenen expliziten
+Bestätigung (`i_confirm_head_test_supervised`) gesperrt, analog zum
+bestehenden `production`-Muster. **Bestätigter, unabhängiger Fund
+behoben**: `actuator_arbiter_node` wurde von KEINEM Launch-Modus
+gestartet (seit AP5B!) -- ohne ihn hätten Say/PlayGesture/SetHeadPose
+in JEDEM bisherigen Modus mit "actuator_arbiter nicht erreichbar"
+fehlschlagen müssen. Jetzt in jedem Modus gestartet. Neue
+Ansible-Rolle `respeaker_audio` (NUC-Pakete + Konfigurationsvorlage,
+optionaler Capture-Dienst als Vorlage vorbereitet, NICHT automatisch
+auf den ReSpeaker ausgerollt -- kein eigener Inventar-Host definiert).
+6 neue Dokumente (`docs/RESPEAKER_CORE_V2_INTEGRATION.md`,
+`docs/AUDIO_FOCUS_AND_BEAMFORMING.md`,
+`docs/AUDIO_VISUAL_PERSON_ASSOCIATION.md`,
+`docs/RESPEAKER_CALIBRATION.md`, `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`,
+dieser Abschnitt), aktualisiert (`README.md`, `docs/CAPABILITIES.md`,
+`docs/STATUS.md`, `docs/BEHAVIOR_TREE.md`, `docs/ACTUATOR_ARBITER.md`,
+`docs/ACTION_CANCELLATION.md`). 23 neue Tests
+(`test_interaction_full_safe_launch.py`).
+
+### Testzusammenfassung
+
+- **Python**: 870 Tests grün, 3 übersprungen (vor AP6: 692) -- **+178
+  neue Tests** über die 7 Commits.
+- **BT.CPP**: unverändert 23 Tests, 0 Fehler, 0 Fehlschläge, 4
+  übersprungen -- keine Regression, aber auch kein neuer funktionaler
+  Test für die fünf neuen BT-Knoten (gleicher, in AP5B bereits
+  dokumentierter Mock-Action-Server-Harness-Mangel).
+- Harter Grep-Test `/cmd_vel` über alle in AP6 geänderten/neuen Dateien:
+  kein Treffer. `navigation_live.launch.py` wurde zu keinem Zeitpunkt
+  gestartet, kein echter `ros2 launch`-Prozessstart in dieser Session.
+
+### Gewählter ReSpeaker-Transport/erkannter ALSA-Gerätename/Kanalreihenfolge
+
+**Keiner verifiziert.** `respeaker_transport_kind` bleibt Standard
+`mock`. Der Gerätename `seeed-8mic-voicecard` und die Kanalzuordnung
+(`microphone_channels=[0,1,2,3,4,5]`, `loopback_channels=[6,7]`) sind
+literaturbasierte Vorlagen aus verwandten Seeed-ReSpeaker-Produkten
+(4-/6-Mic-Array-HATs), NICHT am Core v2.0 selbst nachgemessen -- siehe
+`docs/RESPEAKER_TRANSPORT.md`, Abschnitt "Was noch zu verifizieren ist".
+
+### Verwendetes Wakeword-Modell/DoA-Backend
+
+Kein Wakeword-Modell trainiert/mitgeliefert in dieser Session --
+`WakewordDetector` (openWakeWord, aus Entwicklungsauftrag 3) bleibt ohne
+konfiguriertes Modell deaktiviert (`enabled=False`, fail-closed,
+unverändertes Verhalten). Produktiv vorgesehenes DoA-Backend:
+`GccPhatDelayAndSumBackend` (CPU-Fallback). `PassthroughTestBackend` für
+reine Verdrahtungstests ohne jede Richtungsbehauptung.
+
+### Ehrlicher Stand / bekannte Lücken
+
+- **Die TF-Transformation der Schallrichtung (`respeaker_link` →
+  `base_link`) ist NICHT implementiert** (Auftrag Abschnitt 11) -- der
+  vom `DirectionalAudioBackend` gelieferte Rohwinkel wird unverändert
+  als "bereits in `base_link`" weitergereicht. Das ist die wichtigste
+  offene Lücke dieses Arbeitspakets, siehe
+  `docs/RESPEAKER_CORE_V2_INTEGRATION.md`, Abschnitt TF, für den
+  empfohlenen nächsten Schritt. Blockiert Hardwareabnahme-Phase B/E
+  vollständig.
+- Die GCC-PHAT-Konfidenzformel ist ausdrücklich NICHT kalibriert (siehe
+  `docs/RESPEAKER_CALIBRATION.md`).
+- Die Keepout-Zonen-Prüfung in der audiovisuellen Zuordnung ist
+  vorbereitet, aber nicht verdrahtet (siehe
+  `docs/AUDIO_VISUAL_PERSON_ASSOCIATION.md`).
+- `audio_focus_node.py`s Übergang zu `CONVERSATION_FOCUS` ist
+  vereinfacht (siehe `docs/AUDIO_FOCUS_AND_BEAMFORMING.md`).
+- GCC-PHAT liefert nur eine Zwei-Mikrofon-Halbebenen-Schätzung, keine
+  volle 360-Grad-Auflösung über alle Kanäle.
+- Kein AEC implementiert (Auftrag erlaubt das ausdrücklich -- Halbduplex
+  bleibt verpflichtend, `allow_barge_in` bleibt `false`).
+- Kein Wakeword-Modell/keine ReSpeaker-Hardware/kein Pepper-Kopf real
+  getestet -- alle fünf Hardwaretestphasen (A-E) NICHT durchgeführt,
+  siehe `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`.
+- Keine Livebewegung, kein `/cmd_vel`, kein `navigation_live.launch.py`,
+  kein Push auf `main`, kein Force-Push.
+- Working Tree nach Abschluss dieses Arbeitspakets sauber, 7 klar
+  abgegrenzte Commits.
+
+### Empfehlung für das nächste Arbeitspaket
+
+Vor jeder weiteren Hardwarearbeit an AP6 selbst: die TF-Transformation
+(`respeaker_link` → `base_link`) implementieren -- ohne sie bleiben die
+Hardwaretestphasen B und E strukturell blockiert. Danach: die
+Kalibrierung nach `docs/RESPEAKER_CALIBRATION.md` an echter Hardware
+durchführen (Phase A), sobald ein ReSpeaker Core v2.0 verfügbar ist.
+Unabhängig davon aus dem ursprünglichen Gesamtplan weiterhin offen:
+AP13 (ID-Trennung + echte Retriever-Anbindung verifizieren), AP8
+(weitere kinematisch entwickelte Gesten), AP14 (Emotion-Gating). Die
+endgültige Priorisierung bleibt beim Auftraggeber.

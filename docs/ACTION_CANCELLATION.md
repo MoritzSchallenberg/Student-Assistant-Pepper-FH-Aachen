@@ -126,6 +126,21 @@ Ende weiter. `_cancel_callback()` bricht jetzt sofort das aktive
 Say-Ziel ab (`_active_say_goal_handle` + `_cancel_active_say()`), bevor
 die eigentliche `_execute()`-Schleife überhaupt reagiert.
 
+### 6. SetHeadPose/OrientHeadToSound (Entwicklungsauftrag 04-B, AP6)
+
+Neuer, sechster Cancel-Pfad, derselben Architektur folgend:
+`bridge_node.py::_execute_set_head_pose()` läuft im Hintergrundthread
+mit begrenztem Polling (`HEAD_POLL_INTERVAL_S`/`HEAD_CANCEL_GRACE_S`,
+gleiches Muster wie `_execute_say`/`_execute_gesture`) -- ein Cancel
+ruft `self.interrupt_channel.stop_motion()` über denselben zweiten
+SSH-Kanal wie Say/PlayGesture auf. Der BT-Knoten `OrientHeadToSound`
+verwendet dieselbe `waitForBoundedCancelConfirmation()`-Hilfsfunktion
+wie die anderen fünf Action-Knoten (siehe `docs/BEHAVIOR_TREE.md`).
+`orient_to_sound_node.py::_send_goal_and_wait()` bricht bei eigenem
+Timeout oder bei eigenem Cancel ebenfalls aktiv das laufende
+`SetHeadPose`-Ziel ab (begrenzte 2.0s-Bestätigungswartezeit, gleiches
+Muster wie `run_dialogue_action_server.py`).
+
 ## `CancelActuation`-Service (Arbiter-Ebene)
 
 Ein zusätzlicher, ressourcenzentrierter Abbruchweg über den Aktuator-

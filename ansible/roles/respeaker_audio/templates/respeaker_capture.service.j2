@@ -1,0 +1,28 @@
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 4/17: systemd-Unit-VORLAGE
+# fuer den optionalen, minimalen Capture-Prozess AUF dem ReSpeaker Core
+# v2.0 selbst (siehe docs/RESPEAKER_TRANSPORT.md). NICHT automatisch
+# ausgerollt (siehe tasks/main.yml) -- manuell auf den ReSpeaker kopieren,
+# NACHDEM dessen Host-Key bewusst verifiziert wurde.
+#
+# Der gestartete Befehl enthaelt bewusst NUR ein arecord-Rohdatenpipe --
+# KEINE Dialoglogik, kein LLM, keine Bewegungssteuerung (Auftrag
+# Abschnitt 4: "Dieser Prozess darf keine Dialoglogik, kein LLM und
+# keine Bewegungssteuerung enthalten").
+[Unit]
+Description=ihk-pepper ReSpeaker Rohaudio-Capture (minimal, kein LLM/keine Bewegung)
+After=network.target sound.target
+
+[Service]
+Type=simple
+# Reiner Rohdaten-Stream -- der NUC-seitige SshPcmTransport verbindet
+# sich zu diesem Prozess und liest stdout blockweise, siehe
+# ihk_pepper_audio/respeaker_transport.py::SshPcmTransport.
+ExecStart=/usr/bin/arecord -D {{ respeaker_device_name }} -f S16_LE -r {{ respeaker_sample_rate_hz }} -c {{ respeaker_input_channels }} --raw -
+Restart=on-failure
+RestartSec=3
+User=nobody
+NoNewPrivileges=true
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

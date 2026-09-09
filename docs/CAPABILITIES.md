@@ -76,6 +76,7 @@ Präsentation/Navigation, was getestet ist und was nicht): siehe
 | Fähigkeit | Python-Methode (`qicli.py`) | Status | Anmerkung |
 |---|---|---|---|
 | Hören + Sprache verstehen (frei, per Whisper/LLM) | `apps/web/stt/listen_loop.py` (eigenes Skript, nicht in qicli.py) | ✅ getestet, funktioniert | Kein `naoqi_driver2`/ROS nötig, nur SSH (PulseAudio-Umweg) |
+| Wakeword ("Pepper") + grobe Schallrichtung (Kopf-Mikrofonarray) | `ihk_pepper_audio/audio_node.py`+`wakeword_gate.py`+`directional_audio.py` | ⚠️ nur gegen Mocks/synthetische Signale getestet | Kein ReSpeaker Core v2.0 in der Entwicklungssession erreichbar, siehe `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md` (Entwicklungsauftrag 04-B, AP6) |
 | Hören (eingebaut, NAOqi) | — (`ALSpeechRecognition`, kein Wrapper) | ⚠️ Sprachen getestet, Erkennung selbst nicht | Nur feste Vokabelliste, kein freies Sprachverstehen |
 | Kamera (Front/Unten/Tiefe/Stereo) | ROS-Topics `/camera/{front,bottom,depth,stereo}/image_raw` | ✅ getestet | ~1 Hz, 320x240 |
 | Personen/Gesichter erkennen (Rohdaten) | — | ⚠️ blockiert | `HumanPerception`-Signale weder per `qicli` noch `ALMemory` abrufbar — bräuchte echte `qi`-Signal-Subscription, die am TLS-Problem hängt. **Bewusst nicht weiterverfolgt** (siehe Architektur-Entscheidung oben) |

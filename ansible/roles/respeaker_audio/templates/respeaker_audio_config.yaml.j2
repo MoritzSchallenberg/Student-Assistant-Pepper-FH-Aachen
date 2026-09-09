@@ -1,0 +1,34 @@
+{# Entwicklungsauftrag 04-B, AP6, Abschnitt 5/17: entspricht dem im
+   Auftrag gezeigten audio.*-Schema. Kanalzuordnung ist eine Vorlage,
+   siehe docs/RESPEAKER_TRANSPORT.md ("Was noch zu verifizieren ist"). #}
+audio:
+  source_kind: respeaker_core_v2
+  sample_rate_hz: {{ respeaker_sample_rate_hz }}
+  sample_format: S16_LE
+  input_channels: {{ respeaker_input_channels }}
+  microphone_channels: {{ respeaker_microphone_channels }}
+  loopback_channels: {{ respeaker_loopback_channels }}
+  device_name: {{ respeaker_device_name }}
+  transport: {{ respeaker_transport_kind }}
+  respeaker_host: "{{ respeaker_host }}"
+  respeaker_user: "{{ respeaker_user }}"
+  block_duration_ms: 20
+  maximum_buffer_ms: 500
+  maximum_frame_age_ms: 200
+
+audio_focus:
+  enabled: true
+  focus_half_angle_deg: {{ audio_focus_half_angle_deg }}
+  minimum_doa_confidence: {{ doa_min_confidence }}
+  smoothing_window: 5
+  target_track_max_age_s: 0.5
+  target_loss_timeout_s: {{ audio_focus_target_loss_timeout_s }}
+  reject_outside_focus: true
+
+wakeword:
+  model_path: "{{ wakeword_model_path }}"
+  min_confidence: {{ wakeword_min_confidence }}
+
+doa:
+  backend_kind: {{ respeaker_backend_kind }}
+  mic_spacing_m: {{ respeaker_mic_spacing_m }}

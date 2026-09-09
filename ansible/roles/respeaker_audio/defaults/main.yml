@@ -1,0 +1,30 @@
+---
+# respeaker_audio: Konfigurationsvorlagen + NUC-Pakete fuer den
+# ReSpeaker Core v2.0 (Entwicklungsauftrag 04-B, AP6, Abschnitt 17).
+# Sichere Defaults -- respeaker_transport_kind bleibt "mock", solange
+# kein reales Geraet konfiguriert ist (kein stillschweigender lokaler
+# ALSA-Zugriff/keine SSH-Verbindung ohne bewusste Aenderung).
+respeaker_transport_kind: mock
+respeaker_input_channels: 8
+respeaker_sample_rate_hz: 16000
+respeaker_device_name: seeed-8mic-voicecard
+respeaker_host: ""
+respeaker_user: ""
+# respeaker_password gehoert NIE hier hinein -- ausschliesslich in die
+# bereits vorgesehene Secret-Verwaltung (siehe
+# ansible/roles/pepper_services/templates/env_secrets.j2-Muster).
+respeaker_microphone_channels: [0, 1, 2, 3, 4, 5]
+respeaker_loopback_channels: [6, 7]
+respeaker_backend_kind: passthrough
+respeaker_mic_spacing_m: 0.035
+wakeword_model_path: ""
+wakeword_min_confidence: 0.5
+doa_min_confidence: 0.3
+audio_focus_half_angle_deg: 30.0
+audio_focus_target_loss_timeout_s: 2.0
+
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 17: der optionale
+# Capture-Dienst laeuft AUF dem ReSpeaker selbst (eigener Inventar-Host,
+# noch NICHT definiert) -- bleibt per Default deaktiviert, siehe
+# tasks/main.yml fuer den genauen, absichtlich manuellen Ablauf.
+enable_respeaker_capture_service: false

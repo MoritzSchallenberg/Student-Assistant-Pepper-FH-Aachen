@@ -11,3 +11,7 @@
   roles:
     - pepper_deploy
     - pepper_services
+    # Entwicklungsauftrag 04-B, AP6: ReSpeaker-Konfigurationsvorlage +
+    # NUC-Audiopakete. Sichere Defaults (respeaker_transport_kind=mock)
+    # -- siehe roles/respeaker_audio/defaults/main.yml.
+    - respeaker_audio

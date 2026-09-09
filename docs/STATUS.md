@@ -333,3 +333,23 @@ getestet, siehe `IMPLEMENTATION_REPORT.md`).
 **Getestet ohne angeschlossenen Pepper** (Pepper war die ganze Session
 aus) -- Software-Verhalten/Zustandsmaschinen/Sicherheitslogik sind real
 verifiziert, echte SSH/qicli-Kommunikation mit dem Roboter NICHT.
+
+## ReSpeaker Core v2.0/Wakeword (Entwicklungsauftrag 04-B, AP6, Stand 2026-09-09)
+
+Neue Fähigkeit: Wakeword-gesteuerte Begrüßung ("Pepper" sagen → Kopf
+dreht sich vorsichtig zur groben Schallrichtung → RealSense bestätigt
+eine eindeutige Person → erst dann winkt Pepper). Vollständige
+Architektur/ehrlicher Stand: **`docs/RESPEAKER_CORE_V2_INTEGRATION.md`**.
+
+**Kein ReSpeaker Core v2.0 und kein Pepper in dieser Session
+erreichbar** -- alle neuen Module (`ihk_pepper_audio/respeaker_transport.py`,
+`directional_audio.py`, `wakeword_gate.py`, `audio_focus.py`,
+`ihk_pepper_interaction/orient_to_sound_node.py`,
+`ihk_pepper_perception/audiovisual_association.py`, die neuen
+Behavior-Tree-Knoten) sind ausschließlich gegen Fakes/Mocks/synthetische
+Signale getestet. Fünf Hardware-Testphasen definiert, KEINE davon
+durchgeführt -- siehe `docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`.
+Bekannte, offen dokumentierte Lücke: die TF-Transformation der
+Schallrichtung von `respeaker_link` nach `base_link` ist noch nicht
+implementiert (siehe `docs/RESPEAKER_CORE_V2_INTEGRATION.md`, Abschnitt
+TF).

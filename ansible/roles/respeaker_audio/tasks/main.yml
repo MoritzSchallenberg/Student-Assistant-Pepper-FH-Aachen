@@ -1,0 +1,41 @@
+---
+# respeaker_audio: NUC-seitige Vorbereitung fuer den ReSpeaker Core v2.0
+# (Entwicklungsauftrag 04-B, AP6, Abschnitt 17). Installiert NUR
+# benoetigte Audiopakete + eine Konfigurationsvorlage -- KEINE
+# Netzwerkadress-Aenderung am ReSpeaker, KEIN Firmware-Flash, KEIN
+# Standardpasswort, KEIN automatisches Host-Key-Akzeptieren.
+
+- name: ALSA-Werkzeuge installieren (arecord, fuer local_alsa-Transport)
+  become: true
+  ansible.builtin.apt:
+    name: alsa-utils
+    state: present
+    update_cache: true
+
+- name: ReSpeaker-Audiokonfiguration schreiben
+  become: true
+  ansible.builtin.template:
+    src: respeaker_audio_config.yaml.j2
+    dest: "{{ pepper_config_dir }}/respeaker_audio.yaml"
+    owner: "{{ pepper_system_user }}"
+    group: "{{ pepper_system_group }}"
+    mode: "0640"
+  notify: ihk-pepper Dienste neu starten
+
+# Entwicklungsauftrag 04-B, AP6, Abschnitt 17: "einen optionalen
+# Capture-Dienst auf dem ReSpeaker selbst vorbereiten" -- der Dienst
+# LAEUFT auf dem ReSpeaker (nicht dem NUC, den diese Rolle sonst
+# konfiguriert). Bewusst NICHT automatisch ausgerollt, solange kein
+# eigener Inventar-Host fuer den ReSpeaker existiert (kein Playbook in
+# diesem Repository zielt aktuell auf ein zweites Geraet) -- die
+# Unit-Datei liegt als Vorlage bereit (templates/respeaker_capture.service.j2),
+# manuell auf den ReSpeaker zu kopieren, NACHDEM dessen Host-Key bewusst
+# verifiziert wurde (siehe docs/RESPEAKER_TRANSPORT.md).
+- name: Hinweis -- Capture-Dienst-Vorlage bereit, aber nicht automatisch ausgerollt
+  ansible.builtin.debug:
+    msg: >
+      respeaker_capture.service.j2 liegt unter roles/respeaker_audio/templates/ bereit.
+      Kein automatischer Rollout auf den ReSpeaker in dieser Rolle (kein eigener
+      Inventar-Host definiert, siehe Moduldoku) -- manuell kopieren, NACHDEM der
+      ReSpeaker-Host-Key bewusst verifiziert wurde.
+  when: enable_respeaker_capture_service

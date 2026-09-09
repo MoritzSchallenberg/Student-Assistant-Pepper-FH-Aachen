@@ -2,7 +2,8 @@
 
 Stand: 2026-09-09. Entwicklungsauftrag 1 (Grundgerüst), erweitert über
 Entwicklungsauftrag 3 (Dialog/Gedächtnis) und Entwicklungsauftrag 04-B
-(Cancel-Propagation, AP5B). Implementierung:
+(Cancel-Propagation, AP5B; Wakeword-gesteuerte Begrüßung, AP6).
+Implementierung:
 `ros2/autonomy_ws/src/ihk_pepper_behavior_tree/` (`bt_nodes.hpp/.cpp`,
 `bt_executor_node.cpp`, `trees/pepper_main.xml`). Für Groot2-Bedienung,
 Baumaufbau und Build-Nachweis siehe das ausführlichere
@@ -32,6 +33,45 @@ Cancel-Propagation dieses Dokuments.
 | `RunDialogueViaBT` | `/run_dialogue` | ja |
 | `WaitForGestureFromTrack` | (Topic-Subscription, keine Action) | nein -- kein Goal abzubrechen |
 | `SetInteractionState` | `/set_interaction_state` (Service) | nein -- kein Goal abzubrechen |
+| `OrientHeadToSound` (AP6) | `/orient_to_sound` | ja |
+| `FindPersonNearSoundRay` (AP6) | `/associate_person_with_sound` (Service) | nein -- kein Goal abzubrechen |
+| `WaitForFreshWakeword` (AP6) | (Topic-Subscription, keine Action) | nein -- kein Goal abzubrechen |
+| `IsHeadOrientationAllowed`/`IsConversationInactive`/`IsUnsolicitedAttractAllowed` (AP6) | (Bedingungen, kein Goal) | nein |
+
+## Wakeword-gesteuerte Begrüßung (Entwicklungsauftrag 04-B, AP6, Abschnitt 14)
+
+`GreetAndApproachSubtree` wählt seit AP6 KEINE Person mehr
+selbstständig (das bisherige `SelectStablePerson` ist entfernt) --
+`target_track_id` kommt stattdessen von `FindPersonNearSoundRay`
+(audiovisuelle Zuordnung zur gemessenen Schallrichtung, siehe
+`docs/AUDIO_VISUAL_PERSON_ASSOCIATION.md`). Ablauf: `IsSystemReady` →
+`IsConversationInactive` → `WaitForFreshWakeword` →
+`IsHeadOrientationAllowed` → `OrientHeadToSound` →
+`FindPersonNearSoundRay` → (unverändert) `HasGreetingCooldownExpired` →
+`PlayCatalogGesture wave_right` → `WaitForGestureFromTrack` →
+`IsApproachAllowed` → `ApproachSelectedPerson` →
+`SetInteractionState CONVERSATION_READY`.
+
+`IsConversationInactive` ist keine neue C++-Klasse -- die bestehende
+`InteractionStateCondition` ist nur unter einem zweiten Namen mit
+`expected_state=INTERACTION_STATE_IDLE` registriert (siehe
+`bt_executor_node.cpp`).
+
+Das bisherige ungefragte Winken in `IdleAttractSubtree` (allein durch
+`IsPersonAttracted`) ist per Default gesperrt: `IsUnsolicitedAttractAllowed`
+liest den ROS2-Parameter `allow_unsolicited_attract` (Standard `false`)
+des `bt_executor`-Node.
+
+**Vereinfachung gegenüber dem Auftrags-Beispiel-Subtree**: Die dort
+genannten `CheckAudioDirection`/`ConfirmStablePersonTrack`/
+`ReleaseHeadLease` sind bewusst nicht als eigene Knoten umgesetzt --
+`WaitForFreshWakeword` prüft Richtungsgültigkeit bereits mit,
+`FindPersonNearSoundRay`s harte Filter (siehe
+`docs/AUDIO_VISUAL_PERSON_ASSOCIATION.md`) schließen die
+Mehrframen-Stabilität bereits ein, und die HEAD-Lease wird vollständig
+innerhalb von `SetHeadPose` (bridge_node.py) verwaltet -- kein
+BT-seitiges Freigeben nötig. Siehe `docs/DEVELOPMENT_ORDER_04_B_REPORT.md`
+für die vollständige Begründung.
 
 ## `onHalted()`-Cancel-Architektur (Entwicklungsauftrag 04-B, AP5B, Abschnitt 13)
 
@@ -99,3 +139,12 @@ Lint-/Stil-Prüfungen, kein gtest-Harness mit echtem `rclcpp_action`).
 Kein echter Pepper/keine echte RealSense in dieser Session erreichbar
 -- alle Action-Aufrufe schlagen ohne laufende Gegenstelle mit `FAILURE`
 fehl (erwartet, siehe `ihk_pepper_behavior_tree/README.md`).
+
+**Entwicklungsauftrag 04-B, AP6**: die fünf neuen Knoten
+(`WaitForFreshWakeword`/`IsHeadOrientationAllowed`/`OrientHeadToSound`/
+`FindPersonNearSoundRay`/`IsUnsolicitedAttractAllowed`) haben aus
+demselben Grund KEINE eigenen gtests -- Build+Lint bleiben grün
+(weiterhin 23/0/0/4, unverändert gegenüber AP5B). `pepper_main.xml` ist
+nach jeder Änderung erneut mit `xmllint`/`ET.parse` geprüft worden
+(die wiederkehrende "--"-in-Kommentar-Falle trat erneut auf und wurde
+mit einem Halbgeviertstrich statt Doppelbindestrich behoben).
