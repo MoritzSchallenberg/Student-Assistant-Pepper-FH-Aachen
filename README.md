@@ -104,6 +104,24 @@ erreichbar, siehe [`docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`](docs/RESPEAKER_HARDW
 - [`docs/RESPEAKER_CORE_V2_INTEGRATION.md`](docs/RESPEAKER_CORE_V2_INTEGRATION.md) --
   Wakeword-gesteuerte Begrüßung, ReSpeaker-Gesamtarchitektur
   (Entwicklungsauftrag 04-B, AP6)
+- [`docs/PERSON_ROLES_AND_AUTHORIZATION.md`](docs/PERSON_ROLES_AND_AUTHORIZATION.md) --
+  Rollenmodell, `peoplectl`, privilegierte Befehle
+  (Entwicklungsauftrag 04-B, AP7)
+- [`docs/FACE_IDENTITY_AND_PRIVACY.md`](docs/FACE_IDENTITY_AND_PRIVACY.md) --
+  einwilligungsgebundene Gesichtsidentität, Liveness, separater
+  biometrischer Speicher
+- [`docs/PRIVILEGED_VOICE_COMMANDS.md`](docs/PRIVILEGED_VOICE_COMMANDS.md) --
+  Codewörter, Prioritätskette, Rollenprüfung
+- [`docs/GROUP_CONVERSATION.md`](docs/GROUP_CONVERSATION.md) --
+  Gruppenverfolgung, Beobachtungspose, gruppenbewusste Richtmikrofonie
+- [`docs/FOLLOW_PERSON_RUNTIME.md`](docs/FOLLOW_PERSON_RUNTIME.md) --
+  autorisiertes, dynamisches Personenfolgen
+- [`docs/RETURN_TO_ORIGIN.md`](docs/RETURN_TO_ORIGIN.md) --
+  Ursprungspose sichern/zurückkehren
+- [`docs/INTERACTION_LIFECYCLE.md`](docs/INTERACTION_LIFECYCLE.md) --
+  vollständiger Personeninteraktions-Lebenszyklus im Behavior Tree
+- [`docs/AP7_HARDWARE_TEST_CHECKLIST.md`](docs/AP7_HARDWARE_TEST_CHECKLIST.md) --
+  offene Hardwaretests für Rollen/Codewörter/Gruppen/FollowPerson/Rückkehr
 
 ## Deployment auf einen Pepper-NUC
 

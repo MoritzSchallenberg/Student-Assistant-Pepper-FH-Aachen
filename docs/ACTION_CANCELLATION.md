@@ -178,3 +178,17 @@ erreichbar ist**:
 - Die vier Hardware-Testphasen A-D aus Auftrag-Abschnitt 16 wurden NICHT
   durchgeführt (kein Roboter). Alle Cancel-Pfade bleiben durchgängig
   `hwverificationrequired`.
+
+## Neue Cancel-Pfade (Entwicklungsauftrag 04-B, AP7)
+
+`ReturnToOriginViaBT` (BT.CPP) und `_execute_return_to_origin()`/
+`_execute_follow()` (`person_approach_node.py`) reihen sich in dieselbe
+Kette ein: `onHalted()` bricht über `waitForBoundedCancelConfirmation()`
+wirklich ab (gleiche Vorlage wie `ApproachSelectedPerson`/
+`RunDialogueViaBT`), und beide Python-Actions prüfen ihren `monitor_fn`
+bei JEDEM Fahrsegment neu (nicht nur einmalig beim Start). Neu bei
+FollowPerson: ein `monitor_fn`-Abbruch mit Grund `"replan_needed"`
+(relevante Personenbewegung während der Fahrt) wird bewusst NICHT wie
+ein echter Fehlerabbruch behandelt -- die äußere Schleife plant sauber
+neu, statt die gesamte Aktion scheitern zu lassen. Details:
+`docs/FOLLOW_PERSON_RUNTIME.md`, `docs/RETURN_TO_ORIGIN.md`.

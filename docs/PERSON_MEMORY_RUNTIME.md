@@ -80,3 +80,13 @@ zirkuläre Paketabhängigkeit (`ihk_pepper_dialog` ↔
 Keine Gesichtserkennung, kein Consent-UI-Flow (Consent wird aktuell nur
 über den Service, nicht über eine Nutzeroberfläche gesetzt) -- beides
 nicht Teil dieses Auftrags.
+
+## Rollen (Entwicklungsauftrag 04-B, AP7)
+
+Seit AP7 kann eine Person zusätzlich eine Rolle tragen
+(`docs/PERSON_ROLES_AND_AUTHORIZATION.md`) -- diese ist strikt getrennt
+von der hier beschriebenen Consent-/Gedächtnis-Logik: eine eingewilligte
+Person ohne gesetzte Rolle bleibt `STUDENT` (fail-closed), und eine
+Rollenänderung schreibt/liest niemals `memory_entries`. Rollen werden
+ausschließlich über `peoplectl` gesetzt, nie über einen der oben
+beschriebenen Services.

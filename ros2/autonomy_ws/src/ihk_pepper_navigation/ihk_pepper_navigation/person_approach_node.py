@@ -235,8 +235,10 @@ class PersonApproachNode(Node):
         )
         if self.get_parameter("enable_follow_person").value:
             self.get_logger().warn(
-                "enable_follow_person=true -- FollowPerson ist EXPERIMENTELL "
-                "und in dieser Session nicht getestet."
+                "enable_follow_person=true -- FollowPerson ist autorisiert/"
+                "sicherheitsgeprueft (Entwicklungsauftrag 04-B, AP7), aber "
+                "NUR gegen Mocks/duck-typing getestet, NICHT hardware-"
+                "verifiziert (kein echtes Nav2/Pepper in dieser Sitzung)."
             )
             self.follow_server = ActionServer(
                 self, FollowPerson, "follow_person",

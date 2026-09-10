@@ -73,6 +73,37 @@ Unterstuetzte Modi (Auftrag AP3):
                          keine Arme/Basis moeglich (SetHeadPose ist der
                          einzige scharfe Aktuator-Pfad in diesem Modus).
 
+    Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30 (Rollen/Codewoerter/
+    Gruppengespraeche/FollowPerson/Lebenszyklus) -- alle vier Modi wie
+    offline_test rein softwarebasiert (mock_nav2_server, kein echter
+    Pepper, kein Mikrofon-Hardwarezugriff, KEIN echter /cmd_vel):
+
+    role_authorization_offline_test  command_router_node zusaetzlich
+                         gestartet (Codewort-/Rollen-Autorisierung),
+                         privileged_motion_policy bleibt der
+                         Node-Default (role_plus_confirmation) --
+                         POLICY_ROLE_ONLY_DEVELOPMENT ist unabhaengig
+                         vom Modus in production_mode=true IMMER
+                         gesperrt (siehe authorization_policy.py).
+    group_interaction_offline_test  zusaetzlich group_tracking_node
+                         (stabile Mehrpersonen-Gruppen aus
+                         /perception_node/person_tracks) -- audio_focus_node
+                         (bereits in jedem audio-aktiven Modus gestartet)
+                         nutzt automatisch dessen /perception/
+                         conversation_groups, sobald verfuegbar.
+    follow_person_dry_run  wie offline_test, zusaetzlich
+                         enable_follow_person:=true auf person_approach_node
+                         (command_router_node laeuft ohnehin in jedem
+                         audio-aktiven Modus mit und stellt die noetige
+                         AuthorizationGrant aus) -- faehrt weiterhin nur
+                         gegen mock_nav2_server, NIEMALS echten Nav2/Pepper.
+    interaction_lifecycle_dry_run  wie offline_test, zusaetzlich
+                         command_router_node + group_tracking_node --
+                         deckt CaptureOriginPose/ReturnToOriginViaBT/
+                         EndInteractionSubtree (Entwicklungsauftrag 04-B,
+                         AP7, Commit 9/10) im laufenden Baum ab, ohne
+                         echte Bewegung.
+
 Startet je nach Modus aus (siehe Knotenliste unten fuer die genaue
 Zuordnung): bridge_node, audio_node, perception_node,
 person_memory_node, gesture_memory_node, supervisor_node, bt_executor_node,
@@ -111,6 +142,21 @@ VALID_MODES = (
     "respeaker_hardware_test",
     "audio_visual_test",
     "respeaker_head_test",
+    # Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30.
+    "role_authorization_offline_test",
+    "group_interaction_offline_test",
+    "follow_person_dry_run",
+    "interaction_lifecycle_dry_run",
+)
+
+# Entwicklungsauftrag 04-B, AP7: alle vier neuen Testmodi sind rein
+# softwarebasiert wie offline_test -- eigene Konstante statt sie an
+# jeder einzelnen Stelle einzeln aufzuzaehlen.
+AP7_OFFLINE_TEST_MODES = (
+    "role_authorization_offline_test",
+    "group_interaction_offline_test",
+    "follow_person_dry_run",
+    "interaction_lifecycle_dry_run",
 )
 
 # Welche Komponenten laufen in welchem Modus -- explizite Tabelle statt
@@ -137,6 +183,16 @@ _MODE_FLAGS = {
     "respeaker_hardware_test": (False, True, False,     False,     True),
     "audio_visual_test":      (True,  True, True,       False,     True),
     "respeaker_head_test":    (False, True, False,      False,     False),
+    # Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30: alle vier wie
+    # offline_test (perception+audio aktiv, kein echter Nav2/Kamera,
+    # Bridge dry_run) -- die einzelnen Zusatzknoten (command_router_node/
+    # group_tracking_node/enable_follow_person) werden weiter unten
+    # NICHT ueber diese Tabelle, sondern ueber AP7_OFFLINE_TEST_MODES-
+    # spezifische Bedingungen gestartet (siehe dort).
+    "role_authorization_offline_test": (True, True, False, False, True),
+    "group_interaction_offline_test":  (True, True, False, False, True),
+    "follow_person_dry_run":           (True, True, False, False, True),
+    "interaction_lifecycle_dry_run":   (True, True, False, False, True),
 }
 
 # Modi, in denen audio_node source_kind=respeaker_core_v2 verwenden soll
@@ -336,6 +392,17 @@ def generate_launch_description():
             package="ihk_pepper_perception", executable="perception_node", output="screen",
             condition=_cond(0),
         ),
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30: stabile
+        # Mehrpersonen-Gruppen aus /perception_node/person_tracks (+
+        # /audio/focus_state, falls Audio in diesem Modus aktiv ist) --
+        # gleiche Bedingung wie perception_node selbst, laeuft in JEDEM
+        # Modus mit, in dem ueberhaupt Personentracks existieren (nicht
+        # nur in group_interaction_offline_test -- kein Grund, es dort
+        # exklusiv zu sperren).
+        Node(
+            package="ihk_pepper_perception", executable="group_tracking_node",
+            output="screen", condition=_cond(0),
+        ),
 
         # ---- Audio (microphone_test, navigation_dry_run, production,
         #      und die vier respeaker_*-Modi -- source_kind wird oben
@@ -390,13 +457,31 @@ def generate_launch_description():
             output="screen",
             condition=_cond(1),
         ),
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 8/9/19: deterministischer
+        # Codewort-/Privilegierte-Befehl-Router -- braucht das kanonische
+        # /interaction/command-Topic aus sound_direction_transform_node,
+        # also dieselbe Bedingung wie Audio insgesamt. production_mode
+        # bleibt Node-Default (false) -- POLICY_ROLE_ONLY_DEVELOPMENT ist
+        # in production_mode=true ohnehin fail-closed gesperrt (siehe
+        # authorization_policy.py), kein separates Launch-Flag noetig.
+        Node(
+            package="ihk_pepper_interaction", executable="command_router_node",
+            output="screen",
+            parameters=[{
+                "production_mode": PythonExpression([
+                    "'true' if '", mode, "' == 'production' else 'false'"
+                ]),
+            }],
+            condition=_cond(1),
+        ),
     ]
 
     # ---- Kamera-/Navigationspfad: Mock-Nav (offline_test/
     #      microphone_test/realsense_test) vs. echter Nav2-Stack
     #      (navigation_dry_run/production) ----
     mock_nav_condition = IfCondition(PythonExpression([
-        "'", mode, "' in ('offline_test', 'microphone_test', 'realsense_test')"
+        "'", mode, f"' in ('offline_test', 'microphone_test', 'realsense_test') or ('",
+        mode, f"' in {AP7_OFFLINE_TEST_MODES!r})",
     ]))
     real_nav_condition = IfCondition(PythonExpression([
         "'", mode, "' in ('navigation_dry_run', 'production')"
@@ -453,6 +538,14 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_navigation", executable="person_approach_node",
             output="screen", condition=mock_nav_condition,
+            parameters=[{
+                # Entwicklungsauftrag 04-B, AP7, Abschnitt 19/26: NUR in
+                # follow_person_dry_run scharf -- jeder andere Modus
+                # bleibt beim sicheren Node-Default (false).
+                "enable_follow_person": PythonExpression([
+                    "'true' if '", mode, "' == 'follow_person_dry_run' else 'false'"
+                ]),
+            }],
         ),
         Node(
             package="ihk_pepper_navigation", executable="realsense_diagnostics_node",

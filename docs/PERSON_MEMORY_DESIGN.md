@@ -107,3 +107,13 @@ LLM selbst und niemals automatisch.
   `person_id` (siehe Tests: `inspect.signature`-Test in
   `test_identity_registry_db.py` bestätigt, dass `track_id` in keiner
   Methode dieser Klasse als Parameter existiert).
+
+## Rollen-Erweiterung (Entwicklungsauftrag 04-B, AP7)
+
+`identity_registry_db.py` trägt seit AP7 zusätzlich `role`/
+`role_assigned_at_iso`/`role_assigned_by`/`role_valid_until_iso`
+(idempotente Migration mit Backup bei vorhandenen Zeilen). Diese Spalten
+sind ausschließlich über das lokale CLI `peoplectl` schreibbar --
+**kein** Service in `person_memory_node.py` oben kann eine Rolle setzen
+oder ändern, dieselbe Trennung wie bei `person_id`/`track_id`. Details:
+`docs/PERSON_ROLES_AND_AUTHORIZATION.md`.

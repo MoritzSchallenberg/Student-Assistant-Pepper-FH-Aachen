@@ -364,3 +364,41 @@ in Produktion gesperrte Freigabe eine Kopfbewegung auslösen. Details:
 offen: alle fünf Hardware-Testphasen, echte Vermessung der
 ReSpeaker-/RealSense-Montage, front/back-Mehrdeutigkeit selbst
 (strukturell markiert, nicht aufgelöst).
+
+## Rollen, Codewörter, Gruppengespräche, sicheres Personenfolgen (Entwicklungsauftrag 04-B, AP7, Stand 2026-09-10)
+
+Neue Fähigkeiten: ein Rollenmodell (STUDENT/EMPLOYEE/ADMIN,
+ausschließlich per lokalem `peoplectl`-CLI setzbar, nie per ROS2-Service
+oder LLM), einwilligungsgebundene Gesichtsidentität mit strikt
+getrennten transienten (Gruppengespräch) und persistenten Pfaden, ein
+deterministischer Codewort-Router ("Eisenbahn" → Unterbrechung, "Pepper
+komm mal mit" → Autorisierungsanfrage fürs Folgen), stabile
+Mehrpersonen-Gruppenverfolgung mit sicherer Beobachtungspose und
+gruppenbewusster Richtmikrofonie, eine ECHTE autorisierte
+`FollowPerson`-Fahrt (ersetzt den bisherigen, nie fahrenden Stub) und
+Ursprungspose-Erfassung/-Rückkehr, jetzt auch im Behavior Tree als
+`PersonInteractionLifecycleSubtree` eingebettet. Vollständige
+Architektur/ehrlicher Stand je Thema:
+**`docs/PERSON_ROLES_AND_AUTHORIZATION.md`**,
+**`docs/FACE_IDENTITY_AND_PRIVACY.md`**,
+**`docs/PRIVILEGED_VOICE_COMMANDS.md`**,
+**`docs/GROUP_CONVERSATION.md`**, **`docs/FOLLOW_PERSON_RUNTIME.md`**,
+**`docs/RETURN_TO_ORIGIN.md`**, **`docs/INTERACTION_LIFECYCLE.md`**.
+
+**Kein ReSpeaker Core v2.0, kein echtes Nav2, kein Pepper in dieser
+Session erreichbar** -- alle neuen Module sind ausschließlich gegen
+Mocks/Duck-Typing-Fakes/synthetische Signale getestet (+312 Tests,
+1297/1300 Python-Tests gesamt, BT.CPP `colcon test` weiterhin 7/7).
+Vier neue, rein softwarebasierte Launch-Modi
+(`role_authorization_offline_test`, `group_interaction_offline_test`,
+`follow_person_dry_run`, `interaction_lifecycle_dry_run`) real
+gestartet, keine echte Hardware. Vollständige offene Checkliste:
+`docs/AP7_HARDWARE_TEST_CHECKLIST.md`.
+
+**Wichtigste ehrlich offene Lücke**: `ihk_pepper_identity` ist ein
+fertiges, getestetes Gesichtsidentitäts-Backend OHNE ROS2-Node, der es
+tatsächlich instanziiert -- kein Laufzeitpfad veröffentlicht bisher
+`PersonIdentityArray`. Codewort-/Rollen-/Gruppen-Routing ist außerdem
+NICHT in den Behavior Tree verdrahtet (eigenständige, einzeln getestete
+Python-Fähigkeiten neben dem Baum). Details:
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, AP7-Abschnitt.

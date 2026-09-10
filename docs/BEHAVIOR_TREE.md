@@ -37,6 +37,20 @@ Cancel-Propagation dieses Dokuments.
 | `FindPersonNearSoundRay` (AP6) | `/associate_person_with_sound` (Service) | nein -- kein Goal abzubrechen |
 | `WaitForFreshWakeword` (AP6) | (Topic-Subscription, keine Action) | nein -- kein Goal abzubrechen |
 | `IsHeadOrientationAllowed`/`IsConversationInactive`/`IsUnsolicitedAttractAllowed` (AP6) | (Bedingungen, kein Goal) | nein |
+| `CaptureOriginPose` (AP7) | `/capture_origin` (Service) | nein -- kein Goal abzubrechen |
+| `ReturnToOriginViaBT` (AP7) | `/return_to_origin` | ja |
+| `ClearSession` (AP7) | (Blackboard-Aufräumen, kein Goal) | nein |
+
+## Vollständiger Personeninteraktions-Lebenszyklus (Entwicklungsauftrag 04-B, AP7)
+
+`PersonInteractionLifecycleSubtree` fasst `GreetAndApproachSubtree`
+(unten) und `DialogueSubtree` unter einem `ReactiveFallback` zusammen
+und ersetzt damit die bisherigen zwei getrennten Root-Einträge --
+funktional identisch, macht den Lebenszyklus aber als EIN Konzept
+sichtbar: Begrüßen → Annähern (+ `CaptureOriginPose`) → Gespräch →
+Verabschieden → `ReturnToOriginViaBT` → Aufräumen → IDLE. Details,
+inkl. der bewusst NICHT in AP7 umgesetzten Teile (Codewort-/Rollen-/
+Gruppen-Routing im Baum selbst): `docs/INTERACTION_LIFECYCLE.md`.
 
 ## Wakeword-gesteuerte Begrüßung (Entwicklungsauftrag 04-B, AP6, Abschnitt 14)
 
@@ -148,3 +162,13 @@ demselben Grund KEINE eigenen gtests -- Build+Lint bleiben grün
 nach jeder Änderung erneut mit `xmllint`/`ET.parse` geprüft worden
 (die wiederkehrende "--"-in-Kommentar-Falle trat erneut auf und wurde
 mit einem Halbgeviertstrich statt Doppelbindestrich behoben).
+
+**Entwicklungsauftrag 04-B, AP7**: dieselbe Situation für
+`CaptureOriginPose`/`ReturnToOriginViaBT`/`ClearSession` -- KEINE
+eigenen gtests (gleiche Begründung), weiterhin 23/0/0/4 (kein neuer
+lint-relevanter Dateiumfang, nur Ergänzungen in bestehenden Dateien).
+Zusätzlich `bt_executor_node` manuell laufen lassen: Baum lädt
+fehlerfrei, alle drei neuen Knotentypen werden von der Factory
+aufgelöst, sauberes Herunterfahren per SIGTERM -- der einzige über
+`colcon test` hinausgehende Nachweis, dass XML und C++-Registrierung
+tatsächlich zusammenpassen (kein automatisierter Cross-Check dafür).

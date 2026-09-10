@@ -38,6 +38,9 @@ def test_valid_modes_match_required_set(launch_module):
         "pepper_gesture_test", "navigation_dry_run", "production",
         "respeaker_offline_test", "respeaker_hardware_test",
         "audio_visual_test", "respeaker_head_test",
+        # Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30.
+        "role_authorization_offline_test", "group_interaction_offline_test",
+        "follow_person_dry_run", "interaction_lifecycle_dry_run",
     )
 
 
@@ -432,3 +435,96 @@ def test_audio_node_production_mode_locked_to_true_only_in_production(launch_mod
                 resolved = perform_substitutions(ctx, list(value))
                 break
         assert resolved == expected, f"mode={mode}"
+
+
+# ---- Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30: neue Testmodi ----
+
+def _condition_for(ld, executable):
+    return next(
+        n for n in ld.entities if isinstance(n, Node) and n.node_executable == executable
+    ).condition
+
+
+def test_ap7_offline_test_modes_never_enable_real_navigation_or_camera(launch_module):
+    for mode in launch_module.AP7_OFFLINE_TEST_MODES:
+        perception, audio, real_camera, real_nav2, bridge_dry_run = (
+            launch_module._MODE_FLAGS[mode]
+        )
+        assert real_camera is False
+        assert real_nav2 is False
+        assert bridge_dry_run is True
+
+
+def test_command_router_node_runs_wherever_audio_does(launch_module):
+    # command_router_node braucht /interaction/command aus
+    # sound_direction_transform_node -- muss also GENAU dieselbe
+    # Bedingung wie audio_node/sound_direction_transform_node haben
+    # (gleiches Pruefmuster wie
+    # test_sound_direction_transform_node_runs_in_every_mode_audio_node_does).
+    ld = launch_module.generate_launch_description()
+    audio_condition = _condition_for(ld, "audio_node")
+    router_condition = _condition_for(ld, "command_router_node")
+    for mode in launch_module.VALID_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        assert audio_condition.evaluate(ctx) == router_condition.evaluate(ctx), f"mode={mode}"
+
+
+def test_group_tracking_node_runs_wherever_perception_does(launch_module):
+    ld = launch_module.generate_launch_description()
+    perception_condition = _condition_for(ld, "perception_node")
+    group_condition = _condition_for(ld, "group_tracking_node")
+    for mode in launch_module.VALID_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        assert perception_condition.evaluate(ctx) == group_condition.evaluate(ctx), f"mode={mode}"
+
+
+def test_enable_follow_person_is_true_only_in_follow_person_dry_run(launch_module):
+    from launch.utilities import perform_substitutions
+    ld = launch_module.generate_launch_description()
+    person_approach = next(
+        n for n in ld.entities if isinstance(n, Node) and n.node_executable == "person_approach_node")
+    param_dict = person_approach._Node__parameters[0]
+    for mode, expected in [
+        ("offline_test", "false"), ("microphone_test", "false"),
+        ("role_authorization_offline_test", "false"),
+        ("group_interaction_offline_test", "false"),
+        ("interaction_lifecycle_dry_run", "false"),
+        ("follow_person_dry_run", "true"),
+    ]:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        resolved = None
+        for key, value in param_dict.items():
+            if perform_substitutions(ctx, list(key)) == "enable_follow_person":
+                resolved = perform_substitutions(ctx, list(value))
+                break
+        assert resolved == expected, f"mode={mode}"
+
+
+def test_ap7_offline_test_modes_use_mock_nav2(launch_module):
+    # Dieselben Knoten wie offline_test (camera_pose_gate_node/
+    # mock_nav2_server/person_approach_node/...) -- niemals der echte
+    # Nav2-/RTAB-Map-Pfad.
+    ld = launch_module.generate_launch_description()
+    mock_nav2_condition = _condition_for(ld, "mock_nav2_server")
+    for mode in launch_module.AP7_OFFLINE_TEST_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        assert mock_nav2_condition.evaluate(ctx) is True, f"mode={mode}"
+
+
+def test_ap7_offline_test_modes_never_target_the_real_cmd_vel_topic(launch_module):
+    # Der echte Nav2-Bringup (mit dem einzigen echten /cmd_vel-Pfad) wird
+    # nur fuer navigation_dry_run/production included -- fuer alle vier
+    # neuen Modi darf real_nav_condition nie zutreffen, damit
+    # nav2_bringup.launch.py erst gar nicht included wird. Wiederverwendet
+    # _find_nav2_include() -- .location ist vor einem echten
+    # Launch-Aufruf nicht als String aufloesbar, siehe dessen Kommentar.
+    ld = launch_module.generate_launch_description()
+    condition = _find_nav2_include(ld).condition
+    for mode in launch_module.AP7_OFFLINE_TEST_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        assert condition.evaluate(ctx) is False, f"mode={mode}"

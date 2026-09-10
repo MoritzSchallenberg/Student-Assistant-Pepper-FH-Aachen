@@ -866,3 +866,329 @@ ursprünglichen Gesamtplan weiterhin offen: AP13 (ID-Trennung + echte
 Retriever-Anbindung verifizieren), AP8 (weitere kinematisch entwickelte
 Gesten), AP14 (Emotion-Gating). Die endgültige Priorisierung bleibt
 beim Auftraggeber.
+
+## AP7: Rollen, Codewörter, Gruppengespräche, sicheres Personenfolgen und vollständiger Interaktionslebenszyklus
+
+Umgesetzt in 11 Commits auf demselben Branch
+(`order-04b-kiconnect-gesture-memory-lifecycle-audio`), direkt auf dem
+AP6.1-Abschluss-Commit (`f20abe4`) aufbauend -- Baseline davor
+verifiziert (985/988 Python-Tests, BT.CPP 23/0/0/4). Größtes
+Arbeitspaket bisher:
+neuer Rollenbegriff (STUDENT/EMPLOYEE/ADMIN, ausschließlich per
+lokalem `peoplectl`-CLI setzbar), strikt getrennte transiente/
+einwilligungsgebundene Gesichtsidentität, ein deterministischer
+Codewort-/Autorisierungs-Router, stabile Mehrpersonen-Gruppenverfolgung
+mit sicherer Beobachtungspose und gruppenbewusster Richtmikrofonie,
+eine ECHTE autorisierte `FollowPerson`-Implementierung (ersetzt den
+bisherigen, nie fahrenden Stub), Ursprungspose-Erfassung +
+`ReturnToOrigin`, und die Einbettung all dessen in den Behavior Tree.
+
+### Commit 1/11 (`fc935b0`): define roles, commands, groups and lifecycle contracts
+
+Neue Nachrichten (`PersonIdentity(Array)`, `InteractionCommand`,
+`AuthorizationGrant`, `ConversationGroup(Array)`,
+`InteractionLifecycleState` -- 16 Zustände IDLE..ERROR), neue Action
+`ReturnToOrigin`, `FollowPerson.action` um `authorization_grant_id`/
+`session_id`/`desired_follow_distance_m`/`max_duration_s`/
+`max_track_loss_timeout_s`/`return_to_origin_after_end` erweitert.
+Neue reine Python-Module: `ihk_pepper_interaction/roles.py`
+(`ROLE_STUDENT/EMPLOYEE/ADMIN`, `role_at_least()`, fail-closed auf
+STUDENT), `authorization_policy.py` (`POLICY_DISABLED/
+ROLE_PLUS_CONFIRMATION/ROLE_ONLY_DEVELOPMENT`, Letzteres in
+`production_mode=true` hart gesperrt), `codeword_config.py`
+("Eisenbahn"→interrupt_and_look, "Pepper komm mal mit"→follow_speaker,
+Codewörter aus einer festen `VALID_COMMANDS`-Allowlist, niemals frei
+aus YAML), `interaction_lifecycle_state.py`. Tests: 49 neue.
+
+### Commit 2/11 (`6e92545`): add audited role storage and local peoplectl management
+
+`identity_registry_db.py` um `role`/`role_assigned_at_iso`/
+`role_assigned_by`/`role_valid_until_iso`-Spalten erweitert (idempotente
+Migration mit Backup bei vorhandenen Zeilen), `set_role()`/
+`revoke_role()`/`get_effective_role()`/`list_all()`/`audit_log_for()`.
+Neues `peoplectl.py` (argparse-CLI: `list/show/set-role/revoke-role/
+delete`, `--reason` bei jedem Schreibzugriff Pflicht, `--yes` für
+`delete`) -- **die einzige Stelle im gesamten System, die eine Rolle
+setzen kann**. Kein ROS2-Service, kein LLM-Pfad kann eine Rolle
+ändern -- strukturell durchgesetzt (kein Service dafür existiert).
+Tests: 18 neue.
+
+### Commit 3/11 (`0a93271`): implement consent-gated face identity backends
+
+Neues Paket `ihk_pepper_identity`: `face_identity_backend.py`
+(`FaceIdentityBackend`-ABC mit strikt getrennten `observe_transient()`
+vs. `identify_persistent()`, `DisabledIdentityBackend`,
+`MockIdentityBackend`, `LocalOnnxIdentityBackend` -- fail-closed bei
+fehlendem Modell), `liveness.py` (Tiefenvarianz-Heuristik gegen
+Foto-/Bildschirm-Spoofing), `identity_matching.py` (Kosinus-Ähnlichkeit
++ Mehrdeutigkeits-Ablehnung), `persistent_identity_confirmer.py`
+(Mehrbild-Bestätigung pro Track), `biometric_template_store.py`
+(separater, Fernet-verschlüsselter Speicher, 0600-Rechte,
+ausschließlich über `person_id` referenziert -- NIE in der
+Identitäts-/Vektordatenbank/LLM-Pipeline). Tests: 48 neue, alle ohne
+Skip (echte ONNX-Inferenz selbst bleibt ehrlich ungetestet -- kein
+`onnx`-Paket zum Selbstbauen eines Testmodells verfügbar, nur der
+fail-closed-Konstruktionspfad + die reinen Geometrie-Hilfsfunktionen
+sind abgedeckt).
+
+### Commit 4/11 (`d7a9e69`): add deterministic codeword and privileged command router
+
+`audio_node.py`: Codewörter laufen jetzt durch dieselbe Roh-/kanonische-
+Topic-Pipeline wie `WakewordEvent` (`/interaction/command_raw` →
+`sound_direction_transform_node.py` → `/interaction/command`).
+`_conversation_confirmed_active()` (fail-closed) ergänzt neben dem
+bereits bestehenden, bewusst gegenteilig fail-offenen
+`_conversation_active_for_gate()` -- behebt einen Bug, bei dem ein
+Codewort während eines laufenden Gesprächs die Sitzung nicht verlängerte.
+Neu: `command_priority.py` (feste Priorität: Not-Halt >
+Stopp-/Abbruch-Codewörter > Codewort-Unterbrechung > privilegierte
+Sprachbewegung > Dialogtext), `command_authorization_decision.py`
+(prüft `roles.py`s festes Rollen-Tabelle -- bewusst NICHT zusätzlich
+das YAML-`required_role`-Feld, um eine sicherheitskritische Grenze
+nicht allein YAML-editierbar zu machen), `command_router_node.py`.
+Tests: 43 neue.
+
+### Commit 5/11 (`9d633fc`): implement stable conversation group tracking
+
+Neues `ihk_pepper_perception/group_tracking.py`: Single-Linkage-
+transitives Clustering (Union-Find) über `person_tracks`, Beitritts-/
+Austritts-Hysterese gebunden an den AKTUELLEN Interaktionspartner
+(nie eine zufällige vorbeigehende Person). Zwei echte Bugs beim
+Testschreiben gefunden und behoben: (1) `_reset()` löschte
+Beitritts-Fortschritt auch VOR der ersten Gruppenbildung, (2)
+Austritts-Hysterese maß "Zeit seit ERSTMALS vermisst" statt "Zeit seit
+ZULETZT gesehen" -- bei unregelmäßigen Update-Intervallen fälschlich
+sofort erfüllt. Beide durch dedizierte Regressionstests abgedeckt.
+Neuer `group_tracking_node.py` veröffentlicht
+`/perception/conversation_groups`. Tests: 31 neue.
+
+### Commit 6/11 (`7d38ca7`): plan safe group observation poses
+
+Neues `ihk_pepper_navigation/group_observation_pose.py`: geschlossene
+tangentenbasierte Geometrie (`required_distance = spread_radius /
+tan(fov/2)`) statt iterativer Suche. Prüft: zu wenige Mitglieder,
+Gruppe zu breit fürs Fahrbudget, Fahrdistanz überschritten,
+Mindestabstand zum NÄCHSTEN Mitglied (nicht nur zum Zentrum),
+Keepout-Zonen, optionale Costmap. Ein erster Entwurf lehnte
+"Rückwärtsfahren relativ zur aktuellen Ausrichtung" fälschlich ab --
+ein Test deckte auf, dass das eine gültige, weit entfernte Zielpose
+(Rotation-dann-Vorwärtsfahrt, kein echtes Rückwärtsfahren) traf; die
+Prüfung wurde vollständig entfernt und die Designentscheidung im
+Moduldocstring festgehalten. Tests: 15 neue.
+
+### Commit 7/11 (`d79802b`): connect active group speakers to directional audio focus
+
+Neues `ihk_pepper_audio/group_speaker_selection.py`
+(`ActiveSpeakerSelector`, Mehrdeutigkeits-/Bestätigungs-Hysterese).
+`audio_focus_node.py` wird gruppenbewusst: GROUP_WIDE (auf
+Gruppenzentrum steuern) vs. ACTIVE_SPEAKER (auf den bestätigten aktiven
+Sprecher INNERHALB der bestätigten Gruppe steuern). Wichtige
+Sicherheitseigenschaft (per Test nachgewiesen): `audio_focus.py`s
+`selected_track_id` (Sitzungsidentität) wird NIE geändert -- nur der
+an `on_target_track_update()` übergebene Azimut-WERT ändert sich,
+womit die bestehende Fremdtrack-Ablehnungsgarantie aus AP6.1 erhalten
+bleibt. Tests: 16 neue.
+
+### Commit 8/11 (`6928b6f`): implement authorized dynamic FollowPerson with Nav2 mocks
+
+Ersetzt den bisherigen `FollowPerson`-Stub (fuhr NIE, nur
+`sleep(0.5)`-Schleife) durch eine echte Umsetzung.
+`authorization_grant_cache.py` (lokaler Cache der von
+`command_router_node.py` auf `/authorization/grants` ausgestellten
+Berechtigungen, einmalige Verwendung), `follow_person_safety.py` (13
+Bedingungen in fester Reihenfolge + Akku-Schwelle + Crowd-Geometrie).
+`person_approach_node.py::_execute_follow()`: validiert den
+Autorisierungs-Grant, prüft vor JEDEM Fahrsegment erneut alle
+Sicherheitsbedingungen, berechnet über das bestehende
+`compute_approach_pose()` eine Gesprächs-Zielpose VOR der Person (nie
+die Person selbst als Ziel), fährt über die bestehende
+`_drive_to_pose()` (BASE-Lease unverändert wiederverwendet), plant NUR
+bei relevanter Personenbewegung neu (Positions- UND
+Winkeländerungsschwelle), NIE automatische Basisrotation bei
+Trackverlust (bewusst nicht Teil dieses Commits, ehrlich offen).
+Randfund: vier `package.xml` (`ihk_pepper_bridge`, `ihk_pepper_identity`,
+`ihk_pepper_navigation`, `ihk_pepper_person_memory`) enthielten je einen
+XML-Kommentar mit `--` (laut XML-Spezifikation in Kommentaren
+verboten) -- dieselbe wiederkehrende Falle wie zuvor in BT-XML (Auftrag
+1-3), hier erstmals in `package.xml` angetroffen. Colcon stufte die
+betroffenen Pakete dadurch stillschweigend als generisches `python`
+statt `ament_python` ein (kein Fehler, kein Build-Abbruch -- nur ein
+fehlender `AMENT_PREFIX_PATH`-Eintrag), wodurch
+`get_package_share_directory()` für diese Pakete fehlschlug und die
+GESAMTE pytest-Sammlung abbrach. Alle vier Stellen korrigiert, mit
+`xml.etree.ElementTree` über jede `package.xml`/`*.xml` im Repo erneut
+geprüft. Tests: 47 neue (4 `command_router_node.py`-Ergänzung, 9
+`authorization_grant_cache.py`, 17 `follow_person_safety.py`, 17
+`person_approach_node`-FollowPerson-Ausführung).
+
+### Commit 9/11 (`4b68ae3`): capture session origin and implement ReturnToOrigin
+
+Neuer Service `CaptureOrigin.srv` + `origin_session.py`
+(`OriginStore` -- ausschließlich im Prozessspeicher, kein Persistieren
+über einen Neustart hinaus). `person_approach_node.py`: neue
+`_get_robot_pose_in_frame()` (Position + Blickrichtung, ersetzt/erweitert
+die bisherige positionsonly Methode), `_on_capture_origin()`-Service
+(lehnt während laufender Kartierung ab), `_execute_return_to_origin()`-
+Action (validiert Ursprung + Sicherheit VOR und WÄHREND der gesamten
+Fahrt, fährt ausschließlich über die bestehende `_drive_to_pose()`).
+Zwei neue Invalidierungs-Trigger (`_on_mapping_active()`, erweitertes
+`_on_safety_state()`): ein False→True-Übergang bei Kartierung ODER
+Lokalisierung verwirft ALLE gespeicherten Urspünge global -- ein
+Kartenwechsel/eine Neuinitialisierung macht jede gespeicherte Pose
+potenziell ungültig. `return_to_origin_safety.py` (9 Bedingungen,
+gleiches Muster wie `follow_person_safety.py`, ohne
+personenspezifische Felder, mit `mapping_active`). Tests: 35 neue (9
+`origin_session.py`, 10 `return_to_origin_safety.py`, 4
+Invalidierungs-Trigger, 12 `_execute_return_to_origin`/
+`_on_capture_origin`-Ausführung).
+
+### Commit 10/11 (`5c791ff`): integrate PersonInteractionLifecycleSubtree into the tree
+
+Reiner C++/XML-Commit, keine Python-Änderung. Drei neue BT.CPP-Knoten
+(`CaptureOriginPose`, `ReturnToOriginViaBT`, `ClearSession`), exakt nach
+bestehenden Vorlagen (`FindPersonNearSoundRay` für den reinen
+Service-Aufruf, `ApproachSelectedPerson`/`RunDialogueViaBT` für den
+Action-Client mit begrenzter Cancel-Bestätigung). `pepper_main.xml`:
+`CaptureOriginPose` NEU vor `ApproachSelectedPerson` in
+`GreetAndApproachSubtree` eingefügt; `DialogueSubtree` bekommt nach
+`RunDialogueViaBT` einen neuen `EndInteractionSubtree`
+(Verabschiedungsgeste `goodbye_wave` → `ReturnToOriginViaBT` →
+`ClearSelectedPerson` → `ClearSession` → `SetInteractionState IDLE`),
+selbst in einen äußeren Fallback mit `AlwaysSuccessIdle` gehüllt, damit
+ein fehlgeschlagenes `ReturnToOriginViaBT` NIE zu einer Endlosschleife
+wiederholter Gesprächsversuche mit derselben, bereits verabschiedeten
+Person führt. Neuer `PersonInteractionLifecycleSubtree`
+(`ReactiveFallback` um `GreetAndApproachSubtree` + `DialogueSubtree`)
+ersetzt die bisherigen zwei getrennten Root-Einträge durch einen
+benannten -- funktional identisch (verschachtelte Fallbacks verhalten
+sich wie flache), macht den vollständigen Lebenszyklus aber als EIN
+Konzept sichtbar. `bt_executor_node` manuell 4s laufen lassen: Baum
+lädt fehlerfrei, alle drei neuen Knotentypen werden von der Factory
+aufgelöst, sauberes Herunterfahren per SIGTERM. `colcon test-result
+--all`: weiterhin 23/0/0/4 (unverändert -- gleiche Anzahl geprüfter
+Dateien, keine neue gtest-Datei).
+
+### Commit 11/11 (dieser Commit): add launch modes, regression tests and documentation
+
+Vier neue, rein softwarebasierte Testmodi in
+`interaction_full_safe.launch.py` (`role_authorization_offline_test`,
+`group_interaction_offline_test`, `follow_person_dry_run`,
+`interaction_lifecycle_dry_run`) -- alle wie `offline_test`
+(`mock_nav2_server`, kein echter Pepper/keine echte Kamera, Bridge
+`dry_run`). Neu gestartet: `command_router_node` (überall dort, wo
+Audio aktiv ist -- dieselbe Bedingung wie `audio_node`),
+`group_tracking_node` (überall dort, wo Perception aktiv ist).
+`enable_follow_person:=true` NUR in `follow_person_dry_run`. Alle vier
+Modi real per `ros2 launch --show-args` und einem echten, zeitbegrenzten
+Start verifiziert (keine unerwarteten Exceptions/Tracebacks; die
+einzige geloggte Fehlermeldung ist die bereits vor AP7 bestehende,
+umgebungsbedingte `PortAudio library not found`, kein echtes Mikrofon
+in dieser Sandbox). 6 neue Tests in
+`test_interaction_full_safe_launch.py` (u.a.: `command_router_node`
+läuft überall dort, wo `audio_node` läuft; `group_tracking_node`
+überall dort, wo `perception_node` läuft;
+`enable_follow_person` ist ausschließlich in `follow_person_dry_run`
+wahr; keiner der vier neuen Modi erreicht jemals den echten
+`nav2_bringup.launch.py`-Einschluss). Dokumentation: neue
+`docs/PERSON_ROLES_AND_AUTHORIZATION.md`,
+`docs/FACE_IDENTITY_AND_PRIVACY.md`,
+`docs/PRIVILEGED_VOICE_COMMANDS.md`, `docs/GROUP_CONVERSATION.md`,
+`docs/FOLLOW_PERSON_RUNTIME.md`, `docs/INTERACTION_LIFECYCLE.md`,
+`docs/RETURN_TO_ORIGIN.md`, `docs/AP7_HARDWARE_TEST_CHECKLIST.md`;
+Ergänzungen in `README.md`, `docs/STATUS.md`, `docs/BEHAVIOR_TREE.md`,
+`docs/PERSON_MEMORY_DESIGN.md`, `docs/PERSON_MEMORY_RUNTIME.md`,
+`docs/AUDIO_FOCUS_AND_BEAMFORMING.md`, `docs/ACTION_CANCELLATION.md`.
+
+### Testzusammenfassung
+
+| Zeitpunkt | Python-Tests | BT.CPP |
+|---|---|---|
+| Baseline vor AP7 (`f20abe4`) | 985 passed, 3 skipped | BT.CPP 23/0/0/4 |
+| Nach Commit 7/11 | 1205 passed, 3 skipped | unverändert |
+| Nach Commit 8/11 | 1255 passed, 3 skipped | unverändert |
+| Nach Commit 9/11 | 1291 passed, 3 skipped | unverändert |
+| Nach Commit 10/11 | 1291 passed, 3 skipped (reiner C++/XML-Commit) | BT.CPP 23/0/0/4, `bt_executor_node` lädt/tickt/beendet sauber |
+| Nach Commit 11/11 (Endstand) | **1297 passed, 3 skipped** | unverändert, 23/0/0/4 |
+
+Netto +312 Tests über alle 11 Commits. Grep auf `/cmd_vel` nach JEDEM
+einzelnen Commit gegen ausschließlich die in diesem Commit geänderten/
+neuen Dateien durchgeführt -- kein Treffer außer dokumentierenden
+Kommentaren/Tests, die die Abwesenheit prüfen. `navigation_live.launch.py`
+in keinem Commit berührt/gestartet.
+
+### Ehrlicher Stand / bekannde Lücken (gegen Auftrag Abschnitt 30-32)
+
+**Hardware-unverifiziert (ausschließlich Mock-/Duck-Typing-/Dry-Run-
+getestet, wie vom Auftrag ausdrücklich verlangt zu kennzeichnen):**
+
+- **Gesichtserkennung**: `LocalOnnxIdentityBackend`s tatsächliche
+  ONNX-Inferenz ist NICHT getestet (kein passendes Testmodell in dieser
+  Session baubar, kein `onnx`-Paket verfügbar) -- nur der
+  fail-closed-Konstruktionspfad (fehlendes/leeres/ungültiges
+  Modell-Argument) und die reinen Geometrie-Hilfsfunktionen sind
+  abgedeckt. Es existiert außerdem noch KEIN ROS2-Node, der
+  `ihk_pepper_identity` tatsächlich instanziiert und
+  `PersonIdentityArray` veröffentlicht -- das Paket ist ein fertiges,
+  getestetes Backend OHNE Laufzeit-Anbindung. `command_router_node.py`
+  und `group_tracking_node.py` funktionieren strukturell unabhängig
+  davon (fail-closed auf "keine Identität bekannt"/STUDENT-Rolle), aber
+  das ist noch nicht end-to-end mit echten Gesichtsdaten verifiziert.
+- **Bewegung**: `FollowPerson`/`ReturnToOrigin` sind ausschließlich
+  gegen Duck-Typing-Fakes (kein echtes Nav2, kein echter Pepper)
+  getestet. Kein `enable_follow_person=true`/`enable_person_approach`-
+  Lauf gegen echte Hardware in dieser Session.
+- **Sprecherzuordnung**: `ActiveSpeakerSelector`/gruppenbewusstes
+  Audio-Steering ausschließlich gegen synthetische DOA-/Track-Daten
+  getestet (kein echter ReSpeaker, unverändert seit AP6/AP6.1).
+- **Rückkehr**: `ReturnToOrigin` ausschließlich gegen einen
+  Fake-TF-Buffer/Fake-Nav2-Client getestet, keine echte TF-Kette/kein
+  echtes Nav2.
+
+**Bewusst nicht Teil von AP7 (ehrlich offen, siehe Commit-Nachrichten):**
+
+- Kein Kopf-Suchverhalten und keine automatische Basisrotation bei
+  Personen-/Gruppenverlust (Auftrag verlangt genau das NICHT
+  automatisch) -- FollowPerson bricht bei Trackverlust sauber ab, ohne
+  jede Art von Nachsuche.
+- Codewort-/Rollen-/Gruppen-Routing ist NICHT in den Behavior Tree
+  verdrahtet -- `command_router_node.py`/`group_tracking_node.py`/
+  `FollowPerson` bleiben eigenständige, einzeln getestete
+  Python-Fähigkeiten außerhalb des Baums. Die volle Abschnitt-23-
+  Prioritätskette (Codewort-Unterbrechung vor Follow/Return vor
+  laufendem Gespräch) und Abschnitt-24-Gruppenverlust-Behandlung
+  (`MonitorParticipants`, `GROUP_LOST`) sind nicht im Baum umgesetzt.
+- Kein neuer BT-Knoten ruft `command_router_node`/`group_tracking_node`
+  überhaupt auf -- diese laufen als eigenständige ROS2-Nodes parallel
+  zum Baum, ohne dass der Baum ihre Ausgaben (Grants, Gruppen) aktuell
+  selbst konsumiert (nur `audio_focus_node.py`/`person_approach_node.py`
+  tun das bereits direkt).
+- `person_id`/`group_id` bleiben in `CaptureOriginPose` leer -- keine
+  Rollen-/Gruppen-Bindung der Ursprungspose an eine bestimmte Person.
+- Biometrische Vorlagen (`biometric_template_store.py`) sind fertig und
+  getestet, aber von KEINEM Laufzeitpfad tatsächlich befüllt (kein
+  Identity-Node, siehe oben).
+
+Working Tree nach Abschluss dieses Arbeitspakets sauber, 11 klar
+abgegrenzte Commits, kein Push/PR ohne expliziten Wunsch.
+
+### Empfehlung für das nächste Arbeitspaket
+
+Die softwareseitige Rollen-/Codewort-/Gruppen-/Follow-/
+Ursprungs-Infrastruktur ist vollständig, einzeln getestet und
+launch-integriert -- die größte verbleibende Lücke ist die
+BT-seitige ORCHESTRIERUNG (Abschnitt 23/24/25 der vollen
+Prioritätskette) sowie ein tatsächlicher Identity-Node, der
+`ihk_pepper_identity` mit echten Gesichtsdaten verbindet. Empfohlene
+Reihenfolge für das nächste Arbeitspaket: (1) ein `identity_node.py`
+in `ihk_pepper_identity`, der `PersonIdentityArray` aus echten
+RealSense-Bilddaten veröffentlicht (aktuell nur Bibliothek ohne Node);
+(2) `command_router_node`/`group_tracking_node` tatsächlich in den
+Behavior Tree einbinden (neue BT-Knoten für Codewort-Konsum,
+Gruppenpositionierung, `MonitorParticipants`); (3) die volle
+Abschnitt-23-Prioritätskette im Baum nachbilden. Unabhängig von
+Hardware: eine echte ReSpeaker-Core-v2.0-Einheit + Pepper mit
+freigegebener Bewegung bleibt Voraussetzung für JEDE
+Hardware-Verifikation von FollowPerson/ReturnToOrigin/Gesichtserkennung
+-- ohne das bleiben alle drei bei "gegen Mocks getestet, nicht
+hardware-verifiziert" stehen, wie in diesem Bericht durchgängig
+gekennzeichnet. Die endgültige Priorisierung bleibt beim Auftraggeber.

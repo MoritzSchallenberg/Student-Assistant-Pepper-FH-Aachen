@@ -183,3 +183,18 @@ Fremdtrack-Ablehnung, Frame-Validierung, TF-Transformation),
 `test_audio_node_wakeword.py` (9 neue Fälle: Ambiguitäts-Gate in beiden
 Richtungen, `_on_focus_state`-Weiterleitung). Kein Test gegen echte
 ReSpeaker-Hardware.
+
+## Gruppenbewusstes Steering (Entwicklungsauftrag 04-B, AP7)
+
+`audio_focus_node.py` unterscheidet seit AP7 zusätzlich GROUP_WIDE
+(Fokus auf das Gruppenzentrum) und ACTIVE_SPEAKER (Fokus auf den per
+`ActiveSpeakerSelector`-Hysterese bestätigten aktiven Sprecher
+INNERHALB einer bestätigten Gruppe, siehe
+`ihk_pepper_perception/group_tracking.py`). Wichtig: `selected_track_id`
+(die Sitzungsidentität, siehe oben) wird durch die Gruppenlogik NIE
+verändert -- nur der an `on_target_track_update()` übergebene
+Azimut-WERT wechselt. Die Fremdtrack-Ablehnungsgarantie aus AP6.1
+bleibt dadurch unverändert bestehen. Details:
+`docs/GROUP_CONVERSATION.md`. 16 neue Tests
+(`group_speaker_selection.py` + `audio_focus_node.py`-Erweiterung),
+weiterhin kein Test gegen echte ReSpeaker-Hardware.
