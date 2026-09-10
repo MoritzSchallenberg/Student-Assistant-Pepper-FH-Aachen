@@ -1192,3 +1192,70 @@ Hardware-Verifikation von FollowPerson/ReturnToOrigin/Gesichtserkennung
 -- ohne das bleiben alle drei bei "gegen Mocks getestet, nicht
 hardware-verifiziert" stehen, wie in diesem Bericht durchgängig
 gekennzeichnet. Die endgültige Priorisierung bleibt beim Auftraggeber.
+
+## AP7.1: Identity-Laufzeit, sichere Rollenautorisierung und vollständige Interaktionsorchestrierung
+
+Nachfolgeauftrag zu AP7 -- verbindet die dort einzeln gebauten,
+getesteten, aber noch nebeneinander laufenden Komponenten zu einer
+durchgängigen Laufzeitarchitektur. Auf demselben Branch
+(`order-04b-kiconnect-gesture-memory-lifecycle-audio`), direkt auf dem
+AP7-Abschluss-Commit (`a30c415`) aufbauend.
+
+### Commit 1/10: audit AP7 baseline and identity runtime gaps
+
+**Baseline verifiziert** (Branch `order-04b-kiconnect-gesture-memory-lifecycle-audio`,
+HEAD `a30c415f617ffa435df10988d638a819bf85f5f6`, working tree sauber):
+Python `python3 -m pytest ihk_pepper_tests/test` → **1297 passed, 3
+skipped** (entspricht dem gemeldeten Stand). BT.CPP `colcon test-result
+--all` → **23 tests, 0 errors, 0 failures, 4 skipped** (entspricht dem
+gemeldeten Stand). `ihk_pepper_interfaces` baut fehlerfrei.
+Secret-Scan (`git grep` gegen AWS-/GitHub-/Slack-/OpenAI-Token-Muster
+und private-Key-Header) ohne Treffer. Keine `.env`-Datei, kein
+Laufzeit-`*.db` (biometrische Templates eingeschlossen -- global per
+`.gitignore` ausgeschlossen), keine echte Produktions-Inventory
+(`ansible/inventory/production.yml` existiert lokal, ist aber NICHT
+getrackt, per `.gitignore` ausgeschlossen -- `vault.yml` ist getrackt,
+aber Ansible-Vault-AES256-verschlüsselt) im Repository versioniert.
+Die einzige gefundene "biometrische" Datei ist Peppers eigene
+Roboter-Mesh-Textur (`juliette_face.png`, Herstellermodell, keine
+echte Person).
+
+**Bestätigte Lücken** (gegen Auftrag Abschnitt 3, per Code-Lektüre
+verifiziert, nicht nur übernommen):
+
+- **3.1 (Identity-Laufzeitknoten)**: bestätigt. `ihk_pepper_identity`
+  hat KEINEN registrierten Console-Script-Eintrag in `setup.py` --
+  reines Bibliothekspaket. Kein Code-Pfad instanziiert
+  `FaceIdentityBackend`/`LocalOnnxIdentityBackend` zur Laufzeit.
+- **3.2 (globale Bool-Bestätigung)**: bestätigt.
+  `command_router_node.py` abonniert `/authorization/secondary_confirmation`
+  (`std_msgs/Bool`) und hält nur den zuletzt empfangenen Wert
+  (`self._secondary_confirmation_valid`) -- keine Bindung an
+  `person_id`/`track_id`/`command`/Ablaufzeit/Einmalverwendung. Aktuell
+  setzt KEIN echter Node dieses Topic (bleibt strukturell immer
+  `False`, fail-closed) -- die Lücke ist aber strukturell vorhanden und
+  müsste bei einer künftigen UI-Anbindung sofort ausgenutzt werden
+  können (globales `True` würde JEDEN wartenden Befehl freigeben).
+- **3.3 (BT-Anbindung)**: bestätigt. Kein BT-Knoten konsumiert
+  `/interaction/authorized_command`, `/authorization/grants` oder
+  `/perception/conversation_groups` -- `command_router_node.py`/
+  `group_tracking_node.py` laufen als eigenständige ROS2-Nodes parallel
+  zum Baum (siehe AP7-Bericht, "Nicht Teil von AP7").
+- **3.4 (Origin-Kontextbindung)**: bestätigt.
+  `origin_session.py::OriginRecord` hat `session_id`/`person_id`/
+  `group_id`/`captured_at_s`/Pose, aber KEIN `interaction_id`, KEIN
+  `map_id`/Kartenversion, KEIN `reason` (Grund der Interaktion) --
+  Invalidierung erfolgt aktuell nur global (`invalidate_all()` bei
+  Kartenwechsel/Neulokalisierung), nicht pro Interaktion.
+
+**Bereits erfüllt** (keine erneute Implementierung nötig):
+
+- **TF-Struktur (Abschnitt 15/AP7.1.11)**: `Head -> realsense_mount_link`
+  und `Head -> respeaker_link` sind bereits als GESCHWISTER-Frames
+  unter `Head` verdrahtet (`realsense_static_tf.launch.py`,
+  `respeaker_static_tf.launch.py`, seit AP6.1) -- exakt die vom Auftrag
+  verlangte Struktur. Reale Vermessung (Translation/Rotation/
+  Kanalreihenfolge/akustische Vorwärtsrichtung) bleibt weiterhin
+  `hwverificationrequired` (unverändert seit AP6/AP6.1,
+  `respeaker_extrinsics.yaml`/`realsense_extrinsics.yaml` bleiben
+  Platzhalter).
