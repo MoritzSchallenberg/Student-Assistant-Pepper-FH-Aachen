@@ -21,6 +21,12 @@
   <depend>ihk_pepper_person_memory</depend>
   <depend>python3-numpy</depend>
   <depend>python3-cryptography</depend>
+  <!-- face_identity_node.py: synchronisierte Farbe+Tiefe+CameraInfo,
+       gleiches Muster wie ihk_pepper_perception/perception_node.py. -->
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>cv_bridge</depend>
+  <depend>message_filters</depend>
   <!-- CPU-faehiges lokales Inferenz-Backend (Auftrag Abschnitt 7:
        "lokal auf dem NUC laufen koennen, CPU-faehig sein") – bereits
        installiert (siehe docs/FACE_IDENTITY_AND_PRIVACY.md), als

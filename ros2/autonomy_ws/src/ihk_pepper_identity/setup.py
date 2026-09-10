@@ -26,11 +26,7 @@ setup(
     tests_require=["pytest"],
     entry_points={
         "console_scripts": [
-            # face_identity_node folgt in einem spaeteren Commit, sobald
-            # die eigentliche Laufzeit-Verdrahtung (RealSense-Bilder,
-            # Consent-Abfrage, PersonIdentityArray-Veroeffentlichung)
-            # ansteht -- dieser Commit liefert nur die getestete
-            # Backend-/Speicher-/Abgleichslogik.
+            "face_identity_node = ihk_pepper_identity.face_identity_node:main",
         ],
     },
 )
