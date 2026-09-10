@@ -231,10 +231,12 @@ class _FakeNode:
         return _FakeLogger()
 
 
-def _capture_request(session_id="s1", initial_track_id=1, person_id="", group_id=""):
+def _capture_request(session_id="s1", initial_track_id=1, person_id="", group_id="",
+                      interaction_id="", reason=""):
     return types.SimpleNamespace(
         session_id=session_id, initial_track_id=initial_track_id,
         person_id=person_id, group_id=group_id,
+        interaction_id=interaction_id, reason=reason,
     )
 
 
@@ -244,10 +246,12 @@ class _CaptureResponse:
     reason = ""
 
 
-def _return_request(session_id="s1", origin_id="o1", max_origin_age_s=0.0, timeout_s=0.0):
+def _return_request(session_id="s1", origin_id="o1", max_origin_age_s=0.0, timeout_s=0.0,
+                     interaction_id=""):
     return types.SimpleNamespace(
         session_id=session_id, origin_id=origin_id,
         max_origin_age_s=max_origin_age_s, timeout_s=timeout_s,
+        interaction_id=interaction_id,
     )
 
 
@@ -366,3 +370,40 @@ def test_return_to_origin_reports_final_pose_on_success():
     assert result.success is True
     assert result.final_pose.pose.position.x == pytest.approx(3.0)
     assert result.final_pose.pose.position.y == pytest.approx(4.0)
+
+
+# ---- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4: interaction_id-Bindung ----
+
+def test_capture_origin_stores_the_interaction_id():
+    node = _FakeNode()
+    response = node._on_capture_origin(
+        _capture_request(session_id="s1", interaction_id="authorized_follow"),
+        _CaptureResponse())
+    assert response.success is True
+    _ok, _reason, record = node._origin_store.validate(
+        response.origin_id, "s1", max_age_s=60.0, interaction_id="authorized_follow")
+    assert record.interaction_id == "authorized_follow"
+
+
+def test_return_to_origin_rejects_a_different_interaction_id():
+    node = _FakeNode()
+    capture_response = node._on_capture_origin(
+        _capture_request(session_id="s1", interaction_id="authorized_follow"),
+        _CaptureResponse())
+    gh = _FakeGoalHandle(_return_request(
+        origin_id=capture_response.origin_id, interaction_id="single_person_conversation"))
+    result = node._execute_return_to_origin(gh)
+    assert result.success is False
+    assert result.abort_reason == "ursprung_gehoert_anderer_interaktion"
+    assert node._nav2_client.send_goal_calls == 0
+
+
+def test_return_to_origin_accepts_a_matching_interaction_id():
+    node = _FakeNode()
+    capture_response = node._on_capture_origin(
+        _capture_request(session_id="s1", interaction_id="authorized_follow"),
+        _CaptureResponse())
+    gh = _FakeGoalHandle(_return_request(
+        origin_id=capture_response.origin_id, interaction_id="authorized_follow"))
+    result = node._execute_return_to_origin(gh)
+    assert result.success is True

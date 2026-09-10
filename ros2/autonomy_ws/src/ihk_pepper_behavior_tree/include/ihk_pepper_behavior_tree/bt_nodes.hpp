@@ -17,6 +17,7 @@
 #include <deque>
 #include <map>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 
 #include <behaviortree_cpp/behavior_tree.h>
@@ -41,6 +42,7 @@
 #include <ihk_pepper_interfaces/msg/authorization_grant.hpp>
 #include <ihk_pepper_interfaces/msg/conversation_group_array.hpp>
 #include <ihk_pepper_interfaces/msg/audio_focus_state.hpp>
+#include <ihk_pepper_interfaces/msg/interaction_lifecycle_state.hpp>
 #include <ihk_pepper_interfaces/srv/cancel_interaction.hpp>
 #include <ihk_pepper_interfaces/srv/set_interaction_state.hpp>
 #include <ihk_pepper_interfaces/srv/associate_person_with_sound.hpp>
@@ -699,6 +701,9 @@ public:
   {
     return {
       BT::InputPort<int>("track_id"),
+      BT::InputPort<std::string>("interaction_id", "",
+          "Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4"),
+      BT::InputPort<std::string>("reason", "", ""),
       BT::OutputPort<std::string>("origin_id"),
       BT::OutputPort<std::string>("origin_session_id"),
     };
@@ -734,6 +739,9 @@ public:
       BT::InputPort<std::string>("origin_id"),
       BT::InputPort<double>("max_origin_age_s", 0.0, "0 = Node-seitiger Standardwert"),
       BT::InputPort<double>("timeout_s", 0.0, "0 = Node-seitiger Standardwert"),
+      BT::InputPort<std::string>("interaction_id", "",
+          "Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4"),
+      BT::OutputPort<std::string>("abort_reason"),
     };
   }
   BT::NodeStatus onStart() override;
@@ -1107,6 +1115,40 @@ public:
     setOutput("active_speaker_track_id", kNoSelectedTrackId);
     return BT::NodeStatus::SUCCESS;
   }
+};
+
+/// Veroeffentlicht /interaction/lifecycle_state (InteractionLifecycleState.msg,
+/// bereits in AP7 Commit 9/23 als reiner Vertrag definiert, HIER
+/// erstmals tatsaechlich verdrahtet -- siehe interaction_lifecycle_state.py-
+/// Moduldoku "die eigentliche Uebergangslogik folgt in einem spaeteren
+/// Commit"). Entwicklungsauftrag 04-B, AP7.1, Abschnitt 16
+/// ("Fehlerbehandlung"): macht ein fehlgeschlagenes ReturnToOriginViaBT
+/// SICHTBAR (state_name="ERROR" + reason), statt es im
+/// Fallback-mit-AlwaysSuccessIdle-Schutz stillschweigend verschwinden zu
+/// lassen -- siehe EndInteractionSubtree/FollowCommandSubtree. state_name
+/// muss GENAU einem der Enum-Namen entsprechen (z.B. "ERROR",
+/// "RETURNING_TO_ORIGIN") -- ein unbekannter Name ist ein
+/// Baum-Autorenfehler und liefert bewusst FAILURE, statt einen falschen
+/// Zustand zu veroeffentlichen.
+class PublishInteractionLifecycleState : public BT::SyncActionNode
+{
+public:
+  PublishInteractionLifecycleState(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<std::string>("state_name"),
+      BT::InputPort<std::string>("session_id", "", ""),
+      BT::InputPort<std::string>("reason", "", ""),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Publisher<ihk_pepper_interfaces::msg::InteractionLifecycleState>::SharedPtr pub_;
 };
 
 /// Ruft /cancel_interaction UND den generischen Action-Cancel-Service

@@ -898,6 +898,7 @@ class PersonApproachNode(Node):
             session_id=request.session_id, frame_id="map", x=x, y=y, yaw_rad=yaw,
             initial_track_id=request.initial_track_id,
             person_id=request.person_id, group_id=request.group_id,
+            interaction_id=request.interaction_id, reason=request.reason,
         )
         response.success = True
         response.origin_id = record.origin_id
@@ -946,7 +947,8 @@ class PersonApproachNode(Node):
             or self.get_parameter("return_to_origin_timeout_default_s").value)
 
         origin_ok, origin_reason, record = self._origin_store.validate(
-            request.origin_id, request.session_id, max_age_s)
+            request.origin_id, request.session_id, max_age_s,
+            interaction_id=request.interaction_id)
         ctx = self._build_return_to_origin_safety_context(origin_valid=origin_ok)
         ok, reason = check_return_to_origin_safety(ctx)
         if not ok:
@@ -974,7 +976,8 @@ class PersonApproachNode(Node):
             if time.time() - started_at_s > timeout_s:
                 return False, "zeitueberschreitung"
             still_ok, still_reason, _rec = self._origin_store.validate(
-                request.origin_id, request.session_id, max_age_s)
+                request.origin_id, request.session_id, max_age_s,
+                interaction_id=request.interaction_id)
             check_ctx = self._build_return_to_origin_safety_context(origin_valid=still_ok)
             safety_ok, safety_reason = check_return_to_origin_safety(check_ctx)
             if not safety_ok:

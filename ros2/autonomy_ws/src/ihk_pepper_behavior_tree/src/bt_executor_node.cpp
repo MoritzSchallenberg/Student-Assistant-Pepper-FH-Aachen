@@ -236,6 +236,14 @@ int main(int argc, char ** argv)
     });
   factory.registerNodeType<ihk_pepper_bt::EndGroupInteraction>("EndGroupInteraction");
 
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 16: sichtbarer
+  // Fehlerzustand bei fehlgeschlagenem ReturnToOriginViaBT.
+  factory.registerBuilder<ihk_pepper_bt::PublishInteractionLifecycleState>(
+    "PublishInteractionLifecycleState",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::PublishInteractionLifecycleState>(name, config, node);
+    });
+
   factory.registerBuilder<ihk_pepper_bt::SpeakText>(
     "SpeakText",
     [node](const std::string & name, const BT::NodeConfig & config) {

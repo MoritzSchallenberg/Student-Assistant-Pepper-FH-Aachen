@@ -909,6 +909,11 @@ BT::NodeStatus CaptureOriginPose::onStart()
   request->session_id = session_id_;
   request->initial_track_id = static_cast<uint32_t>(track_id.value());
   // person_id/group_id bleiben leer -- siehe Klassendoku in bt_nodes.hpp.
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4: interaction_id/reason
+  // werden unveraendert durchgereicht -- leer bleibt weiterhin gueltig
+  // (keine Interaktionsbindung), siehe origin_session.py-Moduldoku.
+  request->interaction_id = getInput<std::string>("interaction_id").value_or("");
+  request->reason = getInput<std::string>("reason").value_or("");
   future_ = client_->async_send_request(request).future;
   have_future_ = true;
   return BT::NodeStatus::RUNNING;
@@ -967,6 +972,9 @@ BT::NodeStatus ReturnToOriginViaBT::onStart()
   goal.origin_id = origin_id.value();
   goal.max_origin_age_s = static_cast<float>(getInput<double>("max_origin_age_s").value_or(0.0));
   goal.timeout_s = static_cast<float>(getInput<double>("timeout_s").value_or(0.0));
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4: leer = keine
+  // Interaktionsbindung pruefen (Rueckwaertskompatibilitaet).
+  goal.interaction_id = getInput<std::string>("interaction_id").value_or("");
   goal_handle_.reset();
   goal_future_ = client_->async_send_goal(goal);
   return BT::NodeStatus::RUNNING;
@@ -989,7 +997,17 @@ BT::NodeStatus ReturnToOriginViaBT::onRunning()
     return BT::NodeStatus::RUNNING;
   }
   auto result = result_future_.get();
-  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+  if (!result.result->success) {
+    // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 16 ("Fehlerbehandlung"):
+    // der Grund wird auf dem Blackboard sichtbar gemacht, statt beim
+    // Scheitern nur FAILURE ohne jede Diagnoseinformation zu liefern --
+    // der Aufrufer (siehe PublishInteractionLifecycleState in
+    // pepper_main.xml) kann diesen Grund in einen sichtbaren
+    // Fehlerzustand uebernehmen.
+    setOutput("abort_reason", result.result->abort_reason);
+    return BT::NodeStatus::FAILURE;
+  }
+  return BT::NodeStatus::SUCCESS;
 }
 
 void ReturnToOriginViaBT::onHalted()
@@ -1435,6 +1453,56 @@ BT::NodeStatus UpdateActiveSpeaker::tick()
     return BT::NodeStatus::FAILURE;
   }
   setOutput("active_speaker_track_id", static_cast<int>(last_selected_track_id_));
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---- PublishInteractionLifecycleState (Entwicklungsauftrag 04-B,
+//      AP7.1, Abschnitt 16) --------------------------------------------------
+
+PublishInteractionLifecycleState::PublishInteractionLifecycleState(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config), node_(node)
+{
+  pub_ = node_->create_publisher<ihk_pepper_interfaces::msg::InteractionLifecycleState>(
+    "/interaction/lifecycle_state", 10);
+}
+
+BT::NodeStatus PublishInteractionLifecycleState::tick()
+{
+  using Msg = ihk_pepper_interfaces::msg::InteractionLifecycleState;
+  auto state_name = getInput<std::string>("state_name");
+  if (!state_name || state_name.value().empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  // Bewusst eine explizite, geschlossene Zuordnung statt eines
+  // generischen String-Zahl-Parsens -- ein Tippfehler im Baum-XML
+  // liefert so FAILURE (sichtbar beim Testen), nicht stillschweigend
+  // state=0.
+  static const std::unordered_map<std::string, uint8_t> kStateByName = {
+    {"IDLE", Msg::IDLE}, {"WAKEWORD_RECEIVED", Msg::WAKEWORD_RECEIVED},
+    {"TARGET_CONFIRMING", Msg::TARGET_CONFIRMING}, {"GREETING", Msg::GREETING},
+    {"APPROACHING", Msg::APPROACHING}, {"GROUP_POSITIONING", Msg::GROUP_POSITIONING},
+    {"CONVERSATION", Msg::CONVERSATION}, {"INTERRUPTING", Msg::INTERRUPTING},
+    {"FOLLOW_AUTHORIZATION", Msg::FOLLOW_AUTHORIZATION}, {"FOLLOWING", Msg::FOLLOWING},
+    {"PERSON_LOST", Msg::PERSON_LOST}, {"GROUP_LOST", Msg::GROUP_LOST},
+    {"ENDING", Msg::ENDING}, {"RETURNING_TO_ORIGIN", Msg::RETURNING_TO_ORIGIN},
+    {"SAFE_STOP", Msg::SAFE_STOP}, {"ERROR", Msg::ERROR},
+  };
+  auto it = kStateByName.find(state_name.value());
+  if (it == kStateByName.end()) {
+    RCLCPP_ERROR(
+      node_->get_logger(), "PublishInteractionLifecycleState: unbekannter state_name '%s'",
+      state_name.value().c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+  Msg msg;
+  msg.header.stamp = node_->get_clock()->now();
+  msg.state = it->second;
+  msg.state_name = state_name.value();
+  msg.session_id = getInput<std::string>("session_id").value_or("");
+  msg.reason = getInput<std::string>("reason").value_or("");
+  pub_->publish(msg);
   return BT::NodeStatus::SUCCESS;
 }
 

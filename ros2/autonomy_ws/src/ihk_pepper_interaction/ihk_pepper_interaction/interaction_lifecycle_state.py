@@ -9,7 +9,18 @@ nebeneinander, unterschiedliche Granularitaet.
 Nur die Enum-Werte + die Namenskonvertierung sind Teil dieses Commits
 (Auftrag: "define ... contracts") -- die eigentliche
 InteractionSession/Uebergangslogik folgt in einem spaeteren Commit
-(siehe docs/INTERACTION_LIFECYCLE.md fuer den aktuellen Stand)."""
+(siehe docs/INTERACTION_LIFECYCLE.md fuer den aktuellen Stand).
+
+Entwicklungsauftrag 04-B, AP7.1, Abschnitt 16 ("Fehlerbehandlung"): das
+Topic /interaction/lifecycle_state wird seit AP7.1 Commit 8/10
+tatsaechlich veroeffentlicht -- allerdings direkt aus dem Behavior Tree
+(neuer C++-Knoten PublishInteractionLifecycleState, siehe
+ihk_pepper_behavior_tree/src/bt_nodes.cpp), NICHT ueber dieses
+Python-Modul. Bisher WIRD NUR der state_name="ERROR"-Fall bei einem
+fehlgeschlagenen ReturnToOriginViaBT ausgeloest (EndInteractionSubtree/
+FollowCommandSubtree in pepper_main.xml) -- eine vollstaendige
+Zustandsuebergangs-Nachbildung ALLER Enum-Werte ist weiterhin NICHT Teil
+dieses Standes."""
 from __future__ import annotations
 
 from enum import IntEnum

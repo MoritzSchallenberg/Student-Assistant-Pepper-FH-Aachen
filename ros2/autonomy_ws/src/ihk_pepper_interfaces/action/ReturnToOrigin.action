@@ -9,6 +9,13 @@ string session_id
 string origin_id
 float32 max_origin_age_s
 float32 timeout_s
+
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.4/16: leer = keine
+# Interaktionsbindung pruefen (siehe origin_session.py-Moduldoku und
+# CaptureOrigin.srv). Verhindert, dass ein Ursprung aus einer
+# ANDEREN Interaktionsart (z.B. Follow) faelschlich fuer diese
+# Rueckkehr verwendet wird.
+string interaction_id
 ---
 # Result
 bool success
