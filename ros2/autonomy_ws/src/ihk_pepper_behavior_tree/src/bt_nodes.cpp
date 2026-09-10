@@ -881,6 +881,128 @@ void SetInteractionState::onHalted()
   have_future_ = false;
 }
 
+// ---- CaptureOriginPose (Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12) ----
+
+CaptureOriginPose::CaptureOriginPose(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = node_->create_client<CaptureSrv>("/capture_origin");
+}
+
+BT::NodeStatus CaptureOriginPose::onStart()
+{
+  auto track_id = getInput<int>("track_id");
+  if (!track_id) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->service_is_ready()) {
+    RCLCPP_WARN(node_->get_logger(), "CaptureOriginPose: Service nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  // Dieselbe track_id->session_id-Umwandlung wie RunDialogueViaBT --
+  // eigenstaendig gehalten, damit CaptureOriginPose ohne eine
+  // vorherige RunDialogueViaBT-Ausfuehrung testbar/nutzbar bleibt.
+  session_id_ = std::to_string(track_id.value());
+  auto request = std::make_shared<CaptureSrv::Request>();
+  request->session_id = session_id_;
+  request->initial_track_id = static_cast<uint32_t>(track_id.value());
+  // person_id/group_id bleiben leer -- siehe Klassendoku in bt_nodes.hpp.
+  future_ = client_->async_send_request(request).future;
+  have_future_ = true;
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus CaptureOriginPose::onRunning()
+{
+  if (!have_future_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto response = future_.get();
+  have_future_ = false;
+  if (!response->success) {
+    RCLCPP_WARN(
+      node_->get_logger(), "CaptureOriginPose abgelehnt: %s", response->reason.c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("origin_id", response->origin_id);
+  setOutput("origin_session_id", session_id_);
+  return BT::NodeStatus::SUCCESS;
+}
+
+void CaptureOriginPose::onHalted()
+{
+  have_future_ = false;
+}
+
+// ---- ReturnToOriginViaBT (Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12) ----
+
+ReturnToOriginViaBT::ReturnToOriginViaBT(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = rclcpp_action::create_client<ReturnAction>(node_, "/return_to_origin");
+}
+
+BT::NodeStatus ReturnToOriginViaBT::onStart()
+{
+  auto session_id = getInput<std::string>("session_id");
+  auto origin_id = getInput<std::string>("origin_id");
+  if (!session_id || !origin_id || session_id.value().empty() || origin_id.value().empty()) {
+    // Kein gueltiger Ursprung gesichert (z.B. CaptureOriginPose nie
+    // erfolgreich durchlaufen) -- NIE eine Schaetzfahrt versuchen.
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->wait_for_action_server(std::chrono::seconds(1))) {
+    RCLCPP_WARN(node_->get_logger(), "ReturnToOriginViaBT: Action nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  ReturnAction::Goal goal;
+  goal.session_id = session_id.value();
+  goal.origin_id = origin_id.value();
+  goal.max_origin_age_s = static_cast<float>(getInput<double>("max_origin_age_s").value_or(0.0));
+  goal.timeout_s = static_cast<float>(getInput<double>("timeout_s").value_or(0.0));
+  goal_handle_.reset();
+  goal_future_ = client_->async_send_goal(goal);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus ReturnToOriginViaBT::onRunning()
+{
+  if (!goal_handle_) {
+    if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_future_.get();
+    if (!goal_handle_) {
+      return BT::NodeStatus::FAILURE;
+    }
+    result_future_ = client_->async_get_result(goal_handle_);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto result = result_future_.get();
+  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+void ReturnToOriginViaBT::onHalted()
+{
+  if (goal_handle_) {
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "ReturnToOriginViaBT");
+  } else {
+    last_halt_cancel_confirmed_ = false;
+  }
+}
+
 // ---- SafeStopAll ------------------------------------------------------------
 
 SafeStopAll::SafeStopAll(

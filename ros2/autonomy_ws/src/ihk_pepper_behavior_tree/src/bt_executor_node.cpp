@@ -176,6 +176,20 @@ int main(int argc, char ** argv)
     });
   factory.registerNodeType<ihk_pepper_bt::ClearSelectedPerson>("ClearSelectedPerson");
 
+  // Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: Ursprungspose
+  // sichern/zurueckkehren.
+  factory.registerBuilder<ihk_pepper_bt::CaptureOriginPose>(
+    "CaptureOriginPose",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::CaptureOriginPose>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::ReturnToOriginViaBT>(
+    "ReturnToOriginViaBT",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::ReturnToOriginViaBT>(name, config, node);
+    });
+  factory.registerNodeType<ihk_pepper_bt::ClearSession>("ClearSession");
+
   factory.registerBuilder<ihk_pepper_bt::SpeakText>(
     "SpeakText",
     [node](const std::string & name, const BT::NodeConfig & config) {

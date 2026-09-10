@@ -16,7 +16,7 @@
   bei allen StatefulActionNodes die laufende ROS2-Action wirklich
   abbricht) und wechselt zu SafetySubtree.
 
-  Prioritaet: Safety > Battery > GreetAndApproach > Interaction >
+  Prioritaet: Safety > Battery > PersonInteractionLifecycle > Interaction >
   Presentation > IdleAttract.
 
   GreetAndApproach steht bewusst VOR Interaction (per E2E-Test in
@@ -31,6 +31,19 @@
   faellt dann normal zu Interaction/Presentation/IdleAttract durch –
   GreetAndApproach "stiehlt" also nur dann Prioritaet, wenn tatsaechlich
   eine Zielperson aktiv verfolgt/begruesst/angefahren wird.
+
+  Entwicklungsauftrag 04-B, AP7, Abschnitt 9/23: GreetAndApproachSubtree
+  und DialogueSubtree standen bisher als ZWEI getrennte Eintraege im
+  Root-ReactiveFallback – funktional unveraendert, aber jetzt zu EINEM
+  benannten PersonInteractionLifecycleSubtree zusammengefasst (siehe
+  dort). Eine SubTree-Ebene mehr aendert NICHTS an der Fallback-
+  Prioritaet/-Praeemption (verschachtelte Fallbacks verhalten sich
+  identisch zu flachen), macht aber den vollstaendigen
+  Personeninteraktions-Lebenszyklus (Begruessen -> Annaehern ->
+  Ursprungspose sichern -> Gespraech -> Verabschieden -> Zurueckkehren
+  -> Aufraeumen) im Baum als EIN Konzept sichtbar, wie vom Auftrag
+  verlangt. GreetAndApproachSubtree/DialogueSubtree bleiben dabei
+  unveraendert eigenstaendig nutzbar (z.B. fuer gezielte Tests).
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
 
@@ -38,11 +51,27 @@
     <ReactiveFallback name="PepperTopLevel">
       <SubTree ID="SafetySubtree"/>
       <SubTree ID="BatterySubtree"/>
-      <SubTree ID="GreetAndApproachSubtree"/>
-      <SubTree ID="DialogueSubtree"/>
+      <SubTree ID="PersonInteractionLifecycleSubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
+    </ReactiveFallback>
+  </BehaviorTree>
+
+  <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 9/23: fasst
+       GreetAndApproachSubtree (Begruessen/Annaehern, inkl. neuem
+       CaptureOriginPose vor der Annaeherung) und DialogueSubtree
+       (Gespraech, inkl. neuem EndInteractionSubtree danach) unter EINEM
+       Namen zusammen – siehe Kommentar am Wurzelbaum oben. Kein
+       zweites, paralleles Verwalten derselben Person moeglich: BEIDE
+       Zweige lesen/schreiben denselben Blackboard-Eintrag
+       target_track_id, und IsConversationInactive/IsConversationReady
+       schliessen sich gegenseitig aus (derselbe /interaction_state kann
+       nicht gleichzeitig IDLE und CONVERSATION_READY sein). -->
+  <BehaviorTree ID="PersonInteractionLifecycleSubtree">
+    <ReactiveFallback name="PersonInteractionLifecycle">
+      <SubTree ID="GreetAndApproachSubtree"/>
+      <SubTree ID="DialogueSubtree"/>
     </ReactiveFallback>
   </BehaviorTree>
 
@@ -80,7 +109,42 @@
     <Sequence name="Dialogue">
       <IsConversationReady/>
       <RunDialogueViaBT session_id="{target_track_id}"/>
+      <SubTree ID="EndInteractionSubtree"/>
     </Sequence>
+  </BehaviorTree>
+
+  <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12/23: nach einem
+       ERFOLGREICH beendeten Gespraech (RunDialogueViaBT == SUCCESS)
+       verabschieden, zur Ursprungspose zurueckkehren und die Sitzung
+       aufraeumen. Der aeussere Fallback mit AlwaysSuccessIdle als
+       letztem Zweig garantiert, dass EndInteractionSubtree IMMER
+       SUCCESS liefert – selbst wenn Verabschiedung/Rueckkehr
+       fehlschlagen (Sicherheitsereignis, kein gueltiger Ursprung mehr,
+       Nav2 nicht erreichbar), werden ClearSelectedPerson/ClearSession/
+       SetInteractionState IDLE trotzdem ausgefuehrt. Ohne dieses
+       Fangnetz wuerde ein fehlgeschlagenes ReturnToOriginViaBT die
+       gesamte Dialogue-Sequence scheitern lassen, waehrend
+       /interaction_state auf CONVERSATION_READY stehen bliebe –
+       DialogueSubtree wuerde beim naechsten Tick sofort erneut
+       RunDialogueViaBT mit derselben, bereits verabschiedeten Person
+       versuchen (Auftrag Abschnitt 12: "sicheres Fehlverhalten – nie
+       eine Schaetzfahrt/Wiederholung, stattdessen sauber aufraeumen"). -->
+  <BehaviorTree ID="EndInteractionSubtree">
+    <Fallback name="EndInteractionAlwaysCleansUp">
+      <Sequence name="EndInteraction">
+        <Fallback name="SayGoodbyeAndReturnOrGiveUp">
+          <Sequence name="SayGoodbyeAndReturn">
+            <PlayCatalogGesture gesture_name="goodbye_wave" speed_scale="1.0"/>
+            <ReturnToOriginViaBT session_id="{origin_session_id}" origin_id="{origin_id}"/>
+          </Sequence>
+          <AlwaysSuccessIdle/>
+        </Fallback>
+        <ClearSelectedPerson selected_track_id="{target_track_id}"/>
+        <ClearSession origin_id="{origin_id}" origin_session_id="{origin_session_id}"/>
+        <SetInteractionState state_name="IDLE"/>
+      </Sequence>
+      <AlwaysSuccessIdle/>
+    </Fallback>
   </BehaviorTree>
 
   <!-- Faengt weiterhin den Fall ab, dass eine Person allein durch einen
@@ -149,6 +213,9 @@
           <PlayCatalogGesture gesture_name="wave_right" speed_scale="1.0"/>
           <WaitForGestureFromTrack track_id="{target_track_id}" timeout_s="8.0"/>
           <IsApproachAllowed/>
+          <CaptureOriginPose track_id="{target_track_id}"
+                              origin_id="{origin_id}"
+                              origin_session_id="{origin_session_id}"/>
           <ApproachSelectedPerson track_id="{target_track_id}" target_distance_m="1.0"/>
           <SetInteractionState state_name="CONVERSATION_READY"/>
         </Sequence>
@@ -258,6 +325,26 @@
     <Action ID="RunDialogueViaBT">
       <input_port name="session_id">int (Track-ID) -- wird in onStart() zu RunDialogue.action's string-Feld session_id umgewandelt.</input_port>
       <description>Ruft /run_dialogue auf, bricht bei Praeemption (Safety/ReactiveFallback) die laufende Action wirklich ab. Entwicklungsauftrag 3, AP11.</description>
+    </Action>
+
+    <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 9/12: Ursprungspose sichern/zurueckkehren. -->
+    <Action ID="CaptureOriginPose">
+      <input_port name="track_id"/>
+      <output_port name="origin_id"/>
+      <output_port name="origin_session_id"/>
+      <description>Ruft /capture_origin auf -- sichert die aktuelle Roboterpose im map-Frame als Rueckkehrpunkt, BEVOR sich Pepper einer Person naehert.</description>
+    </Action>
+    <Action ID="ReturnToOriginViaBT">
+      <input_port name="session_id"/>
+      <input_port name="origin_id"/>
+      <input_port name="max_origin_age_s" default="0.0">0 = Node-seitiger Standardwert</input_port>
+      <input_port name="timeout_s" default="0.0">0 = Node-seitiger Standardwert</input_port>
+      <description>Ruft /return_to_origin auf -- faehrt zur zuvor per CaptureOriginPose gesicherten Pose zurueck, bricht bei Praeemption wirklich ab.</description>
+    </Action>
+    <Action ID="ClearSession">
+      <inout_port name="origin_id"/>
+      <inout_port name="origin_session_id"/>
+      <description>Leert die Blackboard-Felder origin_id/origin_session_id, immer SUCCESS.</description>
     </Action>
 
     <!-- Entwicklungsauftrag 04-B, AP6: Wakeword-gesteuerter Begruessen-Ablauf. -->

@@ -29,6 +29,7 @@
 #include <ihk_pepper_interfaces/action/approach_person.hpp>
 #include <ihk_pepper_interfaces/action/run_dialogue.hpp>
 #include <ihk_pepper_interfaces/action/orient_to_sound.hpp>
+#include <ihk_pepper_interfaces/action/return_to_origin.hpp>
 #include <ihk_pepper_interfaces/msg/safety_state.hpp>
 #include <ihk_pepper_interfaces/msg/system_health.hpp>
 #include <ihk_pepper_interfaces/msg/person_track_array.hpp>
@@ -37,6 +38,7 @@
 #include <ihk_pepper_interfaces/srv/cancel_interaction.hpp>
 #include <ihk_pepper_interfaces/srv/set_interaction_state.hpp>
 #include <ihk_pepper_interfaces/srv/associate_person_with_sound.hpp>
+#include <ihk_pepper_interfaces/srv/capture_origin.hpp>
 #include <action_msgs/srv/cancel_goal.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8.hpp>
@@ -671,6 +673,100 @@ private:
   // signalisiert statt eines optional<FutureAndRequestId>.
   std::future<SetInteractionStateSrv::Response::SharedPtr> future_;
   bool have_future_ {false};
+};
+
+/// Ruft /capture_origin auf (Entwicklungsauftrag 04-B, AP7, Abschnitt
+/// 9/12) -- sichert die aktuelle Roboterpose als Rueckkehrpunkt, BEVOR
+/// sich Pepper einer Person naehert. Gleiches Aufbau-Muster wie
+/// FindPersonNearSoundRay (einfacher Service-Aufruf, kein Action-
+/// Client noetig). person_id/group_id bleiben in diesem Commit leer --
+/// die Rollen-/Gruppen-Verdrahtung im Baum selbst ist NICHT Teil von
+/// AP7 Commit 10 (ehrlich offen, siehe Abschlussmeldung).
+class CaptureOriginPose : public BT::StatefulActionNode
+{
+public:
+  CaptureOriginPose(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<int>("track_id"),
+      BT::OutputPort<std::string>("origin_id"),
+      BT::OutputPort<std::string>("origin_session_id"),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  using CaptureSrv = ihk_pepper_interfaces::srv::CaptureOrigin;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Client<CaptureSrv>::SharedPtr client_;
+  std::future<CaptureSrv::Response::SharedPtr> future_;
+  bool have_future_ {false};
+  std::string session_id_;
+};
+
+/// Ruft /return_to_origin auf (Entwicklungsauftrag 04-B, AP7, Abschnitt
+/// 9/12) -- faehrt zur zuvor per CaptureOriginPose gesicherten Pose
+/// zurueck. Gleiches Aufbau-/Abbruch-Muster wie ApproachSelectedPerson/
+/// RunDialogueViaBT (Action-Client, onHalted() bricht wirklich ab, mit
+/// derselben begrenzten Cancel-Bestaetigung).
+class ReturnToOriginViaBT : public BT::StatefulActionNode
+{
+public:
+  ReturnToOriginViaBT(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<std::string>("session_id"),
+      BT::InputPort<std::string>("origin_id"),
+      BT::InputPort<double>("max_origin_age_s", 0.0, "0 = Node-seitiger Standardwert"),
+      BT::InputPort<double>("timeout_s", 0.0, "0 = Node-seitiger Standardwert"),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
+
+private:
+  using ReturnAction = ihk_pepper_interfaces::action::ReturnToOrigin;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<ReturnAction>;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client<ReturnAction>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> result_future_;
+  GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
+};
+
+/// Leert die Blackboard-Felder origin_id/origin_session_id. Trivial-
+/// Knoten, immer SUCCESS -- gleiches Prinzip wie ClearSelectedPerson,
+/// getrennt gehalten, da eine Sitzung auch OHNE eine ausgewaehlte Person
+/// enden kann (z.B. ein bereits abgebrochener Ursprung).
+class ClearSession : public BT::SyncActionNode
+{
+public:
+  ClearSession(const std::string & name, const BT::NodeConfig & config)
+  : BT::SyncActionNode(name, config) {}
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::BidirectionalPort<std::string>("origin_id"),
+      BT::BidirectionalPort<std::string>("origin_session_id"),
+    };
+  }
+  BT::NodeStatus tick() override
+  {
+    setOutput("origin_id", std::string(""));
+    setOutput("origin_session_id", std::string(""));
+    return BT::NodeStatus::SUCCESS;
+  }
 };
 
 /// Leert den Blackboard-Slot selected_track_id (setzt kNoSelectedTrackId).
