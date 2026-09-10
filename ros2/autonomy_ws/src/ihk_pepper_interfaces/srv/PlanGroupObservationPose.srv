@@ -1,0 +1,26 @@
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17 (Gruppenunterhaltung):
+# reine PLANUNGS-Anfrage -- KEINE Fahrt wird hier ausgeloest. Prueft VOR
+# PositionForGroup.action, ob fuer die aktuell ausgewaehlte, stabile
+# Gruppe (siehe ConversationGroup.msg/group_tracking_node.py) ueberhaupt
+# eine sichere Beobachtungspose existiert (ihk_pepper_navigation/
+# group_observation_pose.py::compute_group_observation_pose()).
+#
+# WICHTIG: die hier zurueckgegebene Zielpose ist eine Momentaufnahme.
+# PositionForGroup.action berechnet die tatsaechliche Fahrzielpose beim
+# Start ERNEUT frisch aus den dann aktuellen Personenpositionen -- kein
+# Vertrauen auf eine hier zwischengespeicherte, ggf. veraltete Pose
+# (gleiches Prinzip wie ReturnToOrigin, das den Ursprung ebenfalls bei
+# jeder Fahrt frisch validiert statt einer einmalig geplanten Pose zu
+# vertrauen).
+#
+# Request
+string group_id
+---
+# Response
+bool valid
+string reason
+float32 target_x
+float32 target_y
+float32 target_yaw_rad
+float32 expected_angular_span_rad
+float32 distance_to_nearest_person_m

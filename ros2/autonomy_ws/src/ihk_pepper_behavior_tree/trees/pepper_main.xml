@@ -16,8 +16,20 @@
   bei allen StatefulActionNodes die laufende ROS2-Action wirklich
   abbricht) und wechselt zu SafetySubtree.
 
-  Prioritaet: Safety > Battery > PersonInteractionLifecycle > Interaction >
+  Prioritaet: Safety > Battery > CodewordInterrupt > FollowCommand >
+  PersonInteractionLifecycle > GroupConversation > Interaction >
   Presentation > IdleAttract.
+
+  Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: GroupConversationSubtree
+  steht bewusst NACH PersonInteractionLifecycleSubtree (nicht davor) –
+  eine bereits laufende Einzelinteraktion wird NICHT von einer sich
+  zeitgleich bildenden Gruppe unterbrochen (konservative, einfache Wahl:
+  beide teilen sich denselben Audiofokus-Anker
+  (/audio/focus_state::selected_track_id), eine unabhaengige
+  Prioritaetsaufloesung zwischen "aktives Einzelgespraech" und "neu
+  geformte Gruppe" ist NICHT Teil dieses Commits). Ohne laufende
+  Einzelinteraktion (SelectStablePerson liefert FAILURE) faellt der
+  ReactiveFallback normal zu GroupConversationSubtree durch.
 
   GreetAndApproach steht bewusst VOR Interaction (per E2E-Test in
   Entwicklungsauftrag 1, AP12 gefunden – siehe
@@ -54,6 +66,7 @@
       <SubTree ID="CodewordInterruptSubtree"/>
       <SubTree ID="FollowCommandSubtree"/>
       <SubTree ID="PersonInteractionLifecycleSubtree"/>
+      <SubTree ID="GroupConversationSubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
@@ -142,6 +155,71 @@
       <SubTree ID="GreetAndApproachSubtree"/>
       <SubTree ID="DialogueSubtree"/>
     </ReactiveFallback>
+  </BehaviorTree>
+
+  <!-- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: Gruppenunterhaltung.
+       Bindet die bereits bestehende, getestete Gruppenlogik
+       (group_tracking_node.py/group_speaker_selection.py/
+       audio_focus_node.py) erstmals in den Behavior Tree ein –
+       SelectConversationGroup/MonitorParticipants/UpdateActiveSpeaker
+       lesen NUR deren Ergebnis, keine eigene Nachbildung der
+       Gruppenbildungs-/Sprecherauswahl-Logik.
+
+       Ablauf: einmalig auswaehlen (SelectConversationGroup) ->
+       Beobachtungspose planen (PlanGroupObservationPose, reine Planung,
+       KEINE Fahrt) -> GENAU EINMAL positionieren (PositionForGroup) ->
+       solange die Gruppe stabil bleibt (MonitorParticipants) mit dem
+       jeweils bestaetigten aktiven Sprecher (UpdateActiveSpeaker) das
+       BEREITS BESTEHENDE RunDialogueViaBT fuehren (kein eigener,
+       zweiter Dialog-Implementierungspfad fuer Gruppen) -> kontrolliert
+       aufraeumen (EndGroupInteraction), sobald keine stabile Gruppe mehr
+       besteht.
+
+       Der innere Fallback (RunGroupConversationOrEnd) faengt ein
+       FAILURE aus der KeepRunningUntilFailure-Schleife (Gruppe
+       aufgeloest) ab und wandelt es in SUCCESS um – exakt dasselbe
+       Prinzip wie EndInteractionSubtree oben: die Sequence muss auch
+       nach einem Abbruch garantiert bis zu EndGroupInteraction
+       durchlaufen, statt die gesamte Subtree-Sequence scheitern zu
+       lassen (was den Blackboard-Zustand group_id/
+       group_active_speaker_track_id unaufgeraeumt zurueckliesse). Ohne
+       diesen Schutz wuerde SelectConversationGroup beim naechsten Tick
+       sofort wieder dieselbe (moeglicherweise gar nicht mehr
+       existierende) group_id verwenden. Die AEUSSERE Sequence bleibt
+       dagegen bewusst UNGESCHUETZT: schlaegt bereits
+       SelectConversationGroup fehl (keine stabile Gruppe vorhanden),
+       MUSS die gesamte GroupConversationSubtree mit FAILURE enden,
+       damit InteractionSubtree/PresentationSubtree/IdleAttractSubtree
+       im Root-ReactiveFallback ueberhaupt eine Chance bekommen. -->
+  <BehaviorTree ID="GroupConversationSubtree">
+    <Sequence name="GroupConversation">
+      <SelectConversationGroup max_age_s="1.0"
+                                group_id="{group_id}"
+                                member_count="{group_member_count}"
+                                all_members_visible="{group_all_members_visible}"/>
+      <PlanGroupObservationPose group_id="{group_id}"
+                                 target_x="{group_target_x}"
+                                 target_y="{group_target_y}"
+                                 target_yaw_rad="{group_target_yaw_rad}"/>
+      <PositionForGroup group_id="{group_id}"/>
+      <Fallback name="RunGroupConversationOrEnd">
+        <KeepRunningUntilFailure>
+          <ReactiveSequence name="GroupConversationLoop">
+            <MonitorParticipants group_id="{group_id}" minimum_members="2"/>
+            <Fallback name="SpeakOrWait">
+              <Sequence name="SpeakWithActiveSpeaker">
+                <UpdateActiveSpeaker active_speaker_track_id="{group_active_speaker_track_id}"/>
+                <RunDialogueViaBT session_id="{group_active_speaker_track_id}"/>
+              </Sequence>
+              <AlwaysSuccessIdle/>
+            </Fallback>
+          </ReactiveSequence>
+        </KeepRunningUntilFailure>
+        <AlwaysSuccessIdle/>
+      </Fallback>
+      <EndGroupInteraction group_id="{group_id}"
+                            active_speaker_track_id="{group_active_speaker_track_id}"/>
+    </Sequence>
   </BehaviorTree>
 
   <!-- Hoechste Prioritaet: bei Not-Halt/Bumper/Emergency alles stoppen.
@@ -473,6 +551,43 @@
       <output_port name="azimuth_rad"/>
       <output_port name="measured_at_sec"/>
       <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten /interaction/authorized_command mit command==interrupt_and_look (Codewort "Eisenbahn") -- verarbeitet jede event_id GENAU EINMAL (begrenzter Cache, gleiches Muster wie WaitForFreshWakeword). Liefert bewusst KEINEN Fahrbefehl, nur die Richtung fuer OrientHeadToSound/FindPersonNearSoundRay (Wiederverwendung, siehe CodewordInterruptSubtree).</description>
+    </Action>
+
+    <!-- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: Gruppenunterhaltung
+         – liest/nutzt ausschliesslich bereits bestehende, getestete
+         Gruppenlogik (group_tracking_node.py/audio_focus_node.py), keine
+         eigene Nachbildung. -->
+    <Action ID="SelectConversationGroup">
+      <input_port name="max_age_s" default="1.0"/>
+      <output_port name="group_id"/>
+      <output_port name="member_count"/>
+      <output_port name="all_members_visible"/>
+      <description>SUCCESS nur bei einer FRISCHEN /perception/conversation_groups-Nachricht mit mindestens einer stabilen Gruppe (>= 2 Mitglieder) -- liest NUR das Ergebnis von group_tracking_node.py, keine eigene Gruppenbildungslogik.</description>
+    </Action>
+    <Action ID="PlanGroupObservationPose">
+      <input_port name="group_id"/>
+      <output_port name="target_x"/>
+      <output_port name="target_y"/>
+      <output_port name="target_yaw_rad"/>
+      <description>Ruft /plan_group_observation_pose auf -- REINE Planungsanfrage, loest KEINE Fahrt aus. PositionForGroup berechnet die tatsaechliche Fahrzielpose beim Start erneut frisch, vertraut nicht auf diese Momentaufnahme.</description>
+    </Action>
+    <Action ID="PositionForGroup">
+      <input_port name="group_id"/>
+      <description>Ruft /position_for_group auf (PositionForGroup.action), gleiches Aufbau-/Abbruch-Muster wie ApproachSelectedPerson/ReturnToOriginViaBT. Darf laut Auftrag NICHT waehrend eines laufenden Gespraechs wiederholt aufgerufen werden -- steht deshalb VOR der Gespraechsschleife, nicht darin.</description>
+    </Action>
+    <Action ID="MonitorParticipants">
+      <input_port name="group_id"/>
+      <input_port name="minimum_members" default="2"/>
+      <description>SUCCESS/FAILURE nur (kein RUNNING) -- prueft JEDEN Tick erneut, ob die Gruppe noch existiert, stabil ist und mindestens minimum_members Mitglieder haelt. FAILURE beendet ueber die umgebende ReactiveSequence/KeepRunningUntilFailure kontrolliert ein laufendes RunDialogueViaBT.</description>
+    </Action>
+    <Action ID="UpdateActiveSpeaker">
+      <output_port name="active_speaker_track_id"/>
+      <description>Liest den von audio_focus_node.py (ActiveSpeakerSelector, bereits bestehend) bestaetigten aktiven Sprecher aus /audio/focus_state. SUCCESS nur, wenn aktuell ein bestaetigter Sprecher vorliegt -- keine eigene Sprecherauswahl-Logik, kein Raten ohne Bestaetigung.</description>
+    </Action>
+    <Action ID="EndGroupInteraction">
+      <inout_port name="group_id"/>
+      <inout_port name="active_speaker_track_id"/>
+      <description>Leert die Blackboard-Felder group_id/active_speaker_track_id, immer SUCCESS -- gleiches Prinzip wie ClearSession/ClearSelectedPerson.</description>
     </Action>
   </TreeNodesModel>
 

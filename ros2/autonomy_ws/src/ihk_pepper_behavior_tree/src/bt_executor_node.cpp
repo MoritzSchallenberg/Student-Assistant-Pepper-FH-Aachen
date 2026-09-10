@@ -208,6 +208,34 @@ int main(int argc, char ** argv)
       return std::make_unique<ihk_pepper_bt::WaitForAuthorizedInterruptCommand>(name, config, node);
     });
 
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: Gruppenunterhaltung.
+  factory.registerBuilder<ihk_pepper_bt::SelectConversationGroup>(
+    "SelectConversationGroup",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::SelectConversationGroup>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::PlanGroupObservationPose>(
+    "PlanGroupObservationPose",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::PlanGroupObservationPose>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::PositionForGroup>(
+    "PositionForGroup",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::PositionForGroup>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::MonitorParticipants>(
+    "MonitorParticipants",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::MonitorParticipants>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::UpdateActiveSpeaker>(
+    "UpdateActiveSpeaker",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::UpdateActiveSpeaker>(name, config, node);
+    });
+  factory.registerNodeType<ihk_pepper_bt::EndGroupInteraction>("EndGroupInteraction");
+
   factory.registerBuilder<ihk_pepper_bt::SpeakText>(
     "SpeakText",
     [node](const std::string & name, const BT::NodeConfig & config) {

@@ -31,6 +31,7 @@
 #include <ihk_pepper_interfaces/action/orient_to_sound.hpp>
 #include <ihk_pepper_interfaces/action/return_to_origin.hpp>
 #include <ihk_pepper_interfaces/action/follow_person.hpp>
+#include <ihk_pepper_interfaces/action/position_for_group.hpp>
 #include <ihk_pepper_interfaces/msg/safety_state.hpp>
 #include <ihk_pepper_interfaces/msg/system_health.hpp>
 #include <ihk_pepper_interfaces/msg/person_track_array.hpp>
@@ -38,10 +39,13 @@
 #include <ihk_pepper_interfaces/msg/wakeword_event.hpp>
 #include <ihk_pepper_interfaces/msg/interaction_command.hpp>
 #include <ihk_pepper_interfaces/msg/authorization_grant.hpp>
+#include <ihk_pepper_interfaces/msg/conversation_group_array.hpp>
+#include <ihk_pepper_interfaces/msg/audio_focus_state.hpp>
 #include <ihk_pepper_interfaces/srv/cancel_interaction.hpp>
 #include <ihk_pepper_interfaces/srv/set_interaction_state.hpp>
 #include <ihk_pepper_interfaces/srv/associate_person_with_sound.hpp>
 #include <ihk_pepper_interfaces/srv/capture_origin.hpp>
+#include <ihk_pepper_interfaces/srv/plan_group_observation_pose.hpp>
 #include <action_msgs/srv/cancel_goal.hpp>
 #include <std_msgs/msg/bool.hpp>
 #include <std_msgs/msg/u_int8.hpp>
@@ -919,6 +923,188 @@ public:
   BT::NodeStatus tick() override
   {
     setOutput("selected_track_id", kNoSelectedTrackId);
+    return BT::NodeStatus::SUCCESS;
+  }
+};
+
+/// Waehlt eine bestaetigte, stabile Gespraechsgruppe aus
+/// /perception/conversation_groups (Entwicklungsauftrag 04-B, AP7.1,
+/// Abschnitt 17: "Gruppenunterhaltung") -- group_tracking_node.py
+/// bildet die eigentliche Gruppenlogik bereits vollstaendig ab (Mindest-
+/// mitgliederzahl, Stabilitaetsschwelle, Sichtfeld-Pruefung), dieser
+/// Knoten liest NUR das Ergebnis und gated auf Frische+Stabilitaet.
+/// SUCCESS nur bei einer FRISCHEN Nachricht mit mindestens einer
+/// STABILEN Gruppe mit >= 2 Mitgliedern -- KEIN eigenes erneutes
+/// Nachrechnen der Gruppenbildung.
+class SelectConversationGroup : public BT::SyncActionNode
+{
+public:
+  SelectConversationGroup(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<double>("max_age_s", 1.0, ""),
+      BT::OutputPort<std::string>("group_id"),
+      BT::OutputPort<int>("member_count"),
+      BT::OutputPort<bool>("all_members_visible"),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::ConversationGroupArray>::SharedPtr sub_;
+  std::string last_group_id_;
+  int32_t last_member_count_ {0};
+  bool last_all_members_visible_ {false};
+  bool last_stable_ {false};
+  std::chrono::steady_clock::time_point last_received_;
+  bool have_reading_ {false};
+};
+
+/// Ruft /plan_group_observation_pose auf (PlanGroupObservationPose.srv,
+/// person_approach_node.py) -- REINE Planungsanfrage, loest KEINE Fahrt
+/// aus (siehe Interface-Moduldoku). Gleiches Service-Aufruf-Muster wie
+/// CaptureOriginPose (async_send_request + Future-Polling in
+/// onRunning()).
+class PlanGroupObservationPose : public BT::StatefulActionNode
+{
+public:
+  PlanGroupObservationPose(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<std::string>("group_id"),
+      BT::OutputPort<double>("target_x"),
+      BT::OutputPort<double>("target_y"),
+      BT::OutputPort<double>("target_yaw_rad"),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+
+private:
+  using PlanSrv = ihk_pepper_interfaces::srv::PlanGroupObservationPose;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp::Client<PlanSrv>::SharedPtr client_;
+  std::future<PlanSrv::Response::SharedPtr> future_;
+  bool have_future_ {false};
+};
+
+/// Ruft /position_for_group auf (PositionForGroup.action,
+/// person_approach_node.py) -- gleiches Aufbau-/Abbruch-Muster wie
+/// ApproachSelectedPerson/ReturnToOriginViaBT (Action-Client,
+/// onHalted() bricht wirklich ab). Der Knoten berechnet die Zielpose
+/// NICHT selbst -- person_approach_node.py tut dies beim Start ERNEUT
+/// frisch (siehe PlanGroupObservationPose-Klassendoku), dieser Knoten
+/// uebergibt nur die group_id.
+class PositionForGroup : public BT::StatefulActionNode
+{
+public:
+  PositionForGroup(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {BT::InputPort<std::string>("group_id")};
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
+
+private:
+  using PositionAction = ihk_pepper_interfaces::action::PositionForGroup;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<PositionAction>;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client<PositionAction>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> result_future_;
+  GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
+};
+
+/// Prueft JEDEN Tick erneut, ob die per group_id ausgewaehlte Gruppe
+/// noch existiert, noch stabil ist UND mindestens minimum_members
+/// Mitglieder haelt (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17:
+/// "Gruppenupdate bei Mitglied-Austritt, Ende bei keiner stabilen
+/// Gruppe mehr"). SUCCESS/FAILURE only (Condition-artig, kein RUNNING) --
+/// wird von einer ReactiveSequence umgebend erneut getickt, siehe
+/// GroupConversationSubtree in pepper_main.xml. FAILURE hier bricht ueber
+/// die umgebende ReactiveSequence auch ein gerade laufendes
+/// RunDialogueViaBT kontrolliert ab (onHalted()).
+class MonitorParticipants : public BT::SyncActionNode
+{
+public:
+  MonitorParticipants(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<std::string>("group_id"),
+      BT::InputPort<int>("minimum_members", 2, ""),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::ConversationGroupArray>::SharedPtr sub_;
+  ihk_pepper_interfaces::msg::ConversationGroupArray::SharedPtr latest_;
+};
+
+/// Liest den zuletzt von audio_focus_node.py (ActiveSpeakerSelector,
+/// bereits bestehend -- KEINE eigene Sprecherauswahl-Logik hier)
+/// bestaetigten aktiven Sprecher aus /audio/focus_state
+/// (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17). SUCCESS NUR wenn
+/// aktuell ein bestaetigter Sprecher vorliegt (valid==true UND
+/// selected_track_id != -1) -- ohne bestaetigten Sprecher wird bewusst
+/// NICHT irgendeine Person geraten, das Gespraech wartet dann einfach
+/// (siehe Fallback in GroupConversationSubtree).
+class UpdateActiveSpeaker : public BT::SyncActionNode
+{
+public:
+  UpdateActiveSpeaker(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {BT::OutputPort<int>("active_speaker_track_id")};
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::AudioFocusState>::SharedPtr sub_;
+  int32_t last_selected_track_id_ {-1};
+  bool last_valid_ {false};
+  bool have_reading_ {false};
+};
+
+/// Leert die Blackboard-Felder group_id/active_speaker_track_id.
+/// Trivial-Knoten, immer SUCCESS -- gleiches Prinzip wie ClearSession/
+/// ClearSelectedPerson, damit die naechste Gruppenauswahl wieder frisch
+/// beginnt (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: "Interaktion
+/// endet kontrolliert, wenn keine stabile Gruppe mehr besteht").
+class EndGroupInteraction : public BT::SyncActionNode
+{
+public:
+  EndGroupInteraction(const std::string & name, const BT::NodeConfig & config)
+  : BT::SyncActionNode(name, config) {}
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::BidirectionalPort<std::string>("group_id"),
+      BT::BidirectionalPort<int>("active_speaker_track_id"),
+    };
+  }
+  BT::NodeStatus tick() override
+  {
+    setOutput("group_id", std::string(""));
+    setOutput("active_speaker_track_id", kNoSelectedTrackId);
     return BT::NodeStatus::SUCCESS;
   }
 };

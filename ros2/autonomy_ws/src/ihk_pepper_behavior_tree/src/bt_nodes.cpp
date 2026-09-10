@@ -1214,6 +1214,230 @@ BT::NodeStatus WaitForAuthorizedInterruptCommand::tick()
   return BT::NodeStatus::SUCCESS;
 }
 
+// ---- SelectConversationGroup (Entwicklungsauftrag 04-B, AP7.1,
+//      Abschnitt 17: Gruppenunterhaltung) -----------------------------------
+
+SelectConversationGroup::SelectConversationGroup(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  sub_ = node->create_subscription<ihk_pepper_interfaces::msg::ConversationGroupArray>(
+    "/perception/conversation_groups", 10,
+    [this](const ihk_pepper_interfaces::msg::ConversationGroupArray::SharedPtr msg) {
+      // group_tracking_node.py veroeffentlicht aktuell hoechstens EINE
+      // aktive Gruppe (an die laufende Interaktion gebunden) -- die
+      // erste STABILE Gruppe in der Liste wird genommen, keine eigene
+      // Rangfolge-/Auswahllogik zwischen mehreren Gruppen noetig.
+      last_stable_ = false;
+      for (const auto & group : msg->groups) {
+        if (group.stable && group.member_track_ids.size() >= 2) {
+          last_group_id_ = group.group_id;
+          last_member_count_ = static_cast<int32_t>(group.member_track_ids.size());
+          last_all_members_visible_ = group.all_members_visible;
+          last_stable_ = true;
+          break;
+        }
+      }
+      last_received_ = std::chrono::steady_clock::now();
+      have_reading_ = true;
+    });
+}
+
+BT::NodeStatus SelectConversationGroup::tick()
+{
+  if (!have_reading_ || !last_stable_ || last_group_id_.empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  double max_age_s = getInput<double>("max_age_s").value_or(1.0);
+  double age_s = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - last_received_).count();
+  if (age_s > max_age_s) {
+    // Veraltete Gruppenlage -- lieber FAILURE (kein Gruppengespraech
+    // starten) als eine moeglicherweise nicht mehr zutreffende Gruppe
+    // anzunehmen.
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("group_id", last_group_id_);
+  setOutput("member_count", last_member_count_);
+  setOutput("all_members_visible", last_all_members_visible_);
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---- PlanGroupObservationPose (Entwicklungsauftrag 04-B, AP7.1,
+//      Abschnitt 17) --------------------------------------------------------
+
+PlanGroupObservationPose::PlanGroupObservationPose(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = node_->create_client<PlanSrv>("/plan_group_observation_pose");
+}
+
+BT::NodeStatus PlanGroupObservationPose::onStart()
+{
+  auto group_id = getInput<std::string>("group_id");
+  if (!group_id || group_id.value().empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->service_is_ready()) {
+    RCLCPP_WARN(node_->get_logger(), "PlanGroupObservationPose: Service nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  auto request = std::make_shared<PlanSrv::Request>();
+  request->group_id = group_id.value();
+  future_ = client_->async_send_request(request).future;
+  have_future_ = true;
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus PlanGroupObservationPose::onRunning()
+{
+  if (!have_future_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto response = future_.get();
+  have_future_ = false;
+  if (!response->valid) {
+    RCLCPP_WARN(
+      node_->get_logger(), "PlanGroupObservationPose abgelehnt: %s", response->reason.c_str());
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("target_x", static_cast<double>(response->target_x));
+  setOutput("target_y", static_cast<double>(response->target_y));
+  setOutput("target_yaw_rad", static_cast<double>(response->target_yaw_rad));
+  return BT::NodeStatus::SUCCESS;
+}
+
+void PlanGroupObservationPose::onHalted()
+{
+  have_future_ = false;
+}
+
+// ---- PositionForGroup (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17) -----
+
+PositionForGroup::PositionForGroup(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = rclcpp_action::create_client<PositionAction>(node_, "/position_for_group");
+}
+
+BT::NodeStatus PositionForGroup::onStart()
+{
+  auto group_id = getInput<std::string>("group_id");
+  if (!group_id || group_id.value().empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->wait_for_action_server(std::chrono::seconds(1))) {
+    RCLCPP_WARN(node_->get_logger(), "PositionForGroup: Action nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  PositionAction::Goal goal;
+  goal.group_id = group_id.value();
+  goal_handle_.reset();
+  goal_future_ = client_->async_send_goal(goal);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus PositionForGroup::onRunning()
+{
+  if (!goal_handle_) {
+    if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_future_.get();
+    if (!goal_handle_) {
+      return BT::NodeStatus::FAILURE;
+    }
+    result_future_ = client_->async_get_result(goal_handle_);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto result = result_future_.get();
+  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+void PositionForGroup::onHalted()
+{
+  if (goal_handle_) {
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "PositionForGroup");
+  } else {
+    last_halt_cancel_confirmed_ = false;
+  }
+}
+
+// ---- MonitorParticipants (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17) --
+
+MonitorParticipants::MonitorParticipants(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  sub_ = node->create_subscription<ihk_pepper_interfaces::msg::ConversationGroupArray>(
+    "/perception/conversation_groups", 10,
+    [this](const ihk_pepper_interfaces::msg::ConversationGroupArray::SharedPtr msg) {
+      latest_ = msg;
+    });
+}
+
+BT::NodeStatus MonitorParticipants::tick()
+{
+  auto group_id = getInput<std::string>("group_id");
+  if (!group_id || group_id.value().empty() || !latest_) {
+    return BT::NodeStatus::FAILURE;
+  }
+  int minimum_members = getInput<int>("minimum_members").value_or(2);
+  for (const auto & group : latest_->groups) {
+    if (group.group_id == group_id.value()) {
+      if (group.stable && static_cast<int>(group.member_track_ids.size()) >= minimum_members) {
+        return BT::NodeStatus::SUCCESS;
+      }
+      return BT::NodeStatus::FAILURE;
+    }
+  }
+  // Gruppe nicht mehr in der aktuellen Liste -- gilt als aufgeloest.
+  return BT::NodeStatus::FAILURE;
+}
+
+// ---- UpdateActiveSpeaker (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17) --
+
+UpdateActiveSpeaker::UpdateActiveSpeaker(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  sub_ = node->create_subscription<ihk_pepper_interfaces::msg::AudioFocusState>(
+    "/audio/focus_state", 10,
+    [this](const ihk_pepper_interfaces::msg::AudioFocusState::SharedPtr msg) {
+      // Die eigentliche Sprecherauswahl-Logik (ActiveSpeakerSelector,
+      // mehrere bestaetigende Audioframes, Mehrdeutigkeitsmarge) laeuft
+      // bereits vollstaendig in audio_focus_node.py -- dieser Knoten
+      // liest NUR das Ergebnis, keine eigene Nachbildung.
+      last_selected_track_id_ = msg->selected_track_id;
+      last_valid_ = msg->valid;
+      have_reading_ = true;
+    });
+}
+
+BT::NodeStatus UpdateActiveSpeaker::tick()
+{
+  if (!have_reading_ || !last_valid_ || last_selected_track_id_ < 0) {
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("active_speaker_track_id", static_cast<int>(last_selected_track_id_));
+  return BT::NodeStatus::SUCCESS;
+}
+
 // ---- SafeStopAll ------------------------------------------------------------
 
 SafeStopAll::SafeStopAll(

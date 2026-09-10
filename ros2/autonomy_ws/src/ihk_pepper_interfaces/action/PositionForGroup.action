@@ -1,0 +1,22 @@
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17 (Gruppenunterhaltung):
+# positioniert Pepper GENAU EINMAL vor Gespraechsbeginn so, dass
+# moeglichst alle bestaetigten Gruppenmitglieder gleichzeitig im
+# RealSense-Bild liegen (siehe group_observation_pose.py). Faehrt
+# AUSSCHLIESSLICH ueber Nav2 (gleiche Kette wie ApproachPerson/
+# ReturnToOrigin: Velocity Smoother -> Collision Monitor -> Twist Mux ->
+# Motion Guard -> /cmd_vel) -- kein direkter /cmd_vel-Zugriff. Der
+# Aufrufer (siehe pepper_main.xml::GroupConversationSubtree) darf dies
+# NICHT waehrend eines laufenden Gespraechs wiederholt aufrufen (kein
+# staendiges Nachregeln, siehe group_observation_pose.py-Moduldoku).
+#
+# Goal
+string group_id
+---
+# Result
+bool success
+string abort_reason
+---
+# Feedback
+# einer aus: validating, planning, moving, aligning, reached,
+#            group_lost, path_blocked, safety_abort, done
+string status

@@ -55,6 +55,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/EnrollPerson.srv"
   "srv/GetEffectiveRole.srv"
   "srv/ConfirmAuthorization.srv"
+  "srv/PlanGroupObservationPose.srv"
   "msg/AuthorizationRequest.msg"
   "msg/AuthorizationDecision.msg"
   "action/Say.action"
@@ -67,6 +68,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "action/SetHeadPose.action"
   "action/OrientToSound.action"
   "action/ReturnToOrigin.action"
+  "action/PositionForGroup.action"
   DEPENDENCIES std_msgs geometry_msgs builtin_interfaces action_msgs
 )
 

@@ -52,10 +52,15 @@ from rclpy.callback_groups import ReentrantCallbackGroup
 from ament_index_python.packages import get_package_share_directory
 from std_msgs.msg import Bool
 
-from ihk_pepper_interfaces.msg import AuthorizationGrant, PersonTrackArray, SafetyState, SystemHealth
-from ihk_pepper_interfaces.action import ApproachPerson, GuidePerson, FollowPerson, ReturnToOrigin
+from ihk_pepper_interfaces.msg import (
+    AuthorizationGrant, ConversationGroupArray, PersonTrackArray, SafetyState, SystemHealth,
+)
+from ihk_pepper_interfaces.action import (
+    ApproachPerson, GuidePerson, FollowPerson, PositionForGroup, ReturnToOrigin,
+)
 from ihk_pepper_interfaces.srv import (
-    AcquireActuatorLease, CaptureOrigin, ReleaseActuatorLease, RenewActuatorLease,
+    AcquireActuatorLease, CaptureOrigin, PlanGroupObservationPose, ReleaseActuatorLease,
+    RenewActuatorLease,
 )
 
 from ihk_pepper_interaction.actuator_arbiter import BASE, PRIORITY_NAVIGATION
@@ -67,6 +72,7 @@ from .follow_person_safety import (
     check_follow_person_safety,
     is_crowd_ambiguous,
 )
+from .group_observation_pose import compute_group_observation_pose
 from .origin_session import OriginStore
 from .return_to_origin_safety import ReturnToOriginSafetyContext, check_return_to_origin_safety
 from .zone_config import load_all_zones, point_in_any_keepout
@@ -144,6 +150,18 @@ class PersonApproachNode(Node):
         self.declare_parameter("return_to_origin_max_age_default_s", 1800.0)
         self.declare_parameter("return_to_origin_timeout_default_s", 120.0)
 
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: PositionForGroup/
+        # PlanGroupObservationPose -- camera_horizontal_fov_deg gleicher
+        # Standardwert wie group_tracking_node.py (dieselbe RealSense),
+        # minimum_person_distance_m bewusst NICHT identisch mit dem
+        # Einzelpersonen-Wert (minimum_person_distance_m oben), da der
+        # Mindestabstand hier zur NAECHSTEN Person der Gruppe gilt, nicht
+        # zu einer einzelnen Gespraechsperson.
+        self.declare_parameter("group_camera_horizontal_fov_deg", 87.0)
+        self.declare_parameter("group_minimum_person_distance_m", 0.8)
+        self.declare_parameter("group_maximum_travel_distance_m", 5.0)
+        self.declare_parameter("group_position_timeout_s", 60.0)
+
         self.tf_buffer = tf2_ros.Buffer()
         self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
 
@@ -167,6 +185,10 @@ class PersonApproachNode(Node):
         self._origin_store = OriginStore()
         self._mapping_active = False
         self._localization_was_valid = None  # None = noch kein SafetyState empfangen
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: neueste bekannte
+        # Gruppenlage (group_tracking_node.py) -- rein lesend, dieser
+        # Node bildet KEINE eigene Gruppenlogik nach.
+        self._latest_groups: ConversationGroupArray = None
 
         self.create_subscription(PersonTrackArray, "/perception_node/person_tracks",
                                   self._on_tracks, 10)
@@ -174,6 +196,8 @@ class PersonApproachNode(Node):
         self.create_subscription(SystemHealth, "system_health", self._on_system_health, 10)
         self.create_subscription(AuthorizationGrant, "/authorization/grants", self._on_grant, 10)
         self.create_subscription(Bool, "/mapping_active", self._on_mapping_active, 10)
+        self.create_subscription(ConversationGroupArray, "/perception/conversation_groups",
+                                  self._on_groups, 10)
 
         # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt, muessen
         # Arm-/Kopfgesten gesperrt sein (gesture_catalog.py::play() kann
@@ -230,6 +254,22 @@ class PersonApproachNode(Node):
         self.return_to_origin_server = ActionServer(
             self, ReturnToOrigin, "return_to_origin",
             execute_callback=self._execute_return_to_origin,
+            cancel_callback=self._cancel_callback,
+            callback_group=cb_group,
+        )
+
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: Gruppen-
+        # Beobachtungspose planen/anfahren -- IMMER registriert (wie
+        # ApproachPerson/ReturnToOrigin), gleiche Sicherheitskette
+        # (_safety_ok_for_approach/_drive_to_pose), kein eigener,
+        # zusaetzlicher Bewegungsfreigabe-Pfad.
+        self.plan_group_observation_pose_srv = self.create_service(
+            PlanGroupObservationPose, "plan_group_observation_pose",
+            self._on_plan_group_observation_pose, callback_group=cb_group,
+        )
+        self.position_for_group_server = ActionServer(
+            self, PositionForGroup, "position_for_group",
+            execute_callback=self._execute_position_for_group,
             cancel_callback=self._cancel_callback,
             callback_group=cb_group,
         )
@@ -297,6 +337,207 @@ class PersonApproachNode(Node):
             return
         expires_at_s = msg.expires_at.sec + msg.expires_at.nanosec / 1e9
         self._grant_cache.add(msg.grant_id, msg.person_id, msg.track_id, msg.command, expires_at_s)
+
+    def _on_groups(self, msg: ConversationGroupArray):
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17: rein lesend --
+        # dieser Node bildet KEINE eigene Gruppenlogik nach, sondern
+        # fragt bei Bedarf (PlanGroupObservationPose/PositionForGroup)
+        # nur den zuletzt von group_tracking_node.py veroeffentlichten
+        # Stand ab.
+        self._latest_groups = msg
+
+    # ---- Gruppen-Beobachtungspose (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 17) ----
+
+    def _group_by_id(self, group_id: str):
+        if not group_id or self._latest_groups is None:
+            return None
+        for group in self._latest_groups.groups:
+            if group.group_id == group_id:
+                return group
+        return None
+
+    def _group_member_positions_and_frame(self, group):
+        """Liefert (positions, frame_id, ok, reason). Nur Mitglieder mit
+        einer AKTUELLEN, dreidimensionalen Position werden beruecksichtigt
+        -- ein Mitglied ohne 3D-Position wird stillschweigend ausgelassen
+        (nicht als Fehler behandelt), aber Positionen aus UNTERSCHIED-
+        LICHEN Frames werden NIE gemischt (gleiches Prinzip wie
+        _validate_target()s frame_id-Pruefung/group_tracking_node.py's
+        base_frame-Filter) -- ein solcher Fall gilt als Fehler, nicht als
+        stillschweigende Naeherung."""
+        positions = []
+        frame_id = None
+        for track_id in group.member_track_ids:
+            entry = self._tracks.get(int(track_id))
+            if entry is None:
+                continue
+            track, _received_at = entry
+            if not track.has_3d_position:
+                continue
+            if frame_id is None:
+                frame_id = track.frame_id
+            elif track.frame_id != frame_id:
+                return [], "", False, "gemischte_frames_in_gruppe"
+            positions.append((track.position_3d.x, track.position_3d.y))
+        if frame_id is None:
+            frame_id = "map"
+        return positions, frame_id, True, ""
+
+    def _on_plan_group_observation_pose(self, request, response):
+        """Reine PLANUNGS-Anfrage -- loest KEINE Fahrt aus (siehe
+        PlanGroupObservationPose.srv-Moduldoku). PositionForGroup
+        berechnet die tatsaechliche Fahrzielpose beim Start erneut
+        frisch, verlaesst sich NICHT auf diese Antwort."""
+        group = self._group_by_id(request.group_id)
+        if group is None:
+            response.valid = False
+            response.reason = "gruppe_unbekannt"
+            return response
+        if not group.stable:
+            response.valid = False
+            response.reason = "gruppe_nicht_stabil"
+            return response
+        positions, frame_id, ok, reason = self._group_member_positions_and_frame(group)
+        if not ok:
+            response.valid = False
+            response.reason = reason
+            return response
+        if len(positions) < 2:
+            response.valid = False
+            response.reason = "zu_wenige_mitglieder_mit_position"
+            return response
+        robot_x, robot_y, robot_yaw, tf_ok = self._get_robot_pose_in_frame(frame_id)
+        if not tf_ok:
+            response.valid = False
+            response.reason = "keine_tf_fuer_roboterpose"
+            return response
+        result = compute_group_observation_pose(
+            robot_x=robot_x, robot_y=robot_y, robot_yaw_rad=robot_yaw,
+            member_positions=positions,
+            camera_horizontal_fov_deg=self.get_parameter("group_camera_horizontal_fov_deg").value,
+            minimum_person_distance_m=self.get_parameter("group_minimum_person_distance_m").value,
+            maximum_travel_distance_m=self.get_parameter("group_maximum_travel_distance_m").value,
+            zones=self.zones,
+        )
+        response.valid = result.valid
+        response.reason = result.reason
+        response.target_x = result.target_x
+        response.target_y = result.target_y
+        response.target_yaw_rad = result.target_yaw_rad
+        response.expected_angular_span_rad = result.expected_angular_span_rad
+        response.distance_to_nearest_person_m = result.distance_to_nearest_person_m
+        return response
+
+    def _execute_position_for_group(self, goal_handle):
+        """Faehrt AUSSCHLIESSLICH ueber die bestehende _drive_to_pose()
+        (gleiche Kette wie ApproachPerson/ReturnToOrigin) zu einer frisch
+        berechneten Gruppen-Beobachtungspose. Berechnet die Zielpose
+        HIER erneut aus den aktuellen Personenpositionen -- vertraut
+        NICHT auf eine zuvor per PlanGroupObservationPose gelieferte,
+        zwischenzeitlich ggf. veraltete Pose (gleiches Prinzip wie
+        ReturnToOrigin, das den Ursprung bei jeder Fahrt frisch
+        validiert)."""
+        result = PositionForGroup.Result()
+        request = goal_handle.request
+
+        def feedback(status):
+            fb = PositionForGroup.Feedback()
+            fb.status = status
+            goal_handle.publish_feedback(fb)
+
+        feedback("validating")
+        group_id = request.group_id
+        if not group_id:
+            result.success = False
+            result.abort_reason = "keine_gruppen_id"
+            goal_handle.abort()
+            return result
+
+        ok, reason = self._safety_ok_for_approach()
+        if not ok:
+            feedback("safety_abort")
+            self.get_logger().warn(f"PositionForGroup abgebrochen (Sicherheit): {reason}")
+            result.success = False
+            result.abort_reason = f"safety_abort:{reason}"
+            goal_handle.abort()
+            return result
+
+        feedback("planning")
+        group = self._group_by_id(group_id)
+        if group is None or not group.stable:
+            feedback("group_lost")
+            result.success = False
+            result.abort_reason = "gruppe_unbekannt_oder_nicht_stabil"
+            goal_handle.abort()
+            return result
+
+        positions, frame_id, ok, reason = self._group_member_positions_and_frame(group)
+        if not ok or len(positions) < 2:
+            feedback("group_lost")
+            result.success = False
+            result.abort_reason = reason if not ok else "zu_wenige_mitglieder_mit_position"
+            goal_handle.abort()
+            return result
+
+        robot_x, robot_y, robot_yaw, tf_ok = self._get_robot_pose_in_frame(frame_id)
+        if not tf_ok:
+            result.success = False
+            result.abort_reason = "keine_tf_fuer_roboterpose"
+            goal_handle.abort()
+            return result
+
+        pose_result = compute_group_observation_pose(
+            robot_x=robot_x, robot_y=robot_y, robot_yaw_rad=robot_yaw,
+            member_positions=positions,
+            camera_horizontal_fov_deg=self.get_parameter("group_camera_horizontal_fov_deg").value,
+            minimum_person_distance_m=self.get_parameter("group_minimum_person_distance_m").value,
+            maximum_travel_distance_m=self.get_parameter("group_maximum_travel_distance_m").value,
+            zones=self.zones,
+        )
+        if not pose_result.valid:
+            feedback("path_blocked")
+            result.success = False
+            result.abort_reason = pose_result.reason
+            goal_handle.abort()
+            return result
+
+        from geometry_msgs.msg import PoseStamped
+        pose = PoseStamped()
+        pose.header.frame_id = frame_id
+        pose.pose.position.x = pose_result.target_x
+        pose.pose.position.y = pose_result.target_y
+        qx, qy, qz, qw = _yaw_to_quaternion(pose_result.target_yaw_rad)
+        pose.pose.orientation.x, pose.pose.orientation.y = qx, qy
+        pose.pose.orientation.z, pose.pose.orientation.w = qz, qw
+
+        started_at_s = time.time()
+        timeout_s = self.get_parameter("group_position_timeout_s").value
+
+        def monitor():
+            if time.time() - started_at_s > timeout_s:
+                return False, "zeitueberschreitung"
+            current_group = self._group_by_id(group_id)
+            if current_group is None or not current_group.stable:
+                return False, "gruppe_verloren"
+            still_ok, still_reason = self._safety_ok_for_approach()
+            if not still_ok:
+                return False, still_reason
+            return True, ""
+
+        feedback("moving")
+        drive_ok, drive_reason = self._drive_to_pose(goal_handle, pose, feedback, monitor_fn=monitor)
+        if not drive_ok:
+            result.success = False
+            result.abort_reason = drive_reason
+            goal_handle.abort()
+            return result
+
+        feedback("reached")
+        feedback("done")
+        result.success = True
+        result.abort_reason = ""
+        goal_handle.succeed()
+        return result
 
     # ---- Zielpersonen-Validierung (Auftrag Abschnitt 7) ----
 
