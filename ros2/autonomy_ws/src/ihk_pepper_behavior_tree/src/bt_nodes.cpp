@@ -1003,6 +1003,217 @@ void ReturnToOriginViaBT::onHalted()
   }
 }
 
+// ---- WaitForAuthorizedFollowCommand (Entwicklungsauftrag 04-B, AP7.1,
+//      Abschnitt 11) --------------------------------------------------------
+
+WaitForAuthorizedFollowCommand::WaitForAuthorizedFollowCommand(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  command_sub_ = node->create_subscription<ihk_pepper_interfaces::msg::InteractionCommand>(
+    "/interaction/authorized_command", 10,
+    [this](const ihk_pepper_interfaces::msg::InteractionCommand::SharedPtr msg) {
+      last_event_id_ = msg->event_id;
+      last_command_ = msg->command;
+      last_authorization_status_ = msg->authorization_status;
+      last_track_id_ = msg->track_id;
+      last_person_id_ = msg->person_id;
+      have_command_ = true;
+    });
+  grant_sub_ = node->create_subscription<ihk_pepper_interfaces::msg::AuthorizationGrant>(
+    "/authorization/grants", 10,
+    [this](const ihk_pepper_interfaces::msg::AuthorizationGrant::SharedPtr msg) {
+      last_grant_id_ = msg->grant_id;
+      last_grant_command_ = msg->command;
+      last_grant_track_id_ = msg->track_id;
+      have_grant_ = msg->valid;
+    });
+}
+
+void WaitForAuthorizedFollowCommand::markEventConsumed(const std::string & event_id)
+{
+  if (consumed_ids_.count(event_id) > 0) {
+    return;
+  }
+  consumed_ids_.insert(event_id);
+  consumed_order_.push_back(event_id);
+  if (consumed_order_.size() > kMaxConsumedWakewordEventIds) {
+    consumed_ids_.erase(consumed_order_.front());
+    consumed_order_.pop_front();
+  }
+}
+
+bool WaitForAuthorizedFollowCommand::isEventConsumed(const std::string & event_id) const
+{
+  return consumed_ids_.count(event_id) > 0;
+}
+
+BT::NodeStatus WaitForAuthorizedFollowCommand::tick()
+{
+  if (!have_command_ || last_event_id_.empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (last_command_ != "follow_speaker" || last_authorization_status_ != "granted") {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (isEventConsumed(last_event_id_)) {
+    return BT::NodeStatus::FAILURE;
+  }
+  // Der AuthorizationGrant muss zum SELBEN track_id+command gehoeren --
+  // command_router_node.py veroeffentlicht beide praktisch zeitgleich
+  // (siehe _publish_final_command_decision()/_issue_grant()), aber
+  // NIEMALS blind auf einen frueheren/fremden Grant vertrauen.
+  if (!have_grant_ || last_grant_command_ != "follow_speaker" ||
+    last_grant_track_id_ != last_track_id_)
+  {
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("target_track_id", static_cast<int>(last_track_id_));
+  setOutput("person_id", last_person_id_);
+  setOutput("authorization_grant_id", last_grant_id_);
+  markEventConsumed(last_event_id_);
+  return BT::NodeStatus::SUCCESS;
+}
+
+// ---- StartAuthorizedFollow (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 11) --
+
+StartAuthorizedFollow::StartAuthorizedFollow(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::StatefulActionNode(name, config), node_(node)
+{
+  client_ = rclcpp_action::create_client<FollowAction>(node_, "/follow_person");
+}
+
+BT::NodeStatus StartAuthorizedFollow::onStart()
+{
+  auto track_id = getInput<int>("track_id");
+  auto grant_id = getInput<std::string>("authorization_grant_id");
+  if (!track_id || !grant_id || grant_id.value().empty()) {
+    // Auftrag Abschnitt 11: KEIN Fahrbefehl ohne einen gueltigen,
+    // passenden AuthorizationGrant -- niemals ein leerer/erfundener
+    // grant_id.
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!client_->wait_for_action_server(std::chrono::seconds(1))) {
+    RCLCPP_WARN(node_->get_logger(), "StartAuthorizedFollow: FollowPerson-Action nicht erreichbar");
+    return BT::NodeStatus::FAILURE;
+  }
+  FollowAction::Goal goal;
+  goal.track_id = static_cast<uint32_t>(track_id.value());
+  goal.authorization_grant_id = grant_id.value();
+  goal_handle_.reset();
+  goal_future_ = client_->async_send_goal(goal);
+  return BT::NodeStatus::RUNNING;
+}
+
+BT::NodeStatus StartAuthorizedFollow::onRunning()
+{
+  if (!goal_handle_) {
+    if (goal_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+      return BT::NodeStatus::RUNNING;
+    }
+    goal_handle_ = goal_future_.get();
+    if (!goal_handle_) {
+      return BT::NodeStatus::FAILURE;
+    }
+    result_future_ = client_->async_get_result(goal_handle_);
+    return BT::NodeStatus::RUNNING;
+  }
+  if (result_future_.wait_for(std::chrono::seconds(0)) != std::future_status::ready) {
+    return BT::NodeStatus::RUNNING;
+  }
+  auto result = result_future_.get();
+  return result.result->success ? BT::NodeStatus::SUCCESS : BT::NodeStatus::FAILURE;
+}
+
+void StartAuthorizedFollow::onHalted()
+{
+  if (goal_handle_) {
+    auto cancel_future = client_->async_cancel_goal(goal_handle_);
+    last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
+      cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "StartAuthorizedFollow");
+  } else {
+    last_halt_cancel_confirmed_ = false;
+  }
+}
+
+// ---- WaitForAuthorizedInterruptCommand (Entwicklungsauftrag 04-B,
+//      AP7.1, Abschnitt 12: Codewort "Eisenbahn") ---------------------------
+
+WaitForAuthorizedInterruptCommand::WaitForAuthorizedInterruptCommand(
+  const std::string & name, const BT::NodeConfig & config,
+  rclcpp::Node::SharedPtr node)
+: BT::SyncActionNode(name, config)
+{
+  sub_ = node->create_subscription<ihk_pepper_interfaces::msg::InteractionCommand>(
+    "/interaction/authorized_command", 10,
+    [this](const ihk_pepper_interfaces::msg::InteractionCommand::SharedPtr msg) {
+      last_event_id_ = msg->event_id;
+      last_command_ = msg->command;
+      last_authorization_status_ = msg->authorization_status;
+      azimuth_rad_ = msg->direction_azimuth_rad_base;
+      direction_valid_ = msg->direction_valid;
+      last_stamp_sec_ = msg->header.stamp.sec;
+      last_stamp_nanosec_ = msg->header.stamp.nanosec;
+      last_received_ = std::chrono::steady_clock::now();
+      have_reading_ = true;
+    });
+}
+
+void WaitForAuthorizedInterruptCommand::markEventConsumed(const std::string & event_id)
+{
+  if (consumed_ids_.count(event_id) > 0) {
+    return;
+  }
+  consumed_ids_.insert(event_id);
+  consumed_order_.push_back(event_id);
+  if (consumed_order_.size() > kMaxConsumedWakewordEventIds) {
+    consumed_ids_.erase(consumed_order_.front());
+    consumed_order_.pop_front();
+  }
+}
+
+bool WaitForAuthorizedInterruptCommand::isEventConsumed(const std::string & event_id) const
+{
+  return consumed_ids_.count(event_id) > 0;
+}
+
+BT::NodeStatus WaitForAuthorizedInterruptCommand::tick()
+{
+  if (!have_reading_ || last_event_id_.empty()) {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (last_command_ != "interrupt_and_look" || last_authorization_status_ != "not_required") {
+    return BT::NodeStatus::FAILURE;
+  }
+  if (!direction_valid_) {
+    // Auftrag Abschnitt 12: veraltete/mehrdeutige/nicht transformierbare
+    // Schallrichtung -- Kopf bleibt in sicherer Position, nur eine
+    // neutrale Reaktion (kein FAILURE-Sonderfall hier noetig, der
+    // Aufrufer bekommt ohnehin FAILURE und faellt auf niedrigere
+    // Prioritaeten zurueck).
+    return BT::NodeStatus::FAILURE;
+  }
+  if (isEventConsumed(last_event_id_)) {
+    return BT::NodeStatus::FAILURE;
+  }
+  double max_age_s = getInput<double>("max_age_s").value_or(2.0);
+  double age_s = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - last_received_).count();
+  if (age_s > max_age_s) {
+    return BT::NodeStatus::FAILURE;
+  }
+  setOutput("event_id", last_event_id_);
+  setOutput("azimuth_rad", static_cast<double>(azimuth_rad_));
+  double measured_at_sec = static_cast<double>(last_stamp_sec_) +
+    static_cast<double>(last_stamp_nanosec_) * 1e-9;
+  setOutput("measured_at_sec", measured_at_sec);
+  markEventConsumed(last_event_id_);
+  return BT::NodeStatus::SUCCESS;
+}
+
 // ---- SafeStopAll ------------------------------------------------------------
 
 SafeStopAll::SafeStopAll(

@@ -39,9 +39,15 @@ string role
 
 float32 confidence
 
-# Einer von: "not_required", "granted", "denied", "pending" -- siehe
-# authorization_policy.py. "not_required" fuer Befehle, die keine
-# Rolle brauchen (z.B. "stop", "eisenbahn"/interrupt_and_look).
+# Einer von: "not_required", "granted", "denied", "pending_confirmation"
+# -- siehe command_authorization_decision.py/scoped_authorization.py.
+# "not_required" fuer Befehle, die keine Rolle brauchen (z.B. "stop",
+# "eisenbahn"/interrupt_and_look). "pending_confirmation"
+# (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 9): alle anderen
+# Bedingungen sind erfuellt, es fehlt noch eine ereignisgebundene
+# sekundaere Bestaetigung (siehe AuthorizationRequest.msg) -- NICHT
+# gleichbedeutend mit "granted", KEIN AuthorizationGrant existiert in
+# diesem Zustand.
 string authorization_status
 
 uint8 priority

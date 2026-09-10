@@ -190,6 +190,24 @@ int main(int argc, char ** argv)
     });
   factory.registerNodeType<ihk_pepper_bt::ClearSession>("ClearSession");
 
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 11/12: autorisiertes
+  // FollowPerson + Codewort-Unterbrechung.
+  factory.registerBuilder<ihk_pepper_bt::WaitForAuthorizedFollowCommand>(
+    "WaitForAuthorizedFollowCommand",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::WaitForAuthorizedFollowCommand>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::StartAuthorizedFollow>(
+    "StartAuthorizedFollow",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::StartAuthorizedFollow>(name, config, node);
+    });
+  factory.registerBuilder<ihk_pepper_bt::WaitForAuthorizedInterruptCommand>(
+    "WaitForAuthorizedInterruptCommand",
+    [node](const std::string & name, const BT::NodeConfig & config) {
+      return std::make_unique<ihk_pepper_bt::WaitForAuthorizedInterruptCommand>(name, config, node);
+    });
+
   factory.registerBuilder<ihk_pepper_bt::SpeakText>(
     "SpeakText",
     [node](const std::string & name, const BT::NodeConfig & config) {

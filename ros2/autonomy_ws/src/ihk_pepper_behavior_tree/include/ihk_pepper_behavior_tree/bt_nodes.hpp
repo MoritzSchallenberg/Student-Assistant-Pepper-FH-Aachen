@@ -30,11 +30,14 @@
 #include <ihk_pepper_interfaces/action/run_dialogue.hpp>
 #include <ihk_pepper_interfaces/action/orient_to_sound.hpp>
 #include <ihk_pepper_interfaces/action/return_to_origin.hpp>
+#include <ihk_pepper_interfaces/action/follow_person.hpp>
 #include <ihk_pepper_interfaces/msg/safety_state.hpp>
 #include <ihk_pepper_interfaces/msg/system_health.hpp>
 #include <ihk_pepper_interfaces/msg/person_track_array.hpp>
 #include <ihk_pepper_interfaces/msg/wave_gesture_event.hpp>
 #include <ihk_pepper_interfaces/msg/wakeword_event.hpp>
+#include <ihk_pepper_interfaces/msg/interaction_command.hpp>
+#include <ihk_pepper_interfaces/msg/authorization_grant.hpp>
 #include <ihk_pepper_interfaces/srv/cancel_interaction.hpp>
 #include <ihk_pepper_interfaces/srv/set_interaction_state.hpp>
 #include <ihk_pepper_interfaces/srv/associate_person_with_sound.hpp>
@@ -767,6 +770,138 @@ public:
     setOutput("origin_session_id", std::string(""));
     return BT::NodeStatus::SUCCESS;
   }
+};
+
+/// Wartet auf einen AUTORISIERTEN "follow_speaker"-Befehl
+/// (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 11: "Pepper, komm mal
+/// mit") -- abonniert /interaction/authorized_command (command_router_node.py)
+/// UND /authorization/grants, liefert SUCCESS nur, wenn BEIDE
+/// zusammenpassen: ein FRISCHES, noch nicht verbrauchtes
+/// InteractionCommand mit command=="follow_speaker" UND
+/// authorization_status=="granted", UND ein AuthorizationGrant fuer
+/// GENAU denselben track_id+command. Exactly-once ueber event_id
+/// (gleiches Muster wie WaitForFreshWakeword) -- ein bereits
+/// verarbeiteter Befehl kann NIE ein zweites Mal SUCCESS ausloesen.
+class WaitForAuthorizedFollowCommand : public BT::SyncActionNode
+{
+public:
+  WaitForAuthorizedFollowCommand(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::OutputPort<int>("target_track_id"),
+      BT::OutputPort<std::string>("person_id"),
+      BT::OutputPort<std::string>("authorization_grant_id"),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  void markEventConsumed(const std::string & event_id);
+  bool isEventConsumed(const std::string & event_id) const;
+
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::InteractionCommand>::SharedPtr command_sub_;
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::AuthorizationGrant>::SharedPtr grant_sub_;
+  std::string last_event_id_;
+  std::string last_command_;
+  std::string last_authorization_status_;
+  int32_t last_track_id_ {-1};
+  std::string last_person_id_;
+  bool have_command_ {false};
+
+  std::string last_grant_id_;
+  std::string last_grant_command_;
+  int32_t last_grant_track_id_ {-1};
+  bool have_grant_ {false};
+
+  std::unordered_set<std::string> consumed_ids_;
+  std::deque<std::string> consumed_order_;
+};
+
+/// Ruft /follow_person auf (FollowPerson.action, person_approach_node.py) --
+/// gleiches Aufbau-/Abbruch-Muster wie ApproachSelectedPerson/
+/// RunDialogueViaBT (Action-Client, onHalted() bricht wirklich ab, mit
+/// derselben begrenzten Cancel-Bestaetigung). Entwicklungsauftrag 04-B,
+/// AP7.1, Abschnitt 11: KEIN Fahrbefehl ohne den hier weitergereichten
+/// authorization_grant_id -- person_approach_node.py validiert diesen
+/// selbst nochmal (siehe authorization_grant_cache.py), dieser Knoten
+/// kann die Pruefung nicht umgehen.
+class StartAuthorizedFollow : public BT::StatefulActionNode
+{
+public:
+  StartAuthorizedFollow(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<int>("track_id"),
+      BT::InputPort<std::string>("authorization_grant_id"),
+    };
+  }
+  BT::NodeStatus onStart() override;
+  BT::NodeStatus onRunning() override;
+  void onHalted() override;
+  bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
+
+private:
+  using FollowAction = ihk_pepper_interfaces::action::FollowPerson;
+  using GoalHandle = rclcpp_action::ClientGoalHandle<FollowAction>;
+  rclcpp::Node::SharedPtr node_;
+  rclcpp_action::Client<FollowAction>::SharedPtr client_;
+  std::shared_future<GoalHandle::SharedPtr> goal_future_;
+  std::shared_future<GoalHandle::WrappedResult> result_future_;
+  GoalHandle::SharedPtr goal_handle_;
+  bool last_halt_cancel_confirmed_ {false};
+};
+
+/// Wartet auf einen AUTORISIERTEN "interrupt_and_look"-Befehl (Codewort
+/// "Eisenbahn", Entwicklungsauftrag 04-B, AP7.1, Abschnitt 12) --
+/// abonniert /interaction/authorized_command, liefert SUCCESS nur bei
+/// einem FRISCHEN, noch nicht verbrauchten Befehl mit
+/// command=="interrupt_and_look" UND authorization_status=="not_required"
+/// (dieser Befehl ist rollenfrei, siehe roles.py) UND gueltiger
+/// Schallrichtung. Exactly-once ueber event_id. Liefert dieselben
+/// azimuth_rad/measured_at_sec-Ports wie WaitForFreshWakeword, damit
+/// OrientHeadToSound/FindPersonNearSoundRay unveraendert wiederverwendet
+/// werden koennen -- KEIN eigener Fahrbefehl, dieser Knoten loest
+/// niemals eine Basisbewegung aus (Auftrag: "Das Codewort darf keine
+/// direkte Fahrt ausloesen").
+class WaitForAuthorizedInterruptCommand : public BT::SyncActionNode
+{
+public:
+  WaitForAuthorizedInterruptCommand(
+    const std::string & name, const BT::NodeConfig & config,
+    rclcpp::Node::SharedPtr node);
+  static BT::PortsList providedPorts()
+  {
+    return {
+      BT::InputPort<double>("max_age_s", 2.0, ""),
+      BT::OutputPort<std::string>("event_id"),
+      BT::OutputPort<double>("azimuth_rad"),
+      BT::OutputPort<double>("measured_at_sec"),
+    };
+  }
+  BT::NodeStatus tick() override;
+
+private:
+  void markEventConsumed(const std::string & event_id);
+  bool isEventConsumed(const std::string & event_id) const;
+
+  rclcpp::Subscription<ihk_pepper_interfaces::msg::InteractionCommand>::SharedPtr sub_;
+  std::string last_event_id_;
+  std::string last_command_;
+  std::string last_authorization_status_;
+  float azimuth_rad_ {0.0f};
+  bool direction_valid_ {false};
+  int32_t last_stamp_sec_ {0};
+  uint32_t last_stamp_nanosec_ {0};
+  std::chrono::steady_clock::time_point last_received_;
+  bool have_reading_ {false};
+  std::unordered_set<std::string> consumed_ids_;
+  std::deque<std::string> consumed_order_;
 };
 
 /// Leert den Blackboard-Slot selected_track_id (setzt kNoSelectedTrackId).

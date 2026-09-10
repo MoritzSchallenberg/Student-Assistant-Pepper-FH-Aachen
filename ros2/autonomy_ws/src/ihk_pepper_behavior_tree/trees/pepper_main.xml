@@ -51,11 +51,80 @@
     <ReactiveFallback name="PepperTopLevel">
       <SubTree ID="SafetySubtree"/>
       <SubTree ID="BatterySubtree"/>
+      <SubTree ID="CodewordInterruptSubtree"/>
+      <SubTree ID="FollowCommandSubtree"/>
       <SubTree ID="PersonInteractionLifecycleSubtree"/>
       <SubTree ID="InteractionSubtree"/>
       <SubTree ID="PresentationSubtree"/>
       <SubTree ID="IdleAttractSubtree"/>
     </ReactiveFallback>
+  </BehaviorTree>
+
+  <!-- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 12: Codewort
+       "Eisenbahn" (interrupt_and_look) – steht ABSICHTLICH ueber
+       FollowCommandSubtree/PersonInteractionLifecycleSubtree: der
+       ReactiveFallback prueft diesen Zweig JEDEN Tick neu und
+       praeemptiert (per onHalted()) eine laufende Follow-Fahrt/ein
+       laufendes Gespraech/eine laufende Geste, sobald das Codewort
+       erkannt wird – exakt dasselbe Praemptionsprinzip wie
+       SafetySubtree oben. Das Codewort selbst loest NIE eine
+       Basisbewegung aus (WaitForAuthorizedInterruptCommand liefert
+       keinen Fahrbefehl) – nur eine vorsichtige Kopforientierung +
+       erneute Personenzuordnung, ueber die BEREITS bestehenden,
+       getesteten Knoten OrientHeadToSound/FindPersonNearSoundRay
+       (unveraendert wiederverwendet, siehe GreetAndApproachSubtree). -->
+  <BehaviorTree ID="CodewordInterruptSubtree">
+    <Sequence name="CodewordInterrupt">
+      <WaitForAuthorizedInterruptCommand max_age_s="2.0"
+                                          event_id="{codeword_event_id}"
+                                          azimuth_rad="{codeword_azimuth_rad}"
+                                          measured_at_sec="{codeword_measured_at_sec}"/>
+      <IsHeadOrientationAllowed/>
+      <OrientHeadToSound wakeword_event_id="{codeword_event_id}"
+                          azimuth_rad="{codeword_azimuth_rad}"
+                          measured_at_sec="{codeword_measured_at_sec}"
+                          max_measurement_age_s="2.0"/>
+      <FindPersonNearSoundRay wakeword_event_id="{codeword_event_id}"
+                               azimuth_rad="{codeword_azimuth_rad}"
+                               measured_at_sec="{codeword_measured_at_sec}"
+                               max_measurement_age_s="2.0"
+                               target_track_id="{target_track_id}"/>
+    </Sequence>
+  </BehaviorTree>
+
+  <!-- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 11: "Pepper, komm mal
+       mit" – verbindet den bereits autorisierten/getesteten
+       command_router_node.py/person_approach_node.py-Pfad (Commits
+       1-5 dieses Arbeitspakets) erstmals mit dem Behavior Tree. Steht
+       UEBER PersonInteractionLifecycleSubtree (ein bereits autorisierter
+       Follow-Befehl hat Vorrang vor einem neuen Gespraechsversuch),
+       aber UNTER dem Codewort (das jederzeit unterbrechen kann).
+       Ursprungssicherung/-rueckkehr werden durch dieselben, bereits in
+       Commit 9/10 getesteten Knoten erledigt (CaptureOriginPose/
+       ReturnToOriginViaBT/ClearSession) – kein Duplikat in
+       person_approach_node.py noetig (dessen FollowPerson.Goal.
+       return_to_origin_after_end-Feld bleibt bewusst unausgewertet,
+       siehe docs/COMMAND_FOLLOW_LIFECYCLE.md). Ein fehlgeschlagenes
+       ReturnToOriginViaBT haengt die Sitzung NICHT auf – derselbe
+       Fallback-mit-AlwaysSuccessIdle-Schutz wie EndInteractionSubtree. -->
+  <BehaviorTree ID="FollowCommandSubtree">
+    <Sequence name="AuthorizedFollow">
+      <WaitForAuthorizedFollowCommand target_track_id="{follow_track_id}"
+                                       person_id="{follow_person_id}"
+                                       authorization_grant_id="{follow_grant_id}"/>
+      <CaptureOriginPose track_id="{follow_track_id}"
+                          origin_id="{follow_origin_id}"
+                          origin_session_id="{follow_origin_session_id}"/>
+      <StartAuthorizedFollow track_id="{follow_track_id}"
+                              authorization_grant_id="{follow_grant_id}"/>
+      <Fallback name="ReturnFromFollowOrGiveUp">
+        <ReturnToOriginViaBT session_id="{follow_origin_session_id}"
+                              origin_id="{follow_origin_id}"/>
+        <AlwaysSuccessIdle/>
+      </Fallback>
+      <ClearSession origin_id="{follow_origin_id}"
+                    origin_session_id="{follow_origin_session_id}"/>
+    </Sequence>
   </BehaviorTree>
 
   <!-- Entwicklungsauftrag 04-B, AP7, Abschnitt 9/23: fasst
@@ -382,6 +451,29 @@
     <Condition ID="IsUnsolicitedAttractAllowed">
       <description>SUCCESS nur wenn der Parameter allow_unsolicited_attract explizit auf true gesetzt ist (Standard: false).</description>
     </Condition>
+
+    <!-- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 11/12: autorisiertes
+         FollowPerson und Codewort-Unterbrechung, verbunden mit dem
+         bereits bestehenden scoped-authorization-Pfad
+         (command_router_node.py/scoped_authorization.py). -->
+    <Action ID="WaitForAuthorizedFollowCommand">
+      <output_port name="target_track_id"/>
+      <output_port name="person_id"/>
+      <output_port name="authorization_grant_id"/>
+      <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten /interaction/authorized_command mit command==follow_speaker, authorization_status==granted UND einem dazu passenden, gueltigen AuthorizationGrant (gleicher Befehl, gleiche track_id) auf /authorization/grants -- verarbeitet jede event_id GENAU EINMAL (siehe bt_nodes.cpp). Ohne passenden Grant NIEMALS SUCCESS, unabhaengig vom Kommando-Status.</description>
+    </Action>
+    <Action ID="StartAuthorizedFollow">
+      <input_port name="track_id"/>
+      <input_port name="authorization_grant_id"/>
+      <description>Ruft FollowPerson.action ueber denselben Action-Client-Pfad wie ApproachSelectedPerson auf, bricht bei Praeemption wirklich ab (onHalted() wartet auf die Cancel-Bestaetigung, siehe person_approach_node.py). Der authorization_grant_id-Port wird nur zur Nachvollziehbarkeit mitgefuehrt, nicht node-seitig neu geprueft (die Gueltigkeitspruefung geschah bereits in WaitForAuthorizedFollowCommand/command_router_node.py).</description>
+    </Action>
+    <Action ID="WaitForAuthorizedInterruptCommand">
+      <input_port name="max_age_s" default="2.0"/>
+      <output_port name="event_id"/>
+      <output_port name="azimuth_rad"/>
+      <output_port name="measured_at_sec"/>
+      <description>SUCCESS nur bei einem FRISCHEN, noch nicht verbrauchten /interaction/authorized_command mit command==interrupt_and_look (Codewort "Eisenbahn") -- verarbeitet jede event_id GENAU EINMAL (begrenzter Cache, gleiches Muster wie WaitForFreshWakeword). Liefert bewusst KEINEN Fahrbefehl, nur die Richtung fuer OrientHeadToSound/FindPersonNearSoundRay (Wiederverwendung, siehe CodewordInterruptSubtree).</description>
+    </Action>
   </TreeNodesModel>
 
 </root>
