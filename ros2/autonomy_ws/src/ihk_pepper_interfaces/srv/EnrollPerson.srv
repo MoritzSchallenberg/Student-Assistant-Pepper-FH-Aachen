@@ -1,0 +1,17 @@
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 7: startet eine
+# EINSCHREIBUNGSSITZUNG auf face_identity_node.py -- blockiert, bis
+# genuegend konsistente, lebendige Beobachtungen gesammelt wurden, das
+# Zeitlimit ablaeuft, oder die Sitzung als mehrdeutig fehlschlaegt
+# (siehe enrollment_session.py). NUR ueber identityctl enroll aufgerufen,
+# NIE automatisch waehrend eines normalen Gespraechs (Auftrag: "Kein
+# Enrollment automatisch waehrend eines normalen Gespraechs").
+#
+# Request
+string person_id
+float32 timeout_s
+string reason
+---
+# Response
+bool success
+string reason
+int32 frames_collected

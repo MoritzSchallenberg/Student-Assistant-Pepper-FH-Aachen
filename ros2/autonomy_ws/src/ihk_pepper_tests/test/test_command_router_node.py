@@ -9,9 +9,44 @@ from ihk_pepper_interaction.authorization_policy import (
     POLICY_ROLE_PLUS_CONFIRMATION,
 )
 from ihk_pepper_interaction.command_router_node import CommandRouterNode
-from ihk_pepper_interaction.roles import ROLE_EMPLOYEE
+from ihk_pepper_interaction.roles import ROLE_EMPLOYEE, ROLE_STUDENT
 from ihk_pepper_interfaces.msg import AudioFocusState, InteractionCommand, PersonIdentity, PersonIdentityArray, SafetyState
+from ihk_pepper_interfaces.srv import GetEffectiveRole
 from std_msgs.msg import Bool
+
+
+class _FakeFuture:
+    def __init__(self, result):
+        self._result = result
+
+    def done(self):
+        return True
+
+    def result(self):
+        return self._result
+
+
+class _FakeRoleLookupClient:
+    """Gleiches Duck-Typing-Muster wie _FakeLeaseClient in
+    test_person_approach_base_lease.py -- Standardrolle EMPLOYEE, damit
+    die bestehenden Tests (die ihre Test-Identitaeten mit role=EMPLOYEE
+    bauen) unveraendert funktionieren, obwohl PersonIdentity.role seit
+    AP7.1 nicht mehr gelesen wird (siehe command_router_node.py::
+    _lookup_identity())."""
+
+    def __init__(self, available=True, role=ROLE_EMPLOYEE):
+        self.available = available
+        self.role = role
+        self.requested_person_ids = []
+
+    def wait_for_service(self, timeout_sec=None):
+        return self.available
+
+    def call_async(self, request):
+        self.requested_person_ids.append(request.person_id)
+        response = GetEffectiveRole.Response()
+        response.role = self.role
+        return _FakeFuture(response)
 
 
 class _FakeParam:
@@ -40,19 +75,21 @@ class _FakeNode:
     _on_identities = CommandRouterNode._on_identities
     _on_safety_state = CommandRouterNode._on_safety_state
     _on_secondary_confirmation = CommandRouterNode._on_secondary_confirmation
+    _get_effective_role = CommandRouterNode._get_effective_role
     _lookup_identity = CommandRouterNode._lookup_identity
     _safety_state_valid = CommandRouterNode._safety_state_valid
     _on_command = CommandRouterNode._on_command
     _issue_grant = CommandRouterNode._issue_grant
 
     def __init__(self, policy=POLICY_ROLE_PLUS_CONFIRMATION, minimum_confidence=0.8,
-                 grant_validity_s=30.0):
+                 grant_validity_s=30.0, role_lookup_client=None):
         self._latest_identities = None
         self._latest_focus_track_id = -1
         self._safety_state = None
         self._secondary_confirmation_valid = False
         self.command_pub = _FakePublisher()
         self.grant_pub = _FakePublisher()
+        self.role_lookup_client = role_lookup_client or _FakeRoleLookupClient()
         self._params = {
             "privileged_motion_policy": policy,
             "minimum_recognition_confidence": minimum_confidence,
@@ -134,6 +171,46 @@ def test_follow_speaker_fully_confirmed_is_granted():
     assert out.authorization_status == "granted"
     assert out.person_id == "p1"
     assert out.role == ROLE_EMPLOYEE
+
+
+# ---- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 8: Rollenaufloesung
+#      AUSSCHLIESSLICH ueber /get_effective_role, NIE ueber
+#      PersonIdentity.role ----
+
+def test_identity_role_field_is_ignored_registry_role_wins():
+    # Die PersonIdentity-Nachricht behauptet "admin", die Registry sagt
+    # "employee" -- das Ergebnis MUSS "employee" sein (die Nachricht
+    # selbst darf niemals eine Rolle erhoehen koennen).
+    node = _FakeNode(role_lookup_client=_FakeRoleLookupClient(role=ROLE_EMPLOYEE))
+    node._on_identities(PersonIdentityArray(identities=[_identity(role="admin")]))
+    node._on_safety_state(_safety_state())
+    node._on_secondary_confirmation(Bool(data=True))
+    node._on_command(_command(command="follow_speaker", track_id=5))
+    out = node.command_pub.messages[0]
+    assert out.role == ROLE_EMPLOYEE
+    assert node.role_lookup_client.requested_person_ids == ["p1"]
+
+
+def test_registry_reports_student_denies_the_privileged_command():
+    node = _FakeNode(role_lookup_client=_FakeRoleLookupClient(role=ROLE_STUDENT))
+    node._on_identities(PersonIdentityArray(identities=[_identity(role="admin")]))
+    node._on_safety_state(_safety_state())
+    node._on_secondary_confirmation(Bool(data=True))
+    node._on_command(_command(command="follow_speaker", track_id=5))
+    out = node.command_pub.messages[0]
+    assert out.authorization_status == "denied"
+    assert out.role == ROLE_STUDENT
+
+
+def test_unreachable_role_registry_fails_closed_to_student():
+    node = _FakeNode(role_lookup_client=_FakeRoleLookupClient(available=False))
+    node._on_identities(PersonIdentityArray(identities=[_identity(role="admin")]))
+    node._on_safety_state(_safety_state())
+    node._on_secondary_confirmation(Bool(data=True))
+    node._on_command(_command(command="follow_speaker", track_id=5))
+    out = node.command_pub.messages[0]
+    assert out.authorization_status == "denied"
+    assert out.role == ROLE_STUDENT
 
 
 def test_follow_speaker_falls_back_to_focus_track_id_when_raw_track_id_is_unknown():

@@ -52,6 +52,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/CancelActuation.srv"
   "srv/AssociatePersonWithSound.srv"
   "srv/CaptureOrigin.srv"
+  "srv/EnrollPerson.srv"
+  "srv/GetEffectiveRole.srv"
   "action/Say.action"
   "action/RunDialogue.action"
   "action/PlayPresentation.action"

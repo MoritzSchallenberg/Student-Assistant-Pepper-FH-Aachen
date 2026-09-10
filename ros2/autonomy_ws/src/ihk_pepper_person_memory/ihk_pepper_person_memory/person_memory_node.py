@@ -19,6 +19,7 @@ from rclpy.node import Node
 
 from ihk_pepper_interfaces.srv import (
     DeletePerson,
+    GetEffectiveRole,
     GetPersonContext,
     LookupPerson,
     SetConsent,
@@ -52,6 +53,12 @@ class PersonMemoryNode(Node):
         self.create_service(DeletePerson, "delete_person", self._handle_delete_person)
         self.create_service(GetPersonContext, "get_person_context", self._handle_get_person_context)
         self.create_service(WriteMemorySummary, "write_memory_summary", self._handle_write_memory_summary)
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 8: einziger Weg fuer
+        # command_router_node.py (ihk_pepper_interaction), die aktuell
+        # gueltige Rolle zu erfahren -- kein direkter DB-Import, um
+        # keine zirkulaere Paketabhaengigkeit zu erzeugen (siehe
+        # GetEffectiveRole.srv-Doku).
+        self.create_service(GetEffectiveRole, "get_effective_role", self._handle_get_effective_role)
 
         self.get_logger().info(
             f"person_memory gestartet -- identity_db={self.get_parameter('identity_db_path').value}, "
@@ -72,6 +79,14 @@ class PersonMemoryNode(Node):
         response.consent_status = record.consent_status
         response.confidence = record.confidence
         response.last_seen_iso = record.last_seen_iso or ""
+        return response
+
+    def _handle_get_effective_role(self, request, response):
+        # Fail-closed auf ROLE_STUDENT bereits in get_effective_role()
+        # selbst durchgesetzt (unbekannte/abgelaufene person_id) --
+        # dieser Handler fuegt nur die ROS2-Huelle hinzu, keine
+        # zusaetzliche Pruefung noetig.
+        response.role = self.identity_store.get_effective_role(request.person_id)
         return response
 
     def _handle_set_consent(self, request, response):

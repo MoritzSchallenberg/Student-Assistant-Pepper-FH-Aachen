@@ -42,18 +42,22 @@ import time
 import message_filters
 import rclpy
 from cv_bridge import CvBridge
+from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.node import Node
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from ihk_pepper_interfaces.msg import PersonIdentity, PersonIdentityArray, PersonTrackArray
+from ihk_pepper_interfaces.srv import EnrollPerson
 from ihk_pepper_person_memory.identity_registry_db import ConsentStatus, IdentityRegistryStore
 
 from .biometric_template_store import BiometricTemplateStore
+from .enrollment_session import EnrollmentState, observe_enrollment_frame
 from .face_detector_backend import DisabledFaceDetector, LocalOnnxFaceDetector, MockFaceDetector
 from .face_identity_backend import DisabledIdentityBackend, LocalOnnxIdentityBackend, MockIdentityBackend
-from .face_track_association import TrackBoundingBox
+from .face_track_association import TrackBoundingBox, match_faces_to_tracks
 from .identity_frame_processor import IdentityFrameConfig, process_frame
+from .liveness import check_liveness
 from .persistent_identity_confirmer import PersistentIdentityConfirmer
 
 # Auftrag Abschnitt 8: der Platzhalter-Rollenwert dieses Nodes -- NIE
@@ -103,6 +107,12 @@ class FaceIdentityNode(Node):
         self.declare_parameter("minimum_match_similarity", 0.55)
         self.declare_parameter("minimum_match_margin", 0.05)
 
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 7: Einschreibung.
+        self.declare_parameter("enrollment_required_observations", 5)
+        self.declare_parameter("enrollment_minimum_consistency_similarity", 0.85)
+        self.declare_parameter("enrollment_default_timeout_s", 20.0)
+        self.declare_parameter("enrollment_poll_interval_s", 0.05)
+
         self.bridge = CvBridge()
         self._face_detector = _build_face_detector(self)
         self._identity_backend = _build_identity_backend(self)
@@ -132,12 +142,24 @@ class FaceIdentityNode(Node):
 
         self._latest_tracks = None
         self._latest_tracks_received_s = 0.0
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 7: hoechstens EINE
+        # aktive Einschreibungssitzung gleichzeitig -- None, solange
+        # keine laeuft.
+        self._enrollment_state = None
 
         self.identity_pub = self.create_publisher(PersonIdentityArray, "/identity/person_identities", 10)
         self.status_pub = self.create_publisher(String, "/identity/status", 10)
 
         self.create_subscription(
             PersonTrackArray, "/perception_node/person_tracks", self._on_tracks, 10)
+
+        # ReentrantCallbackGroup: der (blockierende) Einschreibungs-
+        # Service-Handler muss gleichzeitig mit _on_synced() laufen
+        # koennen (das liefert waehrend der Sitzung die eigentlichen
+        # Beobachtungen) -- gleiches Prinzip wie person_approach_node.py.
+        cb_group = ReentrantCallbackGroup()
+        self.enroll_srv = self.create_service(
+            EnrollPerson, "enroll_person", self._on_enroll_request, callback_group=cb_group)
 
         image_topic = self.get_parameter("image_topic").value
         depth_topic = self.get_parameter("depth_topic").value
@@ -249,6 +271,7 @@ class FaceIdentityNode(Node):
         depth_scale = self.get_parameter("depth_scale_to_m").value
 
         faces = self._face_detector.detect(frame_bgr, now_s)
+        self._progress_enrollment(tracks, faces, depth_image, depth_scale, frame_bgr)
 
         config = IdentityFrameConfig(
             minimum_iou=self.get_parameter("minimum_iou").value,
@@ -297,6 +320,132 @@ class FaceIdentityNode(Node):
             msg.identities.append(identity)
         self.identity_pub.publish(msg)
 
+    # ---- Einschreibung (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 7) ----
+
+    def _progress_enrollment(self, tracks, faces, depth_image, depth_scale, image):
+        """Wird aus JEDEM synchronisierten Frame aufgerufen, tut aber
+        nichts, solange keine Sitzung laeuft (_on_enroll_request()
+        setzt _enrollment_state). Getrennt von der normalen
+        Identitaets-Pipeline (identity_frame_processor.py) -- ein
+        Enrollment darf NICHT von den dortigen Distanz-/Bestaetigungs-
+        Schwellen abhaengen, die fuer laufenden Betrieb, nicht fuer
+        eine bewusst ausgeloeste Einschreibung gedacht sind."""
+        state = self._enrollment_state
+        if state is None or state.completed or state.failed:
+            return
+        matches = match_faces_to_tracks(
+            faces, tracks,
+            minimum_iou=self.get_parameter("minimum_iou").value,
+            ambiguity_margin=self.get_parameter("ambiguity_margin").value,
+        )
+        num_visible = len(matches)
+        embedding = None
+        liveness_passed = False
+        if num_visible == 1:
+            only_match = next(iter(matches.values()))
+            depth_values = self._depth_patch(depth_image, depth_scale, only_match.face)
+            liveness = check_liveness(
+                depth_values,
+                self.get_parameter("minimum_liveness_depth_std_m").value,
+                self.get_parameter("minimum_liveness_valid_samples").value,
+            )
+            liveness_passed = liveness.passed
+            if liveness_passed:
+                bbox = (only_match.face.bbox_x, only_match.face.bbox_y,
+                        only_match.face.bbox_width, only_match.face.bbox_height)
+                embedding_result = self._identity_backend.identify_persistent(image, bbox)
+                if embedding_result.valid:
+                    embedding = embedding_result.embedding
+        observe_enrollment_frame(state, num_visible, liveness_passed, embedding)
+
+    def _on_enroll_request(self, request, response):
+        """Blockierender Service-Handler (Auftrag Abschnitt 7) -- laeuft
+        auf einer ReentrantCallbackGroup, damit _on_synced() waehrend
+        des Wartens weiter Beobachtungen sammeln kann (braucht einen
+        MultiThreadedExecutor, siehe main()). Kein Enrollment automatisch
+        waehrend eines normalen Gespraechs -- dieser Service ist der
+        EINZIGE Ausloeser, nur ueber identityctl enroll erreichbar."""
+        if self._biometric_store is None or self._identity_registry is None:
+            response.success = False
+            response.reason = "identitaets_speicher_nicht_verfuegbar"
+            response.frames_collected = 0
+            return response
+        if self._enrollment_state is not None and not (
+                self._enrollment_state.completed or self._enrollment_state.failed):
+            response.success = False
+            response.reason = "andere_einschreibung_laeuft_bereits"
+            response.frames_collected = 0
+            return response
+
+        try:
+            record = self._identity_registry.lookup(request.person_id)
+        except Exception as e:
+            response.success = False
+            response.reason = f"registry_fehler:{e}"
+            response.frames_collected = 0
+            return response
+        if record is None:
+            response.success = False
+            response.reason = "person_nicht_in_registry"
+            response.frames_collected = 0
+            return response
+        if record.consent_status != ConsentStatus.GRANTED.value:
+            response.success = False
+            response.reason = "keine_einwilligung"
+            response.frames_collected = 0
+            return response
+
+        timeout_s = request.timeout_s or self.get_parameter("enrollment_default_timeout_s").value
+        self._enrollment_state = EnrollmentState(
+            person_id=request.person_id,
+            required_observations=self.get_parameter("enrollment_required_observations").value,
+            minimum_consistency_similarity=self.get_parameter(
+                "enrollment_minimum_consistency_similarity").value,
+        )
+        self.get_logger().info(
+            f"Einschreibungssitzung fuer {request.person_id} gestartet "
+            f"(Grund: {request.reason!r}, Zeitlimit {timeout_s:.1f}s)."
+        )
+
+        poll_interval = self.get_parameter("enrollment_poll_interval_s").value
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            if self._enrollment_state.completed or self._enrollment_state.failed:
+                break
+            time.sleep(poll_interval)
+
+        state = self._enrollment_state
+        self._enrollment_state = None  # Sitzung in JEDEM Fall beenden
+
+        if state.completed:
+            embedding = state.final_embedding()
+            try:
+                self._biometric_store.store_template(request.person_id, embedding)
+            except Exception as e:
+                response.success = False
+                response.reason = f"speichern_fehlgeschlagen:{e}"
+                response.frames_collected = len(state.embeddings)
+                return response
+            self.get_logger().info(
+                f"Einschreibung fuer {request.person_id} abgeschlossen "
+                f"({len(state.embeddings)} Beobachtungen)."
+            )
+            response.success = True
+            response.reason = ""
+            response.frames_collected = len(state.embeddings)
+            return response
+
+        if state.failed:
+            response.success = False
+            response.reason = state.fail_reason
+            response.frames_collected = len(state.embeddings)
+            return response
+
+        response.success = False
+        response.reason = "zeitueberschreitung"
+        response.frames_collected = len(state.embeddings)
+        return response
+
 
 def _build_face_detector(node):
     kind = node.get_parameter("face_detector_kind").value
@@ -335,8 +484,14 @@ def _build_identity_backend(node):
 def main(args=None):
     rclpy.init(args=args)
     node = FaceIdentityNode()
+    # MultiThreadedExecutor: der blockierende Einschreibungs-Service
+    # (_on_enroll_request) muss gleichzeitig mit _on_synced() laufen
+    # koennen (gleiches Prinzip wie person_approach_node.py).
+    from rclpy.executors import MultiThreadedExecutor
+    executor = MultiThreadedExecutor()
+    executor.add_node(node)
     try:
-        rclpy.spin(node)
+        executor.spin()
     finally:
         node.destroy_node()
         rclpy.shutdown()

@@ -19,12 +19,21 @@ ist NOCH NICHT an eine echte Tablet-UI angebunden -- dieser Node
 abonniert dafuer /authorization/secondary_confirmation (Bool) als
 Platzhalter-Eingang, der aktuell von KEINEM echten UI-Node gesetzt wird
 (bleibt also strukturell immer False, bis eine echte Bestaetigungsquelle
-angebunden wird -- fail-closed, kein automatisches "true"). Ebenso ist
-/identity/person_identities (PersonIdentityArray) aktuell von KEINEM
-Identity-Node befuellt (siehe ihk_pepper_identity, Commit 3 -- die
-Backend-Familie existiert, die Laufzeit-Verdrahtung folgt in einem
-spaeteren Commit) -- follow_speaker bleibt deshalb bis dahin IMMER
-"identity_unknown", NICHT stillschweigend autorisiert.
+angebunden wird -- fail-closed, kein automatisches "true"). Wird durch
+eine ereignisgebundene, an Person/Track/Befehl/Sitzung gebundene
+Autorisierung ersetzt (Entwicklungsauftrag 04-B, AP7.1, Abschnitt 3.2/9
+-- folgt in einem spaeteren Commit dieses Arbeitspakets).
+
+Entwicklungsauftrag 04-B, AP7.1, Abschnitt 8 (WICHTIG): PersonIdentity.role
+wird HIER NICHT MEHR gelesen/vertraut -- face_identity_node.py (jetzt
+verdrahtet, siehe ihk_pepper_identity) setzt dieses Feld absichtlich
+nur auf einen sicheren Platzhalter. Die tatsaechliche Rolle kommt
+AUSSCHLIESSLICH aus role_resolution.py, das direkt an eine eigene
+identity_registry_db.py-Instanz dieses Nodes gebunden ist (siehe
+_get_effective_role()) -- eine Vermischung von Identitaet und Rolle
+(Auftrag Abschnitt 8: "Das LLM darf keine Rolle setzen, erhoehen oder
+bestaetigen" gilt sinngemaess auch fuer jeden anderen nicht
+vertrauenswuerdigen Kanal) ist damit strukturell ausgeschlossen.
 """
 import time
 import uuid
@@ -40,10 +49,12 @@ from ihk_pepper_interfaces.msg import (
     PersonIdentityArray,
     SafetyState,
 )
+from ihk_pepper_interfaces.srv import GetEffectiveRole
 
 from .authorization_policy import POLICY_ROLE_ONLY_DEVELOPMENT, validate_policy
 from .command_authorization_decision import decide_command_authorization
 from .command_priority import priority_for_command
+from .role_resolution import resolve_role
 from .roles import ROLE_STUDENT
 
 
@@ -85,6 +96,15 @@ class CommandRouterNode(Node):
             InteractionCommand, "/interaction/authorized_command", 10)
         self.grant_pub = self.create_publisher(AuthorizationGrant, "/authorization/grants", 10)
 
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 8: Rollenaufloesung
+        # AUSSCHLIESSLICH ueber diesen Service (person_memory_node.py),
+        # NIE ueber PersonIdentity.role direkt (siehe role_resolution.py-
+        # Moduldoku) -- ein Service statt eines direkten DB-Imports, um
+        # keine zirkulaere Paketabhaengigkeit zu ihk_pepper_person_memory
+        # zu erzeugen (das bereits von diesem Paket abhaengt, siehe
+        # roles.py).
+        self.role_lookup_client = self.create_client(GetEffectiveRole, "/get_effective_role")
+
         self.create_subscription(InteractionCommand, "/interaction/command", self._on_command, 10)
         self.create_subscription(AudioFocusState, "/audio/focus_state", self._on_focus_state, 10)
         self.create_subscription(
@@ -112,19 +132,45 @@ class CommandRouterNode(Node):
     def _on_secondary_confirmation(self, msg: Bool):
         self._secondary_confirmation_valid = msg.data
 
+    def _get_effective_role(self, person_id: str, now=None) -> str:
+        """Ruft /get_effective_role auf (person_memory_node.py) --
+        wirft bei jedem Fehler (Service nicht erreichbar, Timeout),
+        role_resolution.py::resolve_role() faengt das ab und faellt auf
+        ROLE_STUDENT zurueck. NIEMALS PersonIdentity.role verwenden,
+        siehe Moduldoku."""
+        if not self.role_lookup_client.wait_for_service(timeout_sec=0.5):
+            raise RuntimeError("get_effective_role Service nicht erreichbar")
+        request = GetEffectiveRole.Request()
+        request.person_id = person_id
+        future = self.role_lookup_client.call_async(request)
+        deadline = time.time() + 1.0
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            raise RuntimeError("get_effective_role Zeitueberschreitung")
+        return future.result().role
+
     def _lookup_identity(self, track_id: int):
         """Gibt (known, person_id, role, confidence, liveness_passed)
         zurueck -- known=False/role=ROLE_STUDENT fail-closed, wenn keine
         aktuelle PersonIdentityArray existiert ODER kein Eintrag zum
-        track_id passt (siehe Moduldoku: aktuell IMMER dieser Fall, bis
-        ein echter Identity-Node verdrahtet ist)."""
+        track_id passt. Die Rolle kommt AUSSCHLIESSLICH aus
+        role_resolution.py/_get_effective_role() -- identity.role (aus
+        /identity/person_identities) wird bewusst NIE gelesen (siehe
+        Moduldoku, Auftrag Abschnitt 8/AP7.1.4)."""
         if track_id < 0 or self._latest_identities is None:
             return False, "", ROLE_STUDENT, 0.0, False
         for identity in self._latest_identities.identities:
             if int(identity.track_id) == track_id:
+                known = identity.known and identity.consent_granted
+                role = resolve_role(
+                    known=known, consent_granted=identity.consent_granted,
+                    person_id=identity.person_id,
+                    get_effective_role_fn=self._get_effective_role,
+                )
                 return (
-                    identity.known and identity.consent_granted, identity.person_id,
-                    identity.role, identity.recognition_confidence, identity.liveness_passed,
+                    known, identity.person_id, role,
+                    identity.recognition_confidence, identity.liveness_passed,
                 )
         return False, "", ROLE_STUDENT, 0.0, False
 

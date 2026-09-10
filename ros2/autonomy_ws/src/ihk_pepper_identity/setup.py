@@ -27,6 +27,7 @@ setup(
     entry_points={
         "console_scripts": [
             "face_identity_node = ihk_pepper_identity.face_identity_node:main",
+            "identityctl = ihk_pepper_identity.identityctl:main",
         ],
     },
 )

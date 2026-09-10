@@ -1,0 +1,16 @@
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 8: EINZIGER Weg, wie ein
+# anderes Paket (z.B. ihk_pepper_interaction/command_router_node.py)
+# die aktuell gueltige Rolle einer Person erfaehrt -- kein direkter
+# Code-Import von identity_registry_db.py, um keine zirkulaere
+# Paketabhaengigkeit zu erzeugen (ihk_pepper_person_memory haengt
+# bereits von ihk_pepper_interaction ab, siehe roles.py). Bedient von
+# person_memory_node.py, das die Identity-Registry-Datenbank exklusiv
+# besitzt. IMMER "student" fuer eine unbekannte/abgelaufene/nicht
+# eingewilligte Person (siehe identity_registry_db.py::
+# get_effective_role(), role_resolution.py).
+#
+# Request
+string person_id
+---
+# Response
+string role
