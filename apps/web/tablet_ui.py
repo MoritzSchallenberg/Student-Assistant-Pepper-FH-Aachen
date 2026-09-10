@@ -95,6 +95,23 @@ def tablet_control():
     return jsonify({"success": success, "message": message})
 
 
+@tablet_bp.route("/api/authorization/confirm", methods=["POST"])
+def tablet_authorization_confirm():
+    """Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: bestaetigt/lehnt
+    den AKTUELL angezeigten AuthorizationRequest ab. request_id/nonce
+    kommen vom Client, der sie zuvor unveraendert aus /tablet/api/state
+    (also direkt aus /authorization/requests) gelesen hat -- eine alte
+    Browserseite mit einem laengst entschiedenen/abgelaufenen request_id
+    wird von command_router_node.py selbst abgelehnt (siehe
+    scoped_authorization.py), nicht erst hier."""
+    json_body = request.get_json(silent=True) or {}
+    request_id = json_body.get("request_id", "")
+    nonce = json_body.get("nonce", "")
+    approve = bool(json_body.get("approve", False))
+    success, message = bridge.confirm_authorization(request_id, nonce, approve)
+    return jsonify({"success": success, "message": message})
+
+
 @tablet_bp.route("/media/<path:relpath>")
 def tablet_media(relpath):
     """Liefert Video-/Untertitel-Dateien fuer die Praesentation aus.

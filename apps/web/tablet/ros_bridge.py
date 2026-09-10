@@ -1,19 +1,31 @@
 """
 Tablet<->ROS2-Bruecke fuer die erweiterte Tablet-Oberflaeche
-(Entwicklungsauftrag Abschnitt 20).
+(Entwicklungsauftrag Abschnitt 20; sichere Bestaetigungsansicht:
+Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10/AP7.1.6).
 
 Laeuft als rclpy-Node in einem Hintergrund-Thread INNERHALB des
 apps/web-Prozesses (Flask selbst bleibt unveraendert lauffaehig auch
 ohne ROS2 -- siehe _try_import_rclpy()). Stellt read-only Snapshots der
-relevanten ROS2-Topics bereit sowie GENAU ZWEI schreibende Aktionen, beide
-ueber einen festen Allowlist-Pfad (Auftrag Abschnitt 3.4 -- niemals
-Freitext/LLM-Text direkt in ROS-Befehle):
+relevanten ROS2-Topics bereit sowie feste, allowlist-gebundene
+schreibende Aktionen (Auftrag Abschnitt 3.4 -- niemals Freitext/LLM-Text
+direkt in ROS-Befehle):
     - request_control(cmd) : nur "pause"|"resume"|"repeat", published auf
       /presentation_control (String)
     - request_stop()       : ruft /cancel_interaction (CancelInteraction)
       und /play_presentation/_action/cancel_goal (generischer
       Action-Cancel-Service, funktioniert unabhaengig davon wer das Ziel
       gesendet hat) -- beides feste ROS2-Service-Aufrufe, kein Shell/Text.
+    - confirm_authorization(request_id, nonce, approve): ruft
+      /confirm_authorization (ConfirmAuthorization.srv,
+      command_router_node.py) auf -- das Tablet kann NUR den aktuell
+      angezeigten AuthorizationRequest bestaetigen/ablehnen, NIEMALS
+      selbst eine Rolle setzen oder einen eigenen AuthorizationGrant
+      erzeugen (das bleibt ausschliesslich command_router_node.py
+      vorbehalten, siehe scoped_authorization.py). request_id+nonce
+      werden IMMER frisch aus /authorization/requests gelesen -- eine
+      alte Browserseite, die einen laengst entschiedenen/abgelaufenen
+      request_id einsendet, wird server-seitig abgelehnt
+      ("request_unbekannt_oder_bereits_verwendet"/"request_abgelaufen").
 
 WICHTIG (Betrieb): Damit rclpy + die eigenen Interfaces
 (ihk_pepper_interfaces) in der apps/web-venv importierbar sind, MUSS
@@ -34,14 +46,18 @@ def _try_import_ros():
         from rclpy.node import Node
         from rclpy.executors import SingleThreadedExecutor
         from std_msgs.msg import String, UInt8
-        from ihk_pepper_interfaces.msg import DialogueState, PresentationState, SafetyState
-        from ihk_pepper_interfaces.srv import CancelInteraction
+        from ihk_pepper_interfaces.msg import (
+            AuthorizationDecision, AuthorizationRequest, DialogueState, PresentationState, SafetyState,
+        )
+        from ihk_pepper_interfaces.srv import CancelInteraction, ConfirmAuthorization
         from action_msgs.srv import CancelGoal
         return {
             "rclpy": rclpy, "Node": Node, "SingleThreadedExecutor": SingleThreadedExecutor,
             "String": String, "UInt8": UInt8, "DialogueState": DialogueState,
             "PresentationState": PresentationState, "SafetyState": SafetyState,
+            "AuthorizationRequest": AuthorizationRequest, "AuthorizationDecision": AuthorizationDecision,
             "CancelInteraction": CancelInteraction, "CancelGoal": CancelGoal,
+            "ConfirmAuthorization": ConfirmAuthorization,
         }
     except Exception:
         return None
@@ -74,6 +90,11 @@ class TabletRosBridge:
             "safety_state": None, "safety_state_t": 0.0,
             "interaction_state_name": None, "interaction_state_t": 0.0,
             "tablet_command": None, "tablet_command_t": 0.0,
+            # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: der aktuell
+            # offene AuthorizationRequest (oder None). NICHT staleness-
+            # gefiltert wie die anderen Felder -- ein Request hat seine
+            # EIGENE server-seitige expires_at, siehe get_snapshot().
+            "pending_authorization": None, "pending_authorization_t": 0.0,
         }
         self._node = None
         self._executor = None
@@ -82,6 +103,7 @@ class TabletRosBridge:
         self._voice_command_pub = None
         self._cancel_interaction_client = None
         self._cancel_presentation_client = None
+        self._confirm_authorization_client = None
 
         if not self.available:
             print("tablet_ros_bridge: rclpy/ihk_pepper_interfaces nicht importierbar -- "
@@ -115,6 +137,12 @@ class TabletRosBridge:
             node.create_subscription(
                 m["String"], "/tablet_command",
                 lambda msg: self._store("tablet_command", self._safe_json(msg.data)), 10)
+            node.create_subscription(
+                m["AuthorizationRequest"], "/authorization/requests",
+                lambda msg: self._store("pending_authorization", self._authorization_request_to_dict(msg)), 10)
+            node.create_subscription(
+                m["AuthorizationDecision"], "/authorization/decisions",
+                self._on_authorization_decision, 10)
 
             self._control_pub = node.create_publisher(m["String"], "/presentation_control", 10)
             self._voice_command_pub = node.create_publisher(m["String"], "/audio_node/voice_command", 10)
@@ -122,6 +150,8 @@ class TabletRosBridge:
                 m["CancelInteraction"], "/cancel_interaction")
             self._cancel_presentation_client = node.create_client(
                 m["CancelGoal"], "/play_presentation/_action/cancel_goal")
+            self._confirm_authorization_client = node.create_client(
+                m["ConfirmAuthorization"], "/confirm_authorization")
 
             self._executor = m["SingleThreadedExecutor"]()
             self._executor.add_node(node)
@@ -168,6 +198,43 @@ class TabletRosBridge:
             "bumper_active": msg.bumper_active, "reason": msg.reason,
         }
 
+    # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: menschenlesbare
+    # Beschreibung der "beabsichtigten Roboteraktion" -- feste Abbildung,
+    # kein Freitext (Auftrag Abschnitt 3.4).
+    _ACTION_DESCRIPTIONS = {
+        "follow_speaker": "Pepper folgt dieser Person durch den Raum.",
+    }
+
+    @staticmethod
+    def _stamp_to_epoch_s(stamp) -> float:
+        return stamp.sec + stamp.nanosec / 1e9
+
+    def _authorization_request_to_dict(self, msg):
+        return {
+            "request_id": msg.request_id,
+            "nonce": msg.nonce,
+            "person_id": msg.person_id,
+            "known": bool(msg.person_id),
+            "role": msg.role,
+            "command": msg.command,
+            "action_description": self._ACTION_DESCRIPTIONS.get(
+                msg.command, f"Privilegierter Befehl: {msg.command}"),
+            "created_at_s": self._stamp_to_epoch_s(msg.created_at),
+            "expires_at_s": self._stamp_to_epoch_s(msg.expires_at),
+        }
+
+    def _on_authorization_decision(self, msg):
+        # Sobald IRGENDEINE Entscheidung fuer den aktuell angezeigten
+        # Request eintrifft (vom Tablet selbst bestaetigt, von woanders
+        # entschieden, oder serverseitig abgelaufen), verschwindet die
+        # Bestaetigungsansicht -- niemals ein bereits entschiedener
+        # Request weiter anzeigen.
+        with self._lock:
+            current = self._data.get("pending_authorization")
+            if current and current.get("request_id") == msg.request_id:
+                self._data["pending_authorization"] = None
+                self._data["pending_authorization_t"] = time.time()
+
     def _store(self, key, value):
         with self._lock:
             self._data[key] = value
@@ -184,6 +251,15 @@ class TabletRosBridge:
             t = d.get(key + "_t", 0.0)
             return t > 0 and (now - t) < STALE_AFTER_S
 
+        pending_auth = d.get("pending_authorization")
+        if pending_auth is not None and now > pending_auth.get("expires_at_s", 0.0):
+            # Server-seitig laengst abgelaufen (command_router_node.py
+            # hat es bereits bereinigt und eine AuthorizationDecision
+            # veroeffentlicht) -- niemals einen abgelaufenen Request
+            # weiter als aktuell anzeigen, selbst wenn die Decision-
+            # Nachricht aus irgendeinem Grund nicht angekommen sein sollte.
+            pending_auth = None
+
         return {
             "bridge_available": self.available,
             "dialogue_state": d["dialogue_state"] if fresh("dialogue_state") else None,
@@ -191,6 +267,7 @@ class TabletRosBridge:
             "safety_state": d["safety_state"] if fresh("safety_state") else None,
             "interaction_state_name": d["interaction_state_name"] if fresh("interaction_state_name") else None,
             "tablet_command": d["tablet_command"] if fresh("tablet_command") else None,
+            "pending_authorization": pending_auth,
             "server_time": now,
         }
 
@@ -238,6 +315,35 @@ class TabletRosBridge:
             messages.append(f"play_presentation Cancel Fehler: {e}")
 
         return True, "; ".join(messages)
+
+    def confirm_authorization(self, request_id: str, nonce: str, approve: bool) -> (bool, str):
+        """Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: bestaetigt/
+        lehnt EINEN AuthorizationRequest ab -- ruft ausschliesslich
+        /confirm_authorization auf (command_router_node.py trifft die
+        eigentliche Entscheidung, prueft Ablauf/Wiederverwendung/
+        Track-Wechsel/Sicherheitszustand erneut). Dieses Tablet kann
+        dadurch NIE selbst eine Rolle setzen oder einen Grant erzeugen --
+        nur genau DIESEN einen, bereits ausgestellten Request
+        beantworten."""
+        if not self.available or self._confirm_authorization_client is None:
+            return False, "ROS2-Bruecke nicht verfuegbar"
+        if not request_id or not nonce:
+            return False, "request_id/nonce fehlen"
+        if not self._confirm_authorization_client.wait_for_service(timeout_sec=2.0):
+            return False, "confirm_authorization Service nicht erreichbar"
+        req = self._mods["ConfirmAuthorization"].Request()
+        req.request_id = request_id
+        req.nonce = nonce
+        req.approve = bool(approve)
+        req.confirmed_by = "tablet"
+        future = self._confirm_authorization_client.call_async(req)
+        deadline = time.time() + 3.0
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return False, "confirm_authorization Zeitueberschreitung"
+        response = future.result()
+        return bool(response.success), response.reason
 
 
 # Modul-globale Singleton-Instanz, von app.py beim Start initialisiert.

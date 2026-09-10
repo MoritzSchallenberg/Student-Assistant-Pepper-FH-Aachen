@@ -171,6 +171,24 @@
   <p class="big muted">Navigation ist in dieser Version noch nicht aktiv (siehe docs/IMPLEMENTATION_REPORT.md).</p>
 </div>
 
+<!-- AUTHORIZATION: sichere, ereignisgebundene Bestaetigung eines
+     privilegierten Befehls (Entwicklungsauftrag 04-B, AP7.1, Abschnitt
+     10). Zeigt IMMER nur den aktuell offenen, server-seitig gueltigen
+     Request -- kein eigener Grant, keine Rollenaenderung durch das
+     Tablet selbst. -->
+<div id="screen-authorization" class="screen">
+  <h1>Bestaetigung erforderlich</h1>
+  <div class="content-box">
+    <p class="big"><span id="auth-person">Unbekannte Person</span> (<span id="auth-role"></span>)</p>
+    <p class="big" id="auth-action"></p>
+    <p class="muted">Laeuft ab in <span id="auth-countdown">--</span>s</p>
+  </div>
+  <div class="button-bar" style="display:flex;">
+    <button class="tbtn stop" onclick="respondAuthorization(false)">Ablehnen</button>
+    <button class="tbtn primary" onclick="respondAuthorization(true)">Erlauben</button>
+  </div>
+</div>
+
 <!-- ERROR -->
 <div id="screen-error" class="screen">
   <div class="icon">⚠️</div>
@@ -194,11 +212,18 @@
 
 <script>
 const SCREENS = ["start","attract","listening","transcribing","thinking","answer",
-                  "presentation","quiz","navigation","error","offline"];
+                  "presentation","quiz","navigation","authorization","error","offline"];
 const SCREENS_WITH_BUTTONS = new Set(["listening","transcribing","thinking","answer","presentation","quiz","navigation"]);
 
 let lastPresentationTopic = null;
 let moreShown = false;
+// Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: der zuletzt vom Server
+// gesehene Request -- respondAuthorization() sendet IMMER genau diese
+// request_id/nonce, nie einen selbst erfundenen Wert. Wird bei jedem
+// Poll aktualisiert; verschwindet der Request (entschieden/abgelaufen/
+// durch einen neueren ersetzt), wird er hier ebenfalls geloescht.
+let currentAuthRequest = null;
+let authSubmitting = false;
 
 function showScreen(name) {
   for (const s of SCREENS) {
@@ -214,6 +239,10 @@ function resolveScreen(state) {
   if (ds === null && ps === null && ss === null) return "offline"; // ROS laeuft, aber nichts empfangen -- ehrlich als offline zeigen
 
   if (ss && ss.emergency_stop) return "error";
+  // Entwicklungsauftrag 04-B, AP7.1, Abschnitt 10: eine offene
+  // Bestaetigungsanfrage hat Vorrang vor JEDEM normalen Bildschirm
+  // (aber NICHT vor einem Not-Halt oben) -- sie muss sofort auffallen.
+  if (state.pending_authorization) return "authorization";
   if (ds && ds.state === 8) return "error";       // DialogueState.ERROR
   if (ps && ps.state === 13) return "error";       // PresentationState.ERROR
 
@@ -281,6 +310,46 @@ function renderQuiz(state) {
   }
 }
 
+function renderAuthorization(state) {
+  const req = state.pending_authorization;
+  if (!req) return;
+  if (!currentAuthRequest || currentAuthRequest.request_id !== req.request_id) {
+    // Neuer Request seit dem letzten Poll -- Sendesperre zuruecksetzen.
+    authSubmitting = false;
+  }
+  currentAuthRequest = req;
+  document.getElementById("auth-person").textContent =
+    req.known ? ("Person " + req.person_id) : "Unbekannte Person";
+  document.getElementById("auth-role").textContent = req.role || "student";
+  document.getElementById("auth-action").textContent = req.action_description || req.command;
+  const remaining = Math.max(0, Math.round(req.expires_at_s - (Date.now() / 1000)));
+  document.getElementById("auth-countdown").textContent = remaining;
+}
+
+async function respondAuthorization(approve) {
+  // Sendet IMMER die zuletzt vom Server gesehene request_id/nonce --
+  // niemals selbst erzeugt (Entwicklungsauftrag 04-B, AP7.1, Abschnitt
+  // 10: "Das Tablet darf... keinen eigenen AuthorizationGrant erzeugen").
+  if (!currentAuthRequest || authSubmitting) return;
+  authSubmitting = true;
+  const req = currentAuthRequest;
+  try {
+    await fetch("/tablet/api/authorization/confirm", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({request_id: req.request_id, nonce: req.nonce, approve: approve}),
+    });
+  } catch (e) {
+    console.warn("authorization confirm failed", e);
+    authSubmitting = false;
+  }
+  // Die naechste poll()-Runde entfernt den Bildschirm, sobald der Server
+  // die AuthorizationDecision veroeffentlicht hat (siehe ros_bridge.py::
+  // _on_authorization_decision()) -- kein optimistisches Ausblenden hier,
+  // damit ein abgelehnter/verspaeteter Server-Aufruf nicht stillschweigend
+  // als erfolgreich behandelt wird.
+}
+
 function toggleMore() {
   moreShown = !moreShown;
   const more = document.getElementById("presentation-more");
@@ -326,6 +395,16 @@ async function poll() {
     }
     if (screen === "presentation") { renderPresentation(state); }
     if (screen === "quiz") { renderQuiz(state); }
+    if (screen === "authorization") {
+      renderAuthorization(state);
+    } else if (currentAuthRequest) {
+      // Der Request ist weg (entschieden/abgelaufen/durch einen neuen
+      // ersetzt) -- lokalen Zustand ebenfalls loeschen, sonst wuerde
+      // eine erneute Anzeige desselben request_id versucht, eine
+      // laengst verbrauchte Antwort zu senden.
+      currentAuthRequest = null;
+      authSubmitting = false;
+    }
   } catch (e) {
     pill.textContent = "nicht erreichbar";
     pill.className = "status-pill bad";

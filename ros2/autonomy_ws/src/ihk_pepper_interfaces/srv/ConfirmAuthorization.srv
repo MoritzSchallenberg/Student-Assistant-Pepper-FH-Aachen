@@ -1,0 +1,17 @@
+# Entwicklungsauftrag 04-B, AP7.1, Abschnitt 9: bestaetigt (oder lehnt
+# ab) EINEN offenen AuthorizationRequest -- EINMALIG verwendbar, an
+# request_id+nonce GEBUNDEN (siehe scoped_authorization.py). Vom Tablet
+# (apps/web/tablet/ros_bridge.py) oder einem anderen Bestaetigungskanal
+# aufgerufen. Ein globales "true" ohne passenden Request kann NIE eine
+# Aktion freigeben -- dieser Service prueft IMMER gegen einen
+# tatsaechlich zuvor ausgestellten Request.
+#
+# Request
+string request_id
+string nonce
+bool approve
+string confirmed_by
+---
+# Response
+bool success
+string reason
