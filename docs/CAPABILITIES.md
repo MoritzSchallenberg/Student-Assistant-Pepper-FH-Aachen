@@ -111,3 +111,28 @@ Präsentation/Navigation, was getestet ist und was nicht): siehe
 Siehe auch `STATUS.md` für: den Port-9503-Fix, die Sensor-Bewertung fürs
 Mapping/Lidar-Vorhaben, und den Ausblick auf Möglichkeiten mit stärkerer
 Onboard-Rechenleistung.
+
+## Identity-/Rollen-/Interaktionsfähigkeiten (Entwicklungsauftrag 04-B, AP7.1)
+
+Die obige Tabelle beschreibt Peppers rohe qicli-/ROS2-Sensor-/Aktions-
+Fähigkeiten -- die folgenden, deutlich höherstufigen Fähigkeiten bauen
+darauf auf und leben im ROS2-Autonomiesystem
+(`ros2/autonomy_ws/src/`), nicht in `qicli.py`:
+
+| Fähigkeit | Node/Modul | Status |
+|---|---|---|
+| Gesicht einer bereits bekannten Person über mehrere Frames bestätigen | `ihk_pepper_identity/face_identity_node.py` | ⚠️ Node läuft, Backend fail-closed getestet, kein echtes ONNX-Modell |
+| Rolle (STUDENT/EMPLOYEE/ADMIN) sicher auflösen | `person_memory_node.py::GetEffectiveRole` + `role_resolution.py` | ✅ getestet, Identität/Rolle strukturell getrennt |
+| Privilegierten Sprachbefehl (z.B. "komm mal mit") sicher autorisieren | `command_router_node.py` + `scoped_authorization.py` | ✅ getestet (Angriffsszenarien inklusive), kein echtes Mikrofon |
+| Bestätigung auf dem Tablet anzeigen/entgegennehmen | `apps/web/tablet/ros_bridge.py` + `tablet.html` | ✅ unit-getestet, nie in einem echten Browser geöffnet |
+| Codewort "Eisenbahn" während eines Gesprächs erkennen | `command_router_node.py` + `CodewordInterruptSubtree` | ⚠️ Router getestet, kein echtes Mikrofon |
+| Einer autorisierten Person hinterherfahren | `person_approach_node.py::FollowPerson` + `FollowCommandSubtree` | ⚠️ nur gegen `mock_nav2_server` |
+| Zu einer vorher gesicherten Pose zurückkehren | `person_approach_node.py::ReturnToOrigin` + `ReturnToOriginViaBT` | ⚠️ nur gegen `mock_nav2_server`, Fehlschlag jetzt sichtbar (`/interaction/lifecycle_state`) |
+| Mit einer Personengruppe sprechen (positionieren + Sprecherwechsel) | `GroupConversationSubtree` | ⚠️ nur gegen `mock_nav2_server`/synthetische Audiodaten |
+| Biometrische Vorlage einschreiben/widerrufen/löschen | `identityctl.py` | ✅ CLI getestet, nie an echter Person ausgeführt |
+
+Vollständige Architektur/ehrlicher Stand: `docs/IDENTITY_RUNTIME.md`,
+`docs/SCOPED_AUTHORIZATION.md`, `docs/COMMAND_FOLLOW_LIFECYCLE.md`,
+`docs/CODEWORD_INTERRUPTS.md`, `docs/GROUP_CONVERSATION_RUNTIME.md`,
+`docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md`,
+`docs/AP7_1_HARDWARE_TEST_CHECKLIST.md`.

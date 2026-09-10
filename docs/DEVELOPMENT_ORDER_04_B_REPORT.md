@@ -1259,3 +1259,282 @@ verifiziert, nicht nur übernommen):
   `hwverificationrequired` (unverändert seit AP6/AP6.1,
   `respeaker_extrinsics.yaml`/`realsense_extrinsics.yaml` bleiben
   Platzhalter).
+
+### Commit 2/10 (`6313699`): add face detector abstraction and track association
+
+Neu: `face_detector_backend.py` (`FaceDetectorBackend`-ABC,
+`DisabledFaceDetector`/`MockFaceDetector`/`LocalOnnxFaceDetector`,
+bewusst getrennt von der bereits bestehenden `face_identity_backend.py`,
+die nur bereits bekannte Bounding-Boxes auswertet). `FaceDetection`
+trägt `face_centering_score`, **kein** Feld heißt "gaze"/"Blickrichtung"
+(per Test erzwungen). `face_track_association.py::match_faces_to_tracks()`
+-- global-greedy nach IoU, Ambiguity-Margin pro Track, ein Gesicht nie
+zwei Tracks zugewiesen. 25 neue Tests. Details: `docs/IDENTITY_RUNTIME.md`,
+`docs/FACE_TRACK_ASSOCIATION.md`.
+
+### Commit 3/10 (`ce28466`): implement face identity ROS2 node
+
+Neu: `face_identity_node.py` (echter, ausführbarer Node, registriert in
+`setup.py`), `identity_frame_processor.py::process_frame()` (10-stufige
+Pipeline, `PersonIdentityFrameResult` OHNE `role`-Feld). Synchronisiert
+Farb-/Tiefenbild/CameraInfo über `message_filters.ApproximateTimeSynchronizer`,
+publiziert `/identity/person_identities`+`/identity/status`. Reeller
+Fund per Live-Smoke-Test: falscher Klassenname `IdentityRegistryDB`
+(existiert nicht) statt `IdentityRegistryStore` -- gefunden über einen
+`ros2 run`-Traceback, sofort behoben. 28 neue Tests.
+
+### Commit 4/10 (`0cf79ea`): add consent-bound enrollment, deletion and secure role resolution
+
+Neu: `enrollment_session.py` (Konsistenzprüfung über Kosinus-Ähnlichkeit
+zum ersten Embedding einer Session, Mehrdeutigkeit überspringt einen
+Frame statt die Session scheitern zu lassen). `identityctl.py`
+(`status`/`list`/`enroll`/`revoke`/`delete`/`validate-store`).
+`role_resolution.py::resolve_role()` -- reine Funktion, ruft die
+Registry nur bei bekannter Person MIT Einwilligung auf, fängt jeden
+Fehler ab und fällt auf STUDENT zurück. Neuer Service
+`GetEffectiveRole.srv` auf `person_memory_node.py` (Service statt
+direktem Import, um einen zirkulären Paketabhängigkeitszyklus mit
+`ihk_pepper_interaction` zu vermeiden). `command_router_node.py` liest
+`identity.role` seither NIE mehr direkt. 28 neue Tests, live per
+`ros2 service call` gegen beide betroffenen Nodes bestätigt. Details:
+`docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md`.
+
+### Commit 5/10 (`12030d5`): replace global confirmation with scoped authorization
+
+Größter Einzel-Commit. Entfernt `/authorization/secondary_confirmation`
+(`std_msgs/Bool`) vollständig, ersetzt durch
+`scoped_authorization.py::ScopedAuthorizationStore` (Anfrage an
+`request_id`+`event_id`+`interaction_id`+`session_id`+`track_id`+
+`person_id`+`role`+`command`+Ablaufzeit+Nonce gebunden, genau einmal
+verwendbar). Neue Interfaces `AuthorizationRequest.msg`/
+`AuthorizationDecision.msg`/`ConfirmAuthorization.srv`.
+`command_router_node.py::_on_command()` wertet die Autorisierung
+zweiphasig aus (mit/ohne Bestätigung), um zwischen "Policy braucht keine
+Bestätigung"/"braucht eine ausstehende Bestätigung"/"abgelehnt,
+unabhängig von einer Bestätigung" zu unterscheiden. Tablet-UI
+(`apps/web/tablet/ros_bridge.py`+`tablet.html`) erweitert um eine
+sichere Bestätigungsseite. **Realer, per Live-E2E-Test gefundener
+Deadlock**: `MultiThreadedExecutor`+gemeinsame `ReentrantCallbackGroup`
+nötig, da `_get_effective_role()` blockierend auf die Antwort eines
+eigenen Service-Aufrufs wartet -- unter einem `SingleThreadedExecutor`
+wäre das ein echter Deadlock gewesen, den KEIN Unit-Test gefunden hätte.
+51 neue Tests. Details: `docs/SCOPED_AUTHORIZATION.md`.
+
+### Commit 6/10 (`e4520b7`): connect authorized follow and codeword handling
+
+Verbindet den autorisierten Router-Pfad erstmals mit dem Behavior Tree.
+Neue BT.CPP-Knoten: `WaitForAuthorizedFollowCommand`,
+`StartAuthorizedFollow`, `WaitForAuthorizedInterruptCommand` (liefert
+dasselbe Portformat wie `WaitForFreshWakeword`, damit
+`OrientHeadToSound`/`FindPersonNearSoundRay` unverändert wiederverwendet
+werden können). Neue Subtrees `CodewordInterruptSubtree`/
+`FollowCommandSubtree`, eingefügt zwischen `BatterySubtree` und
+`PersonInteractionLifecycleSubtree`. `CaptureOriginPose`/
+`ReturnToOriginViaBT`/`ClearSession` (aus AP7 Commit 9/10) wiederverwendet,
+keine Duplizierung. BT.CPP unverändert 23/0/0/4. Details:
+`docs/COMMAND_FOLLOW_LIFECYCLE.md`, `docs/CODEWORD_INTERRUPTS.md`.
+
+### Commit 7/10 (`b0cebbd`): integrate group lifecycle into Behavior Tree
+
+Neue Interfaces `PlanGroupObservationPose.srv`/`PositionForGroup.action`.
+Neue BT.CPP-Knoten: `SelectConversationGroup`, `PlanGroupObservationPose`,
+`PositionForGroup`, `MonitorParticipants`, `UpdateActiveSpeaker`,
+`EndGroupInteraction` -- lesen ausschließlich die bereits bestehende
+Gruppenlogik (`group_tracking_node.py`/`audio_focus_node.py::ActiveSpeakerSelector`),
+keine Nachbildung. Neuer `GroupConversationSubtree`, führt das bereits
+bestehende `RunDialogueViaBT` mit dem jeweils aktiven Sprecher, kein
+zweiter Dialogpfad für Gruppen. 18 neue Tests. Details:
+`docs/GROUP_CONVERSATION_RUNTIME.md`.
+
+### Commit 8/10 (`a8a4303`): bind origin, return and cleanup to interaction context
+
+Schließt Bestandsaufnahme-Lücke 3.4: `OriginRecord`/`OriginStore`
+bekommen `interaction_id`/`reason`/`map_generation_id`. Ein Ursprung aus
+einer Follow-Sitzung kann strukturell nie für eine
+Einzelgesprächs-Rückkehr wiederverwendet werden. Neuer BT.CPP-Knoten
+`PublishInteractionLifecycleState` -- verdrahtet das in AP7 Commit 9/23
+nur als Vertrag definierte `InteractionLifecycleState.msg` erstmals
+tatsächlich: ein fehlgeschlagenes `ReturnToOriginViaBT` wird jetzt als
+sichtbarer Fehlerzustand (`state_name="ERROR"`+echter `abort_reason`)
+veröffentlicht, statt im `AlwaysSuccessIdle`-Fallback stillschweigend zu
+verschwinden. 9 neue Tests. Details: `docs/INTERACTION_LIFECYCLE.md`.
+
+### Commit 9/10 (`3077e17`): add launch modes and end-to-end tests
+
+Vier neue Launch-Modi (`identity_offline_test`,
+`authorization_tablet_test`, `command_follow_dry_run`,
+`group_interaction_dry_run`). `face_identity_node` war bisher
+ÜBERHAUPT NICHT in `interaction_full_safe.launch.py` verdrahtet
+(bestätigter Fund) -- jetzt in jedem Modus mit aktiver Perception
+gestartet. Neues Modul `production_readiness.py`
+(`check_identity_production_gates()`, sieben Produktionsfreigaben).
+Neue Datei `test_ap7_1_e2e_scenarios.py` -- die fünf in Auftragsabschnitt
+18 geforderten Szenarien A-E, jeweils als zusammenhängende Verkettung
+echter Produktionsmodule. 26 neue Tests. `identity_offline_test`/
+`authorization_tablet_test` real per `ros2 launch` gestartet und
+verifiziert (siehe Abschlussmeldung unten für Details).
+
+### Commit 10/10 (dieser Commit): complete documentation and AP7.1 report
+
+Neun neue Dokumente (`IDENTITY_RUNTIME.md`, `FACE_TRACK_ASSOCIATION.md`,
+`BIOMETRIC_ENROLLMENT_AND_DELETION.md`, `SCOPED_AUTHORIZATION.md`,
+`COMMAND_FOLLOW_LIFECYCLE.md`, `CODEWORD_INTERRUPTS.md`,
+`GROUP_CONVERSATION_RUNTIME.md`, `AP7_1_HARDWARE_TEST_CHECKLIST.md`),
+Aktualisierung von `INTERACTION_LIFECYCLE.md`/`README.md`/`STATUS.md`/
+`CAPABILITIES.md`, dieser Bericht.
+
+## AP7.1-Abschlussmeldung
+
+**1. Branch und finaler Commit**: `order-04b-kiconnect-gesture-memory-lifecycle-audio`,
+finaler Commit dieses Auftrags ist Commit 10/10 selbst (dieser
+Dokumentations-Nachtrag) -- siehe `git log --oneline -1` für den
+konkreten Hash (ein Commit kann seinen eigenen finalen Hash nicht
+vorab in seiner eigenen Nachricht nennen).
+
+**2. Vollständige Commit-Liste** (chronologisch, alle auf demselben
+Branch, direkt auf AP7-Abschluss `a30c415` aufbauend):
+
+```
+556633a AP7.1 (1/10): audit AP7 baseline and identity runtime gaps
+6313699 AP7.1 (2/10): add face detector abstraction and track association
+ce28466 AP7.1 (3/10): implement face identity ROS2 node
+0cf79ea AP7.1 (4/10): add consent-bound enrollment, deletion and secure role resolution
+12030d5 AP7.1 (5/10): replace global confirmation with scoped authorization
+e4520b7 AP7.1 (6/10): connect authorized follow and codeword handling
+b0cebbd AP7.1 (7/10): integrate group lifecycle into Behavior Tree
+a8a4303 AP7.1 (8/10): bind origin, return and cleanup to interaction context
+3077e17 AP7.1 (9/10): add launch modes and end-to-end tests
+<HEAD>  AP7.1 (10/10): complete documentation and AP7.1 report
+```
+
+**3. Test-Anzahl Start/Ende**:
+- Python: **1297 passed, 3 skipped** (Baseline, verifiziert in Commit
+  1/10) → **1454 passed, 3 skipped** (Ende, verifiziert nach Commit
+  9/10) -- **+157 Tests**, 3 unveränderte Skips.
+- BT.CPP: **23 tests, 0 errors, 0 failures, 4 skipped** am Anfang UND am
+  Ende -- unverändert (alle BT.CPP-Commits dieses Auftrags erweitern nur
+  bereits registrierte Knoten/den bestehenden `waitForBoundedCancelConfirmation()`-Pfad,
+  kein neuer gtest nötig).
+
+**4. Neue ROS2-Nodes und Interfaces**:
+- Neuer Node: `ihk_pepper_identity/face_identity_node.py` (erstmals
+  ausführbar, `EnrollPerson`-Service inklusive).
+- Neue Services: `GetEffectiveRole.srv`, `ConfirmAuthorization.srv`,
+  `PlanGroupObservationPose.srv`.
+- Neue Actions: `PositionForGroup.action`.
+- Neue Messages: `AuthorizationRequest.msg`, `AuthorizationDecision.msg`.
+- Erweiterte Messages/Services (rückwärtskompatibel, nur Felder
+  ergänzt): `CaptureOrigin.srv` (`interaction_id`, `reason`),
+  `ReturnToOrigin.action` (`interaction_id`, `abort_reason`),
+  `InteractionCommand.msg` (Dokumentationskommentar für
+  `"pending_confirmation"`).
+- Neue BT.CPP-Knoten (12 insgesamt): `WaitForAuthorizedFollowCommand`,
+  `StartAuthorizedFollow`, `WaitForAuthorizedInterruptCommand`,
+  `SelectConversationGroup`, `PlanGroupObservationPose`,
+  `PositionForGroup`, `MonitorParticipants`, `UpdateActiveSpeaker`,
+  `EndGroupInteraction`, `PublishInteractionLifecycleState`.
+- Entfernt: `/authorization/secondary_confirmation` (`std_msgs/Bool`,
+  vollständig, nicht nur deaktiviert).
+
+**5. Verwendeter Face-Detector**: `MockFaceDetector` (deterministisch,
+für Tests/`identity_offline_test`) als aktiv genutzter Standard in
+dieser Sitzung. `LocalOnnxFaceDetector` ist implementiert und
+fail-closed-konstruktionsgetestet, aber **ohne echtes ONNX-Modell in
+dieser Sitzung nie tatsächlich mit einem Modell betrieben**.
+
+**6. ONNX-Inferenz-Status**: NICHT getestet
+(`hwverificationrequired`) -- kein `onnx`-Paket/kein Modell verfügbar.
+Nur der fail-closed-Pfad (fehlendes Modell blockiert den Node nicht,
+identity bleibt UNKNOWN) ist bestätigt.
+
+**7. Datenfluss RealSense→Track→Face→Identity→Role**:
+`/camera/front/{image_raw,depth/image_raw,camera_info}` (synchronisiert)
++ `/perception_node/person_tracks` → `face_identity_node.py`
+(`FaceDetectorBackend.detect()` → `face_track_association.py` →
+`identity_frame_processor.py::process_frame()`, 10 Schritte) →
+`/identity/person_identities` (`PersonIdentity.role` bleibt
+Platzhalter) → `command_router_node.py::_lookup_identity()` →
+`role_resolution.py::resolve_role()` → `person_memory_node.py::GetEffectiveRole`
+(einzige vertrauenswürdige Rollenquelle) → tatsächliche Rolle.
+
+**8. Enrollment-/Löschverfahren**: siehe
+`docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md` -- Zusammenfassung:
+Enrollment nur über `/enroll_person` (operatorgesteuert, Person muss
+bereits registriert sein, Einwilligung muss vorliegen, mehrere
+konsistente Beobachtungen nötig), Löschung/Widerruf über `identityctl
+revoke`/`delete` (sofortige Wirkung, kein Zwischenspeichern des
+Consent-Status).
+
+**9. Struktur der ereignisgebundenen Bestätigung**: siehe
+`docs/SCOPED_AUTHORIZATION.md` -- `AuthorizationRequest` bindet
+`request_id`+`event_id`+`interaction_id`+`session_id`+`track_id`+
+`person_id`+`role`+`command`+Ablaufzeit+Nonce; `confirm()` prüft alle
+sechs in der Reihenfolge Existenz→Nonce→Ablauf→Ablehnung→
+Kontext-Unverändertheit→Sicherheitszustand, jeder Endzustand verbraucht
+die Anfrage.
+
+**10. Behavior-Tree-Prioritätsreihenfolge** (Root-`ReactiveFallback`,
+`pepper_main.xml`): Safety > Battery > CodewordInterrupt >
+FollowCommand > PersonInteractionLifecycle > GroupConversation >
+Interaction > Presentation > IdleAttract. Technisch ausschließlich über
+Tick-Reihenfolge/Präemption erzwungen, kein LLM kann sie verändern.
+
+**11. Ergebnis der fünf Offline-E2E-Szenarien** (`test_ap7_1_e2e_scenarios.py`,
+alle 5 bestehen):
+- A (bekannte(r) Mitarbeiter(in) folgt): Rolle+Bestätigung → Grant →
+  unabhängige `AuthorizationGrantCache`-Validierung besteht. **Bestanden.**
+- B (Student(in) abgelehnt): sofort abgelehnt, kein Grant, ein leerer
+  Grant-Cache lehnt jeden Fahrversuch ab. **Bestanden.**
+- C (Codewort während Gespräch): funktioniert für JEDE Person,
+  rollenfrei, umgeht die Bestätigungsmaschinerie. **Bestanden.**
+- D (Gruppengespräch): Gruppe bildet sich, Beobachtungspose gültig
+  (fährt nie auf das Zentrum), Sprecherauswahl bindet nur an bestätigte
+  Mitglieder. **Bestanden.**
+- E (Identitätsausfall): fällt auf STUDENT zurück, privilegierter
+  Befehl bleibt gesperrt, rollenfreier Befehl bleibt nutzbar. **Bestanden.**
+
+**12. Bestätigte Dry-Run-Isolation von `/cmd_vel`**: `grep` nach
+"cmd_vel" nach JEDEM Commit dieses Auftrags durchgeführt -- ausschließlich
+dokumentarische Erwähnungen der bestehenden, unveränderten Sicherheitskette
+(Nav2 → Motion Guard → `/cmd_vel`) gefunden, kein neuer direkter Zugriff.
+`navigation_live.launch.py` wurde zu keinem Zeitpunkt gestartet. Alle vier
+neuen AP7.1-Launch-Modi sind in `AP7_OFFLINE_TEST_MODES` eingereiht und
+damit von den bestehenden "real `/cmd_vel` nie erreicht"-Tests automatisch
+erfasst (bestätigt).
+
+**13. Nicht durchgeführte Hardwaretests**: siehe
+`docs/AP7_1_HARDWARE_TEST_CHECKLIST.md` -- alle zehn geforderten
+Hardwaretestphasen sind als `hwverificationrequired` dokumentiert, KEINE
+davon wurde in dieser Sitzung an echter Hardware durchgeführt (kein
+echtes Mikrofon, keine echte Kamera mit ONNX-Modell, kein echtes Nav2,
+keine reale Person in der biometrischen Datenbank).
+
+**14. Offene Sicherheits-/Datenschutzlücken**:
+- Keine unabhängige Prioritätsauflösung zwischen einem aktiven
+  Einzelgespräch und einer sich zeitgleich bildenden Gruppe (bewusste,
+  dokumentierte Vereinfachung, siehe Commit-7/10-Nachricht).
+- `production_readiness.py`s "Registry erreichbar"-Gate ist eine
+  Datei-Existenzprüfung, kein echter Service-Roundtrip.
+- `PublishInteractionLifecycleState` deckt bisher nur den
+  `ERROR`-Fall bei einer fehlgeschlagenen Rückkehr ab, keine
+  vollständige Zustandsübergangs-Nachbildung aller 16 Enum-Werte.
+- Kein echtes ONNX-Modell/keine echte biometrische Datenbank in dieser
+  Sitzung angelegt -- jede Aussage zur echten Gesichtserkennung bleibt
+  bei "Backend fail-closed getestet" stehen.
+
+**15. Working-Tree-Status**: sauber nach jedem einzelnen Commit
+(`git status --short` nach jedem Commit dieses Auftrags geprüft, siehe
+Commit-Nachrichten). Kein Push, kein Force-Push, `main` unverändert.
+
+**16. Empfehlung für AP8**: AP7.1 hat den Interaktionspfad
+(Identität → Rolle → Autorisierung → Follow/Codewort/Gruppe → Origin/
+Rückkehr) vollständig orchestriert und offline verifiziert. AP8 sollte
+sich laut Auftrag Abschnitt 22 auf weitere Gesten/dynamische
+Bewegungsabläufe konzentrieren -- das ist jetzt sinnvoll möglich, da der
+zugrundeliegende Autorisierungs-/Interaktionspfad geschlossen ist. Vor
+jeder echten Bewegung an Hardware müssen jedoch zuerst die zehn Phasen
+aus `docs/AP7_1_HARDWARE_TEST_CHECKLIST.md` (insbesondere ein echtes
+ONNX-Modell, ein echtes Mikrofon, echtes Nav2) einzeln nachgewiesen
+werden -- AP8s neue Gesten sollten nach demselben Muster wie AP7.1
+zunächst gegen Mocks/Dry-Run-Modi entwickelt und erst nach bestandener
+Hardwareabnahme freigegeben werden.

@@ -122,6 +122,23 @@ erreichbar, siehe [`docs/RESPEAKER_HARDWARE_ACCEPTANCE.md`](docs/RESPEAKER_HARDW
   vollständiger Personeninteraktions-Lebenszyklus im Behavior Tree
 - [`docs/AP7_HARDWARE_TEST_CHECKLIST.md`](docs/AP7_HARDWARE_TEST_CHECKLIST.md) --
   offene Hardwaretests für Rollen/Codewörter/Gruppen/FollowPerson/Rückkehr
+- [`docs/IDENTITY_RUNTIME.md`](docs/IDENTITY_RUNTIME.md) -- `face_identity_node`,
+  Face-Detector-/Identity-Backends, Produktionsfreigaben
+  (Entwicklungsauftrag 04-B, AP7.1)
+- [`docs/FACE_TRACK_ASSOCIATION.md`](docs/FACE_TRACK_ASSOCIATION.md) --
+  Zuordnung erkannter Gesichter zu Personentracks
+- [`docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md`](docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md) --
+  Einschreibung/Löschung, `identityctl`, verschlüsselter Vorlagenspeicher
+- [`docs/SCOPED_AUTHORIZATION.md`](docs/SCOPED_AUTHORIZATION.md) --
+  ereignisgebundene sekundäre Bestätigung (ersetzt die alte globale Bool)
+- [`docs/COMMAND_FOLLOW_LIFECYCLE.md`](docs/COMMAND_FOLLOW_LIFECYCLE.md) --
+  "Pepper, komm mal mit" im Behavior Tree
+- [`docs/CODEWORD_INTERRUPTS.md`](docs/CODEWORD_INTERRUPTS.md) --
+  Codewort "Eisenbahn" im Behavior Tree
+- [`docs/GROUP_CONVERSATION_RUNTIME.md`](docs/GROUP_CONVERSATION_RUNTIME.md) --
+  Gruppengespräch im Behavior Tree
+- [`docs/AP7_1_HARDWARE_TEST_CHECKLIST.md`](docs/AP7_1_HARDWARE_TEST_CHECKLIST.md) --
+  offene Hardwaretests für Identity-Laufzeit/Rollenautorisierung/Orchestrierung
 
 ## Deployment auf einen Pepper-NUC
 

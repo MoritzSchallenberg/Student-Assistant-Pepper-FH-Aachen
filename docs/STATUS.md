@@ -395,10 +395,53 @@ Vier neue, rein softwarebasierte Launch-Modi
 gestartet, keine echte Hardware. Vollständige offene Checkliste:
 `docs/AP7_HARDWARE_TEST_CHECKLIST.md`.
 
-**Wichtigste ehrlich offene Lücke**: `ihk_pepper_identity` ist ein
-fertiges, getestetes Gesichtsidentitäts-Backend OHNE ROS2-Node, der es
-tatsächlich instanziiert -- kein Laufzeitpfad veröffentlicht bisher
-`PersonIdentityArray`. Codewort-/Rollen-/Gruppen-Routing ist außerdem
-NICHT in den Behavior Tree verdrahtet (eigenständige, einzeln getestete
-Python-Fähigkeiten neben dem Baum). Details:
-`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, AP7-Abschnitt.
+**Wichtigste ehrlich offene Lücke (AP7-Stand)**: `ihk_pepper_identity`
+war ein fertiges, getestetes Gesichtsidentitäts-Backend OHNE ROS2-Node.
+Codewort-/Rollen-/Gruppen-Routing war NICHT in den Behavior Tree
+verdrahtet. Details: `docs/DEVELOPMENT_ORDER_04_B_REPORT.md`,
+AP7-Abschnitt.
+
+## Identity-Laufzeit, sichere Rollenautorisierung, vollständige Interaktionsorchestrierung (Entwicklungsauftrag 04-B, AP7.1, Stand 2026-09-10)
+
+Schließt die oben genannte AP7-Lücke: `face_identity_node.py` ist jetzt
+ein echter, ausführbarer ROS2-Node (Face-Detector-/Identity-Backend
+getrennt, 10-stufige Verarbeitungspipeline, fail-closed ohne Modell).
+Die alte, global geteilte `/authorization/secondary_confirmation`-Bool-
+Nachricht ist vollständig entfernt, ersetzt durch eine ereignisgebundene
+Anfrage/Antwort-Autorisierung (`ScopedAuthorizationStore`,
+`AuthorizationRequest`/`AuthorizationDecision`/`ConfirmAuthorization`).
+Codewort ("Eisenbahn"), autorisiertes `FollowPerson`
+("Pepper, komm mal mit") und Gruppengespräch sind jetzt erstmals in den
+Behavior Tree eingebunden (`CodewordInterruptSubtree`/
+`FollowCommandSubtree`/`GroupConversationSubtree`) statt nebeneinander
+zu laufen. Ursprungspose-Objekte sind jetzt zusätzlich an die Art der
+Interaktion gebunden (`interaction_id`) -- ein Ursprung aus einer
+Follow-Sitzung kann nicht mehr für eine Einzelgesprächs-Rückkehr
+verwendet werden. Ein fehlgeschlagenes `ReturnToOriginViaBT` wird jetzt
+über `/interaction/lifecycle_state` sichtbar gemacht, statt
+stillschweigend zu verschwinden. Vier neue Launch-Modi
+(`identity_offline_test`, `authorization_tablet_test`,
+`command_follow_dry_run`, `group_interaction_dry_run`) und
+Produktionsfreigaben für die persistente Zuordnung
+(`production_readiness.py`, sieben Gates).
+
+**Kein echtes ONNX-Modell, kein echtes Mikrofon, kein echtes Nav2, kein
+Pepper in dieser Session erreichbar** -- alle neuen Module ausschließlich
+gegen Mocks/synthetische Daten getestet (+147 Tests seit AP7-Abschluss,
+1454/1457 Python-Tests gesamt, BT.CPP `colcon test` weiterhin 23/0/0/4).
+`identity_offline_test`/`authorization_tablet_test` real per `ros2
+launch` gestartet (kein Absturz), reine Software-Verdrahtungsprüfung.
+Vollständige offene Checkliste: `docs/AP7_1_HARDWARE_TEST_CHECKLIST.md`.
+Architektur je Thema: `docs/IDENTITY_RUNTIME.md`,
+`docs/FACE_TRACK_ASSOCIATION.md`,
+`docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md`,
+`docs/SCOPED_AUTHORIZATION.md`, `docs/COMMAND_FOLLOW_LIFECYCLE.md`,
+`docs/CODEWORD_INTERRUPTS.md`, `docs/GROUP_CONVERSATION_RUNTIME.md`,
+`docs/INTERACTION_LIFECYCLE.md` (aktualisiert).
+
+**Wichtigste ehrlich offene Lücke (AP7.1-Stand)**: kein echtes
+ONNX-Modell/keine echte biometrische Datenbank angelegt -- jede Aussage
+zur echten Gesichtserkennung bleibt bei "Backend fail-closed getestet".
+Keine unabhängige Prioritätsauflösung zwischen aktivem
+Einzelgespräch und neu geformter Gruppe. Details:
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, AP7.1-Abschnitt.
