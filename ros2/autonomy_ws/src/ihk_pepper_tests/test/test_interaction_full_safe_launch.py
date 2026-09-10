@@ -41,6 +41,9 @@ def test_valid_modes_match_required_set(launch_module):
         # Entwicklungsauftrag 04-B, AP7, Abschnitt 26/30.
         "role_authorization_offline_test", "group_interaction_offline_test",
         "follow_person_dry_run", "interaction_lifecycle_dry_run",
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20.
+        "identity_offline_test", "authorization_tablet_test",
+        "command_follow_dry_run", "group_interaction_dry_run",
     )
 
 
@@ -492,6 +495,12 @@ def test_enable_follow_person_is_true_only_in_follow_person_dry_run(launch_modul
         ("group_interaction_offline_test", "false"),
         ("interaction_lifecycle_dry_run", "false"),
         ("follow_person_dry_run", "true"),
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20: command_follow_dry_run
+        # ist gleichbedeutend mit follow_person_dry_run.
+        ("command_follow_dry_run", "true"),
+        ("identity_offline_test", "false"),
+        ("authorization_tablet_test", "false"),
+        ("group_interaction_dry_run", "false"),
     ]:
         ctx = LaunchContext()
         ctx.launch_configurations["mode"] = mode
@@ -513,6 +522,152 @@ def test_ap7_offline_test_modes_use_mock_nav2(launch_module):
         ctx = LaunchContext()
         ctx.launch_configurations["mode"] = mode
         assert mock_nav2_condition.evaluate(ctx) is True, f"mode={mode}"
+
+
+# ---- Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20: identity_offline_test/
+#      authorization_tablet_test/command_follow_dry_run/
+#      group_interaction_dry_run ----
+
+def test_face_identity_node_runs_wherever_perception_does(launch_module):
+    ld = launch_module.generate_launch_description()
+    perception_condition = _condition_for(ld, "perception_node")
+    for mode in launch_module.VALID_MODES:
+        ctx = LaunchContext()
+        ctx.launch_configurations["mode"] = mode
+        result = launch_module._launch_identity_node(
+            ctx, TextSubstitution(text=mode),
+            TextSubstitution(text="disabled"), TextSubstitution(text="disabled"),
+            TextSubstitution(text=""), TextSubstitution(text=""), TextSubstitution(text=""),
+            TextSubstitution(text=""), TextSubstitution(text=""), TextSubstitution(text="false"),
+        )
+        has_identity_node = any(isinstance(a, Node) for a in result)
+        ctx2 = LaunchContext()
+        ctx2.launch_configurations["mode"] = mode
+        assert has_identity_node == perception_condition.evaluate(ctx2), f"mode={mode}"
+
+
+@pytest.mark.parametrize("mode", ["identity_offline_test", "authorization_tablet_test"])
+def test_identity_modes_default_to_mock_face_detector_and_backend(launch_module, mode):
+    ld = launch_module.generate_launch_description()
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = mode
+    ctx.launch_configurations["identity_face_detector_kind"] = "disabled"
+    ctx.launch_configurations["identity_backend_kind"] = "disabled"
+    opaque_functions = [e for e in ld.entities if isinstance(e, OpaqueFunction)]
+    identity_opaque = next(
+        f for f in opaque_functions if f._OpaqueFunction__function.__name__ == "_launch_identity_node")
+    resolved_face_kind = identity_opaque._OpaqueFunction__args[1].perform(ctx)
+    resolved_identity_kind = identity_opaque._OpaqueFunction__args[2].perform(ctx)
+    assert resolved_face_kind == "mock"
+    assert resolved_identity_kind == "mock"
+
+
+def test_non_identity_modes_keep_the_configured_identity_kind(launch_module):
+    ld = launch_module.generate_launch_description()
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = "offline_test"
+    ctx.launch_configurations["identity_face_detector_kind"] = "disabled"
+    ctx.launch_configurations["identity_backend_kind"] = "disabled"
+    opaque_functions = [e for e in ld.entities if isinstance(e, OpaqueFunction)]
+    identity_opaque = next(
+        f for f in opaque_functions if f._OpaqueFunction__function.__name__ == "_launch_identity_node")
+    assert identity_opaque._OpaqueFunction__args[1].perform(ctx) == "disabled"
+    assert identity_opaque._OpaqueFunction__args[2].perform(ctx) == "disabled"
+
+
+def _launch_identity_direct(launch_module, ctx, mode, face_kind="disabled", identity_kind="disabled",
+                             model_path="", model_checksum="", template_store_path="",
+                             registry_db_path="", camera_calibration_path="", hardware_ready="false"):
+    return launch_module._launch_identity_node(
+        ctx, TextSubstitution(text=mode), TextSubstitution(text=face_kind),
+        TextSubstitution(text=identity_kind), TextSubstitution(text=model_path),
+        TextSubstitution(text=model_checksum), TextSubstitution(text=template_store_path),
+        TextSubstitution(text=registry_db_path), TextSubstitution(text=camera_calibration_path),
+        TextSubstitution(text=hardware_ready),
+    )
+
+
+def _resolved_params(node):
+    from launch.utilities import perform_substitutions
+    ctx = LaunchContext()
+    param_dict = node._Node__parameters[0]
+    return {
+        perform_substitutions(ctx, list(key)): perform_substitutions(ctx, list(value))
+        for key, value in param_dict.items()
+    }
+
+
+def test_launch_identity_node_skips_when_perception_is_disabled(launch_module):
+    ctx = LaunchContext()
+    result = _launch_identity_direct(launch_module, ctx, "pepper_gesture_test")
+    assert result == []
+
+
+def test_launch_identity_node_uses_the_requested_kind_outside_production(launch_module):
+    ctx = LaunchContext()
+    result = _launch_identity_direct(
+        launch_module, ctx, "identity_offline_test", face_kind="mock", identity_kind="mock")
+    node = next(a for a in result if isinstance(a, Node))
+    resolved = _resolved_params(node)
+    assert resolved["face_detector_kind"] == "mock"
+    assert resolved["identity_backend_kind"] == "mock"
+
+
+def test_launch_identity_node_production_gate_forces_disabled_without_a_valid_model(launch_module):
+    # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20: KEINES der sieben
+    # Gates ist erfuellt (keine Modell-/Speicher-/Registry-/Kalibrierungs-
+    # Pfade, keine Hardwarefreigabe) -- selbst ein angefordertes "mock"
+    # muss auf "disabled" zurueckfallen (identity bleibt UNKNOWN, role
+    # bleibt STUDENT).
+    ctx = LaunchContext()
+    result = _launch_identity_direct(
+        launch_module, ctx, "production", face_kind="mock", identity_kind="mock")
+    node = next(a for a in result if isinstance(a, Node))
+    resolved = _resolved_params(node)
+    assert resolved["face_detector_kind"] == "disabled"
+    assert resolved["identity_backend_kind"] == "disabled"
+
+
+def test_launch_identity_node_production_gate_passes_with_all_files_present(
+        launch_module, tmp_path, monkeypatch):
+    import hashlib
+    model_path = tmp_path / "model.onnx"
+    model_path.write_bytes(b"model-bytes")
+    checksum = hashlib.sha256(model_path.read_bytes()).hexdigest()
+    template_store_path = tmp_path / "templates.db"
+    template_store_path.write_bytes(b"encrypted")
+    registry_db_path = tmp_path / "registry.db"
+    registry_db_path.write_bytes(b"registry")
+    calibration_path = tmp_path / "calibration.yaml"
+    calibration_path.write_bytes(b"calib")
+
+    class _FakeStore:
+        def __init__(self, *a, **kw):
+            pass
+
+        def all_person_ids(self):
+            return []
+
+        def get_template(self, person_id):
+            return None
+
+        def close(self):
+            pass
+
+    import ihk_pepper_identity.biometric_template_store as biometric_template_store_module
+    monkeypatch.setattr(biometric_template_store_module, "BiometricTemplateStore", _FakeStore)
+
+    ctx = LaunchContext()
+    result = _launch_identity_direct(
+        launch_module, ctx, "production", face_kind="mock", identity_kind="mock",
+        model_path=str(model_path), model_checksum=checksum,
+        template_store_path=str(template_store_path), registry_db_path=str(registry_db_path),
+        camera_calibration_path=str(calibration_path), hardware_ready="true",
+    )
+    node = next(a for a in result if isinstance(a, Node))
+    resolved = _resolved_params(node)
+    assert resolved["face_detector_kind"] == "mock"
+    assert resolved["identity_backend_kind"] == "mock"
 
 
 def test_ap7_offline_test_modes_never_target_the_real_cmd_vel_topic(launch_module):

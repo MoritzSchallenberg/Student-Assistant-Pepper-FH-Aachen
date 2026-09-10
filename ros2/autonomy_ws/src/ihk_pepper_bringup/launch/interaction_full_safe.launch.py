@@ -104,6 +104,30 @@ Unterstuetzte Modi (Auftrag AP3):
                          AP7, Commit 9/10) im laufenden Baum ab, ohne
                          echte Bewegung.
 
+    Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20 (Launch-Modi):
+
+    identity_offline_test  wie offline_test, zusaetzlich face_identity_node
+                         mit face_detector_kind/identity_backend_kind
+                         standardmaessig "mock" (MockFaceDetector, siehe
+                         face_detector_backend.py) -- KEINE echte Kamera,
+                         KEIN echtes ONNX-Modell noetig. Deckt den
+                         RealSense->Track->Face->Identity-Datenfluss
+                         strukturell ab, ohne echte Gesichtserkennung.
+    authorization_tablet_test  wie offline_test, zusaetzlich
+                         command_router_node + face_identity_node (mock) --
+                         fuer manuelle Tests der Tablet-Bestaetigungsseite
+                         (apps/web/tablet.html) gegen eine echte,
+                         laufende ScopedAuthorizationStore-Instanz.
+    command_follow_dry_run  Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20:
+                         gleichbedeutend mit follow_person_dry_run (AP7) --
+                         eigener Modusname fuer AP7.1-Namenskonformitaet,
+                         follow_person_dry_run bleibt unveraendert
+                         nutzbar (kein Duplikat, dieselbe Konfiguration).
+    group_interaction_dry_run  Entwicklungsauftrag 04-B, AP7.1, Abschnitt
+                         20: gleichbedeutend mit group_interaction_offline_test
+                         (AP7) -- eigener Modusname fuer AP7.1-
+                         Namenskonformitaet, dieselbe Konfiguration.
+
 Startet je nach Modus aus (siehe Knotenliste unten fuer die genaue
 Zuordnung): bridge_node, audio_node, perception_node,
 person_memory_node, gesture_memory_node, supervisor_node, bt_executor_node,
@@ -127,7 +151,7 @@ from launch.actions import (
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PythonExpression, TextSubstitution
 from launch_ros.actions import Node
 
 VALID_MODES = (
@@ -147,16 +171,25 @@ VALID_MODES = (
     "group_interaction_offline_test",
     "follow_person_dry_run",
     "interaction_lifecycle_dry_run",
+    # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20.
+    "identity_offline_test",
+    "authorization_tablet_test",
+    "command_follow_dry_run",
+    "group_interaction_dry_run",
 )
 
-# Entwicklungsauftrag 04-B, AP7: alle vier neuen Testmodi sind rein
-# softwarebasiert wie offline_test -- eigene Konstante statt sie an
-# jeder einzelnen Stelle einzeln aufzuzaehlen.
+# Entwicklungsauftrag 04-B, AP7: alle acht Testmodi (vier aus AP7, vier
+# aus AP7.1) sind rein softwarebasiert wie offline_test -- eigene
+# Konstante statt sie an jeder einzelnen Stelle einzeln aufzuzaehlen.
 AP7_OFFLINE_TEST_MODES = (
     "role_authorization_offline_test",
     "group_interaction_offline_test",
     "follow_person_dry_run",
     "interaction_lifecycle_dry_run",
+    "identity_offline_test",
+    "authorization_tablet_test",
+    "command_follow_dry_run",
+    "group_interaction_dry_run",
 )
 
 # Welche Komponenten laufen in welchem Modus -- explizite Tabelle statt
@@ -193,6 +226,16 @@ _MODE_FLAGS = {
     "group_interaction_offline_test":  (True, True, False, False, True),
     "follow_person_dry_run":           (True, True, False, False, True),
     "interaction_lifecycle_dry_run":   (True, True, False, False, True),
+    # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20: gleiche Grund-
+    # konfiguration wie die vier AP7-Modi (perception+audio aktiv, kein
+    # echter Nav2/Kamera, Bridge dry_run) -- was sie zusaetzlich
+    # unterscheidet, wird ueber AP7_OFFLINE_TEST_MODES-spezifische
+    # Bedingungen weiter unten gesteuert (face_identity_node,
+    # enable_follow_person), nicht ueber diese Tabelle.
+    "identity_offline_test":           (True, True, False, False, True),
+    "authorization_tablet_test":       (True, True, False, False, True),
+    "command_follow_dry_run":          (True, True, False, False, True),
+    "group_interaction_dry_run":       (True, True, False, False, True),
 }
 
 # Modi, in denen audio_node source_kind=respeaker_core_v2 verwenden soll
@@ -250,6 +293,88 @@ def _validate_mode_and_guards(
     return [LogInfo(msg=f"interaction_full_safe: mode={mode} -- keine Bewegung ohne explizite Freigabe.")]
 
 
+def _launch_identity_node(
+        context, mode_arg, face_detector_kind_arg, identity_backend_kind_arg,
+        model_path_arg, model_checksum_arg, template_store_path_arg,
+        registry_db_path_arg, camera_calibration_path_arg, hardware_ready_arg,
+        *args, **kwargs):
+    """Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20/21: startet
+    face_identity_node in jedem Modus mit aktiver Perception (gleiche
+    Bedingung wie group_tracking_node), UND erzwingt in mode=production
+    zusaetzlich die sieben in production_readiness.py geprueften Gates --
+    bei einem nicht bestandenen Gate werden face_detector_kind/
+    identity_backend_kind auf "disabled" zurueckgesetzt (identity bleibt
+    UNKNOWN, role bleibt STUDENT, siehe role_resolution.py), der
+    Systemstart selbst wird NICHT blockiert (ein normales Gespraech
+    bleibt moeglich)."""
+    mode = context.perform_substitution(mode_arg)
+    if not _MODE_FLAGS[mode][0]:  # kein perception in diesem Modus (z.B. pepper_gesture_test)
+        return []
+
+    face_detector_kind = context.perform_substitution(face_detector_kind_arg)
+    identity_backend_kind = context.perform_substitution(identity_backend_kind_arg)
+    actions = []
+
+    if mode == "production":
+        from ihk_pepper_identity.production_readiness import check_identity_production_gates
+
+        model_path = context.perform_substitution(model_path_arg)
+        template_store_path = context.perform_substitution(template_store_path_arg)
+
+        def _validate_store():
+            try:
+                from ihk_pepper_identity.biometric_template_store import BiometricTemplateStore
+                store = BiometricTemplateStore(template_store_path)
+                try:
+                    person_ids = store.all_person_ids()
+                    return all(store.get_template(pid) is not None for pid in person_ids)
+                finally:
+                    store.close()
+            except Exception:
+                return False
+
+        gate = check_identity_production_gates(
+            model_path=model_path,
+            model_checksum_sha256=context.perform_substitution(model_checksum_arg),
+            template_store_path=template_store_path,
+            registry_db_path=context.perform_substitution(registry_db_path_arg),
+            camera_calibration_path=context.perform_substitution(camera_calibration_path_arg),
+            minimum_liveness_valid_samples=20,  # Node-Default, siehe face_identity_node.py
+            hardware_approval_confirmed=(
+                context.perform_substitution(hardware_ready_arg) == "true"),
+            validate_template_store_fn=_validate_store if template_store_path else None,
+        )
+        if not gate.ok:
+            actions.append(LogInfo(msg=(
+                "*** mode=production: persistente Gesichtszuordnung GESPERRT "
+                f"(Gates nicht erfuellt: {', '.join(gate.reasons)}) -- "
+                "identity bleibt UNKNOWN, role bleibt STUDENT. ***"
+            )))
+            face_detector_kind = "disabled"
+            identity_backend_kind = "disabled"
+
+    # TextSubstitution statt roher Python-Strings -- gleiche
+    # Normalisierung wie ueberall sonst im Launch-File (PythonExpression/
+    # LaunchConfiguration), damit Introspektion ueber
+    # perform_substitutions() (siehe test_interaction_full_safe_launch.py)
+    # konsistent funktioniert.
+    resolved_model_path = context.perform_substitution(model_path_arg)
+    actions.append(Node(
+        package="ihk_pepper_identity", executable="face_identity_node", output="screen",
+        parameters=[{
+            "face_detector_kind": TextSubstitution(text=face_detector_kind),
+            "identity_backend_kind": TextSubstitution(text=identity_backend_kind),
+            "face_detector_model_path": TextSubstitution(text=resolved_model_path),
+            "identity_backend_model_path": TextSubstitution(text=resolved_model_path),
+            "biometric_db_path": TextSubstitution(
+                text=context.perform_substitution(template_store_path_arg)),
+            "identity_registry_db_path": TextSubstitution(
+                text=context.perform_substitution(registry_db_path_arg)),
+        }],
+    ))
+    return actions
+
+
 def generate_launch_description():
     mode = LaunchConfiguration("mode")
     motion_capable = LaunchConfiguration("motion_capable")
@@ -265,6 +390,14 @@ def generate_launch_description():
     respeaker_password = LaunchConfiguration("respeaker_password")
     respeaker_device_name = LaunchConfiguration("respeaker_device_name")
     respeaker_backend_kind = LaunchConfiguration("respeaker_backend_kind")
+    identity_face_detector_kind = LaunchConfiguration("identity_face_detector_kind")
+    identity_backend_kind = LaunchConfiguration("identity_backend_kind")
+    identity_model_path = LaunchConfiguration("identity_model_path")
+    identity_model_checksum_sha256 = LaunchConfiguration("identity_model_checksum_sha256")
+    identity_template_store_path = LaunchConfiguration("identity_template_store_path")
+    identity_registry_db_path = LaunchConfiguration("identity_registry_db_path")
+    identity_camera_calibration_path = LaunchConfiguration("identity_camera_calibration_path")
+    identity_hardware_ready_confirm = LaunchConfiguration("i_confirm_identity_hardware_ready")
 
     nav_share = get_package_share_directory("ihk_pepper_navigation")
 
@@ -275,6 +408,22 @@ def generate_launch_description():
     resolved_audio_source_kind = PythonExpression([
         "'respeaker_core_v2' if '", mode, f"' in {RESPEAKER_AUDIO_MODES!r} else '",
         audio_source_kind, "'",
+    ])
+
+    # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20: identity_offline_test/
+    # authorization_tablet_test wollen den Identitaets-Datenfluss
+    # SOFORT sichtbar ausueben, ohne dass ein Nutzer zusaetzlich
+    # identity_face_detector_kind:=mock/identity_backend_kind:=mock von
+    # Hand setzen muss -- jeder andere Modus bleibt beim per Argument
+    # gewaehlten Wert (Standard "disabled").
+    _IDENTITY_MOCK_MODES = ("identity_offline_test", "authorization_tablet_test")
+    resolved_identity_face_detector_kind = PythonExpression([
+        "'mock' if '", mode, f"' in {_IDENTITY_MOCK_MODES!r} else '",
+        identity_face_detector_kind, "'",
+    ])
+    resolved_identity_backend_kind = PythonExpression([
+        "'mock' if '", mode, f"' in {_IDENTITY_MOCK_MODES!r} else '",
+        identity_backend_kind, "'",
     ])
 
     def _cond(flag_index):
@@ -315,9 +464,37 @@ def generate_launch_description():
         DeclareLaunchArgument("respeaker_backend_kind", default_value="passthrough",
             description="passthrough|gcc_phat, siehe ihk_pepper_audio/directional_audio.py"),
 
+        # Entwicklungsauftrag 04-B, AP7.1, Abschnitt 20/21: face_identity_node.
+        # Default bleibt ueberall "disabled" (sicherer Ausgangszustand,
+        # identity bleibt UNKNOWN/role bleibt STUDENT, siehe
+        # role_resolution.py) -- identity_offline_test setzt "mock" per
+        # eigener PythonExpression unten, mode=production erzwingt
+        # zusaetzlich die in production_readiness.py geprueften Gates.
+        DeclareLaunchArgument("identity_face_detector_kind", default_value="disabled",
+            description="disabled|mock|local_onnx, siehe face_detector_backend.py"),
+        DeclareLaunchArgument("identity_backend_kind", default_value="disabled",
+            description="disabled|mock|local_embedding, siehe face_identity_backend.py"),
+        DeclareLaunchArgument("identity_model_path", default_value=""),
+        DeclareLaunchArgument("identity_model_checksum_sha256", default_value=""),
+        DeclareLaunchArgument("identity_template_store_path", default_value=""),
+        DeclareLaunchArgument("identity_registry_db_path", default_value=""),
+        DeclareLaunchArgument("identity_camera_calibration_path", default_value=""),
+        DeclareLaunchArgument("i_confirm_identity_hardware_ready", default_value="false",
+            description="NUR fuer mode=production, siehe production_readiness.py "
+                         "(Hardwarefreigabe ist EINES von sieben Gates, kein Ersatz "
+                         "fuer die anderen sechs)."),
+
         OpaqueFunction(
             function=_validate_mode_and_guards,
             args=[mode, production_confirm, head_test_confirm]),
+        OpaqueFunction(
+            function=_launch_identity_node,
+            args=[
+                mode, resolved_identity_face_detector_kind, resolved_identity_backend_kind,
+                identity_model_path, identity_model_checksum_sha256,
+                identity_template_store_path, identity_registry_db_path,
+                identity_camera_calibration_path, identity_hardware_ready_confirm,
+            ]),
 
         # ---- Immer gestartet (auch in pepper_gesture_test, minimal) ----
         Node(
@@ -540,10 +717,13 @@ def generate_launch_description():
             output="screen", condition=mock_nav_condition,
             parameters=[{
                 # Entwicklungsauftrag 04-B, AP7, Abschnitt 19/26: NUR in
-                # follow_person_dry_run scharf -- jeder andere Modus
-                # bleibt beim sicheren Node-Default (false).
+                # follow_person_dry_run/command_follow_dry_run (AP7.1,
+                # Abschnitt 20 -- derselbe Modus, zweiter Name) scharf --
+                # jeder andere Modus bleibt beim sicheren Node-Default
+                # (false).
                 "enable_follow_person": PythonExpression([
-                    "'true' if '", mode, "' == 'follow_person_dry_run' else 'false'"
+                    "'true' if '", mode,
+                    "' in ('follow_person_dry_run', 'command_follow_dry_run') else 'false'"
                 ]),
             }],
         ),
