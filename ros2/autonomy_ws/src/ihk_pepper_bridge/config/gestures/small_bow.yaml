@@ -27,7 +27,13 @@ test_note: >
   bevor irgendein weiterer Schritt (dry-run, geschweige denn live-test)
   unternommen wird. Kopf-Anteil (HeadPitch) direkt von nod_once.yaml
   uebernommen.
-max_duration_s: 2.0
+  AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
+  bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
+  prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach
+  speed_scale_default-Skalierung (1.4s / 0.4 = 3.5s). max_duration_s
+  wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
+  -- keine Aenderung an Keyframes/Winkeln/Bewegung.
+max_duration_s: 3.6
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.6

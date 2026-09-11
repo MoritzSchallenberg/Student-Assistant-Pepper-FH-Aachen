@@ -11,15 +11,35 @@ requires_stationary: true
 allowed_interaction_states: [ATTRACT, CONVERSATION_READY]
 speed_scale_default: 0.7
 restore_after: true
-tested_status: dry_run_validated
-tested_date: "2026-09-04"
+tested_status: draft
+tested_date: null
 test_note: >
   Winkel als konservativer Bruchteil der bereits dry_run_validated
   open_arms.yaml gewaehlt, keine neue Live-Referenz noetig.
+  AP8.4-Migration (Entwicklungsauftrag 04-B, bestaetigter Fund 3.4): der
+  urspruengliche erste Keyframe lag bei time_from_start_s: 0.0 mit
+  HeadPitch=-0.05 -- ungleich der als Startpose angenommenen
+  NEUTRAL_STAND_POSE (HeadPitch=0.0), was der neue, auf der skalierten
+  Zeitachse rechnende Geschwindigkeits-/Uebergangs-Check aus AP8.4
+  korrekt als unendliche Geschwindigkeit (Sprung ohne Zeit) ablehnt.
+  Migration OHNE Bedeutungsaenderung: ein neuer Haltepunkt bei t=0.0 mit
+  HeadPitch=0.0 (Neutralstellung) wurde eingefuegt, der urspruengliche
+  erste Keyframe (HeadPitch=-0.05) auf t=0.2s verschoben (0.05 rad /
+  3.0 rad/s = 0.017s Minimum, 0.2s bewusst mit Marge). ALLE weiteren
+  Keyframe-Zeiten (hier: t=1.2) bleiben UNVERAENDERT -- die Gesamtdauer
+  und die relative Choreografie sind identisch zu vorher, es kommt
+  lediglich eine physikalisch ohnehin erforderliche, vorher unbelegte
+  Uebergangszeit von 0.2s am Anfang hinzu. Da sich damit die tatsaechlich
+  kompilierte Trajektorie aendert (nicht nur Metadaten), wird
+  tested_status auf draft zurueckgestuft -- der bisherige dry-run bezog
+  sich auf die ALTE, zweigliedrige Struktur und deckt diese Migration
+  nicht ab. Erneuter dry-run vor jeder weiteren Nutzung erforderlich.
 max_duration_s: 2.5
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.0
+    joints: {HeadPitch: 0.0}
+  - time_from_start_s: 0.2
     joints: {HeadPitch: -0.05}
   - time_from_start_s: 1.2
     joints: {LShoulderPitch: 0.1, RShoulderPitch: 0.1, LShoulderRoll: 0.5, RShoulderRoll: -0.5}

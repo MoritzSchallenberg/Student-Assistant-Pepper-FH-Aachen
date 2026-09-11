@@ -30,7 +30,12 @@ class FakePepperClient:
         self.breathing_calls.append((enabled, part))
 
     def snapshot_joints(self, joints):
-        return {j: 0.1 for j in joints}
+        # Entwicklungsauftrag 04-B, AP8.4: muss mit dem ersten Keyframe von
+        # _v2_catalog() (t=0.0, LShoulderPitch/RShoulderPitch=0.5)
+        # uebereinstimmen -- sonst lehnt der neue Start-zu-erstem-Keyframe-
+        # Uebergangscheck den impliziten Sprung korrekt als unendliche
+        # Geschwindigkeit ab.
+        return {j: 0.5 for j in joints}
 
     def restore_joints(self, snapshot, duration=1.5):
         self.calls.append(("restore_joints", snapshot))

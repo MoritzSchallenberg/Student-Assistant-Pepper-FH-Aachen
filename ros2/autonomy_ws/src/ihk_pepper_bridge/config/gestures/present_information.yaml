@@ -16,10 +16,27 @@ tested_date: null
 test_note: >
   Abgeleitet von explain_right.yaml (dort ShoulderRoll -0.6, hier
   identisch) mit laengerer Haltedauer -- keine neue Live-Referenz.
-max_duration_s: 3.0
+  AP8.4-Migration (Entwicklungsauftrag 04-B, bestaetigter Fund 3.4): der
+  urspruengliche erste Keyframe (t=0.0, HeadPitch=-0.05) wich von der
+  angenommenen NEUTRAL_STAND_POSE-Startpose (HeadPitch=0.0) ab, was der
+  neue Uebergangs-/Geschwindigkeitscheck aus AP8.4 korrekt als Sprung
+  ablehnt. Migration OHNE Bedeutungsaenderung: neuer Haltepunkt bei
+  t=0.0 (HeadPitch=0.0) eingefuegt, urspruenglicher erster Keyframe auf
+  t=0.2s verschoben (Minimum 0.017s, Marge). Alle weiteren Keyframe-
+  Zeiten (t=1.0, t=2.2) unveraendert -- Gesamtdauer/Choreografie
+  identisch.
+  Zusaetzlich AP8.4-Korrektur: max_duration_s war bereits VOR dieser
+  Migration bezogen auf die unskalierte Zeitachse zu niedrig angesetzt
+  (2.2s / 0.6 = 3.67s effektive Ausfuehrungsdauer > 3.0s) -- dieser
+  vorbestehende Fehler war bislang durch den fruehen Geschwindigkeits-
+  Abbruch maskiert und wird hier erstmals sichtbar. Wert entsprechend
+  auf die real ausgefuehrte Dauer (+Marge) korrigiert.
+max_duration_s: 3.7
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.0
+    joints: {HeadPitch: 0.0}
+  - time_from_start_s: 0.2
     joints: {HeadPitch: -0.05}
   - time_from_start_s: 1.0
     joints: {RShoulderPitch: -0.2, RShoulderRoll: -0.6, RElbowRoll: 0.2}

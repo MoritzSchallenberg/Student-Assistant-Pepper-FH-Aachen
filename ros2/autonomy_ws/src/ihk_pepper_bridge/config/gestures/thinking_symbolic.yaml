@@ -22,10 +22,21 @@ test_note: >
   rechnerisch weit unterhalb der Kopfhoehe bleibt (keine echte
   Vorwaertskinematik in dieser Session verfuegbar, daher zusaetzlich
   konservativ).
+  AP8.4-Migration (Entwicklungsauftrag 04-B, bestaetigter Fund 3.4): der
+  urspruengliche erste Keyframe (t=0.0, HeadYaw=0.15, HeadPitch=-0.1)
+  wich von der angenommenen NEUTRAL_STAND_POSE-Startpose (beide 0.0) ab,
+  was der neue Uebergangs-/Geschwindigkeitscheck aus AP8.4 korrekt als
+  Sprung ablehnt (Minimum 0.05s bei 0.15rad/3.0rad/s). Migration OHNE
+  Bedeutungsaenderung: neuer Haltepunkt bei t=0.0 (HeadYaw=0.0,
+  HeadPitch=0.0) eingefuegt, urspruenglicher erster Keyframe auf t=0.2s
+  verschoben (Marge). Alle weiteren Keyframe-Zeiten (t=1.2) unveraendert
+  -- Gesamtdauer/Choreografie identisch.
 max_duration_s: 2.5
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.0
+    joints: {HeadYaw: 0.0, HeadPitch: 0.0}
+  - time_from_start_s: 0.2
     joints: {HeadYaw: 0.15, HeadPitch: -0.1}
   - time_from_start_s: 1.2
     joints: {RShoulderPitch: 0.7, RShoulderRoll: -0.2, RElbowRoll: 0.9, RElbowYaw: 0.3}

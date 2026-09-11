@@ -38,7 +38,15 @@ class FakePepperClient:
 
     def snapshot_joints(self, joints):
         self.snapshot_taken = list(joints)
-        return {j: 0.1 for j in joints}
+        # Entwicklungsauftrag 04-B, AP8.4: LShoulderPitch/RShoulderPitch
+        # muessen mit dem ERSTEN Keyframe der Standard-v2-Testgeste
+        # (_v2_data(), t=0.0, =0.0 == NEUTRAL_STAND_POSE) uebereinstimmen --
+        # sonst lehnt der neue Start-zu-erstem-Keyframe-Uebergangscheck den
+        # impliziten Sprung korrekt als unendliche Geschwindigkeit ab.
+        # Andere Gelenke (z.B. HeadYaw in den v1-Tests dieser Datei) bleiben
+        # bei 0.1, damit deren eigene, unabhaengige Erwartungen unveraendert
+        # bleiben.
+        return {j: (0.0 if j in ("LShoulderPitch", "RShoulderPitch") else 0.1) for j in joints}
 
     def get_angle(self, joint):
         return 0.1
@@ -91,9 +99,14 @@ def _v2_data(name="test_gesture", keyframes=None, **overrides):
     data = {
         "schema_version": 2,
         "name": name,
+        # Entwicklungsauftrag 04-B, AP8.4: kf0 haelt NEUTRAL_STAND_POSE
+        # (0.0) fuer beide Gelenke -- das eigentliche Bewegungsziel (0.5)
+        # liegt bei t=1.0. So gibt es weder bei explizitem start_pose (aus
+        # FakePepperClient.snapshot_joints, hardware-pfad) noch beim
+        # Neutral-Fallback (dry_run, kein Snapshot) einen Sprung am Start.
         "keyframes": keyframes or [
-            {"time_from_start_s": 0.0, "joints": {"LShoulderPitch": 0.5, "RShoulderPitch": 0.5}},
-            {"time_from_start_s": 1.0, "joints": {"LShoulderPitch": 0.0, "RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.0, "joints": {"LShoulderPitch": 0.0, "RShoulderPitch": 0.0}},
+            {"time_from_start_s": 1.0, "joints": {"LShoulderPitch": 0.5, "RShoulderPitch": 0.5}},
         ],
     }
     data.update(overrides)
@@ -141,6 +154,27 @@ def test_v2_decreasing_time_rejected():
         {"time_from_start_s": 0.5, "joints": {"HeadYaw": 0.2}},
     ]
     with pytest.raises(GestureValidationError):
+        Gesture(_v2_data(keyframes=kf), source_path="test")
+
+
+def test_v2_nan_time_from_start_s_rejected():
+    # Entwicklungsauftrag 04-B, AP8.4 (bestaetigter Fund): "t < 0" allein
+    # faengt KEIN NaN ab (NaN < 0 ist in Python False) -- ein NaN time
+    # wuerde sonst weder vom Vorzeichen- noch vom Monotonie-Check erkannt.
+    kf = [
+        {"time_from_start_s": float("nan"), "joints": {"HeadYaw": 0.1}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ]
+    with pytest.raises(GestureValidationError, match="NaN/inf"):
+        Gesture(_v2_data(keyframes=kf), source_path="test")
+
+
+def test_v2_infinite_time_from_start_s_rejected():
+    kf = [
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.1}},
+        {"time_from_start_s": float("inf"), "joints": {"HeadYaw": 0.2}},
+    ]
+    with pytest.raises(GestureValidationError, match="NaN/inf"):
         Gesture(_v2_data(keyframes=kf), source_path="test")
 
 
@@ -250,8 +284,10 @@ def test_failure_mid_playback_still_restores_joints_v2():
         catalog.play(client, "test_gesture")
     # restore() sendet seit AP12 EINEN play_trajectory()-Aufruf mit den
     # Snapshot-Winkeln (statt der alten restore_joints()-Methode) --
-    # genau die zwei betroffenen Gelenke, je Snapshot-Winkel 0.1.
-    assert client.restored == {"LShoulderPitch": 0.1, "RShoulderPitch": 0.1}
+    # genau die zwei betroffenen Gelenke, je Snapshot-Winkel 0.0 (AP8.4:
+    # FakePepperClient.snapshot_joints() muss mit dem ersten Keyframe der
+    # Standardgeste uebereinstimmen).
+    assert client.restored == {"LShoulderPitch": 0.0, "RShoulderPitch": 0.0}
     assert client.breathing_calls  # Breathing wurde in jedem Fall wieder aktiviert
 
 

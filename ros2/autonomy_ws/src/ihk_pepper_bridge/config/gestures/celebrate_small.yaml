@@ -17,7 +17,13 @@ test_note: >
   Neue, symmetrische Bewegung ohne Live-Referenz -- Winkel deutlich
   konservativer als open_arms.yaml (ShoulderRoll 0.4 statt 0.9), nur
   eine Bewegungsrichtung ohne Oszillation.
-max_duration_s: 2.5
+  AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
+  bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
+  prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach
+  speed_scale_default-Skalierung (1.6s / 0.6 = 2.67s). max_duration_s
+  wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
+  -- keine Aenderung an Keyframes/Winkeln/Bewegung.
+max_duration_s: 2.8
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.7

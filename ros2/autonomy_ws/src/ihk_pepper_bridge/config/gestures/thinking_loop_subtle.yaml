@@ -31,7 +31,17 @@ test_note: >
   acknowledge_nod_small.yaml gewaehlt, innerhalb der dokumentierten
   HeadPitch-Grenzen aus joint_limits.py. Vor jedem dry-run:
   `gesturectl preview thinking_loop_subtle` (RViz).
-max_duration_s: 1.3
+  AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
+  bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
+  prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach
+  speed_scale_default-Skalierung (1.3s / 0.7 = 1.86s). max_duration_s
+  wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
+  -- keine Aenderung an Keyframes/Winkeln/Bewegung. Der Aufrufer
+  (run_dialogue_action_server.py::_run_thinking_loop) verwendet fuer die
+  Wiederholungsschleife ohnehin seinen EIGENEN, unabhaengigen
+  thinking_loop_max_duration_s-Parameter -- dieser Wert betrifft nur den
+  kinematischen Sicherheitsdeckel EINES Zyklus.
+max_duration_s: 1.9
 on_cancel: restore
 keyframes:
   - time_from_start_s: 0.45

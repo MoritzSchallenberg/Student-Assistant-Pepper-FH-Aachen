@@ -18,7 +18,14 @@ test_note: >
   Reine Neutralstellung, alle Winkel weit innerhalb der dokumentierten
   (teils nicht live verifizierten) Gelenkgrenzen aus joint_limits.py.
   Der v2-Transport selbst ist dry_run_validated, NICHT live_validated.
-max_duration_s: 2.5
+  AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
+  bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
+  prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach
+  speed_scale_default-Skalierung (1.5s / 0.5 = 3.0s). max_duration_s
+  wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
+  -- keine Aenderung an Keyframes/Winkeln/Bewegung, der bereits
+  durchgefuehrte dry-run bleibt inhaltlich gueltig.
+max_duration_s: 3.1
 on_cancel: hold
 keyframes:
   - time_from_start_s: 1.5

@@ -189,6 +189,15 @@ class Gesture:
                     f"Geste '{self.name}', Keyframe {i}: 'time_from_start_s'/'joints' fehlt"
                 )
             t = float(kf["time_from_start_s"])
+            # Entwicklungsauftrag 04-B, AP8.4 (bestaetigter Fund): "t < 0"
+            # allein faengt KEIN NaN ab (NaN < 0 ist in Python False) --
+            # ein NaN/inf time_from_start_s wuerde sonst weder hier noch
+            # von der anschliessenden Monotonie-/Geschwindigkeitspruefung
+            # zuverlaessig erkannt.
+            if t != t or t in (float("inf"), float("-inf")):
+                raise GestureValidationError(
+                    f"Geste '{self.name}', Keyframe {i}: time_from_start_s ist NaN/inf"
+                )
             if t < 0:
                 raise GestureValidationError(f"Geste '{self.name}', Keyframe {i}: time_from_start_s < 0")
             if last_t is not None and t <= last_t:

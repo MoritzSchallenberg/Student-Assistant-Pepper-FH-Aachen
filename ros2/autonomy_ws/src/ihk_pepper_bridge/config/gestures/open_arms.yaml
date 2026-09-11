@@ -15,7 +15,14 @@ test_note: >
   ShoulderPitch von der live getesteten t_pose-Sequenz uebernommen,
   ShoulderRoll bewusst unterhalb des dort getesteten Werts. Der
   v2-Transport selbst ist NICHT live geprueft.
-max_duration_s: 3.0
+  AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
+  bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
+  prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach
+  speed_scale_default-Skalierung (2.0s / 0.6 = 3.33s). max_duration_s
+  wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
+  -- keine Aenderung an Keyframes/Winkeln/Bewegung, der bereits
+  durchgefuehrte dry-run bleibt inhaltlich gueltig.
+max_duration_s: 3.4
 on_cancel: restore
 keyframes:
   - time_from_start_s: 2.0
