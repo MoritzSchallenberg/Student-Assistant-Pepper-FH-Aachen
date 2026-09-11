@@ -15,7 +15,7 @@ from ihk_pepper_bridge.gesture_catalog import GestureCatalog
 from ihk_pepper_bridge.gesture_cancellation import CancelSignal, GestureCancelReason
 from ihk_pepper_bridge.gesture_execution_policy import GestureExecutionPolicy, PROFILE_OFFLINE_MOCK
 from ihk_pepper_interfaces.action import PlayGesture, Say
-from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
+from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
 
 
 class _FakeParam:
@@ -49,19 +49,21 @@ class _FakeFuture:
 
 
 class _FakeArbiterClient:
-    """Simuliert sowohl den Acquire- als auch den Release-Client (beide
-    haben dieselbe minimale Schnittstelle: wait_for_service()/call_async())."""
+    """Simuliert Acquire-, Release- UND Renew-Client (alle drei haben
+    dieselbe minimale Schnittstelle: wait_for_service()/call_async())."""
 
-    def __init__(self, available=True, granted=True, reason=""):
+    def __init__(self, available=True, granted=True, reason="", renew_succeeds=True):
         self.available = available
         self.granted = granted
         self.reason = reason
+        self.renew_succeeds = renew_succeeds
         self.calls = []
 
     def wait_for_service(self, timeout_sec=None):
         return self.available
 
     def call_async(self, request):
+        from ihk_pepper_interfaces.srv import RenewActuatorLease
         self.calls.append(request)
         if isinstance(request, AcquireActuatorLease.Request):
             response = AcquireActuatorLease.Response()
@@ -69,6 +71,11 @@ class _FakeArbiterClient:
             response.lease_id = "lease-1" if self.granted else ""
             response.reason = self.reason
             response.conflicting_owners = [] if self.granted else ["other-owner"]
+            return _FakeFuture(response)
+        if isinstance(request, RenewActuatorLease.Request):
+            response = RenewActuatorLease.Response()
+            response.success = self.renew_succeeds
+            response.reason = "" if self.renew_succeeds else "simulierter Renew-Fehlschlag"
             return _FakeFuture(response)
         response = ReleaseActuatorLease.Response()
         response.success = True
@@ -85,6 +92,35 @@ class _FakeInterruptChannel:
 
     def stop_motion(self):
         self.stop_motion_calls += 1
+
+
+class _TestDoubleFakeCollisionProofBackend:
+    """AUSDRUECKLICH ein TEST-DOUBLE, KEIN echtes Kollisions-Backend
+    (Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 2.3/3.5): simuliert
+    lediglich, dass ein SPAETERES, tatsaechlich funktionierendes
+    Kollisions-Backend collision_checked=True liefern koennte, damit
+    Tests den production-Freigabemechanismus selbst nachweisen koennen,
+    OHNE einen echten JointAndTimingValidator-only-Report faelschlich als
+    Kollisionsnachweis zu behaupten (das war der bestaetigte Fund 2.3 --
+    ein reiner Joint-/Timing-Report lieferte 'pass' bei
+    collision_checked=false und durfte trotzdem in production laufen).
+    Wird NIE als reales Backend dokumentiert/benannt."""
+
+    name = "test_double_fake_collision_proof_NOT_A_REAL_BACKEND"
+
+    def check(self, gesture, plan, start_pose, compile_error):
+        from ihk_pepper_bridge.trajectory_safety import TrajectorySafetyReport
+        return TrajectorySafetyReport(
+            gesture_name=gesture.name,
+            verdict="pass",
+            backend_names=[self.name],
+            collision_checked=True,
+            collision_backend_note=(
+                "TEST-DOUBLE (_TestDoubleFakeCollisionProofBackend): simuliert ein "
+                "ECHTES Kollisions-Backend fuer Testzwecke -- ist selbst KEINES."
+            ),
+            affected_joints=list(plan.joint_names) if plan is not None else [],
+        )
 
 
 class _FakeGoalId:
@@ -142,15 +178,20 @@ class _FakeNode:
     _on_mapping_active = PepperBridgeNode._on_mapping_active
     _on_interaction_state = PepperBridgeNode._on_interaction_state
     _on_lease_revoked = PepperBridgeNode._on_lease_revoked
+    _on_authorized_command = PepperBridgeNode._on_authorized_command
     _current_runtime_context = PepperBridgeNode._current_runtime_context
     # Entwicklungsauftrag 04-B, AP8-R1: neue, seit diesem Auftrag
     # ebenfalls ECHTE (nicht ein zweites Mal nachgebaute) Methoden.
     _classify_safety_cancel_reason = PepperBridgeNode._classify_safety_cancel_reason
     _register_active_execution = PepperBridgeNode._register_active_execution
     _is_lease_revoked = PepperBridgeNode._is_lease_revoked
+    _get_active_execution = PepperBridgeNode._get_active_execution
+    _local_resource_conflict = PepperBridgeNode._local_resource_conflict
     _unregister_active_execution = PepperBridgeNode._unregister_active_execution
+    _renew_lease = PepperBridgeNode._renew_lease
     _watchdog_check = PepperBridgeNode._watchdog_check
     _quarantine_unconfirmed_execution = PepperBridgeNode._quarantine_unconfirmed_execution
+    shutdown_and_wait_for_terminal = PepperBridgeNode.shutdown_and_wait_for_terminal
 
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
                  say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK,
@@ -180,6 +221,7 @@ class _FakeNode:
             reason="" if arbiter_granted else "Ressourcenkonflikt mit: ['other-owner']",
         )
         self.release_lease_client = _FakeArbiterClient(available=arbiter_available)
+        self.renew_lease_client = _FakeArbiterClient(available=arbiter_available)
         self._say_active = threading.Event()
         # Entwicklungsauftrag 04-B, AP8.2: dieselben Fresh*-Instanzen wie
         # der echte Node -- per Default UNBEFUELLT (is_fresh()==False),
@@ -198,6 +240,8 @@ class _FakeNode:
         self._active_gesture_cancel_events = {}
         self._revoked_lease_ids = set()
         self._quarantined_lease_ids = set()
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1.
+        self._active_executions = {}
         self._last_emergency_stop = None
         self._last_bumper_active = None
         self._shutting_down = False
@@ -461,6 +505,7 @@ def _dry_run_validated_gesture_dir(tmp_path):
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
         ],
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "explicitly_dry_run_validated.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -543,6 +588,9 @@ def _v1_live_validated_gesture_dir(tmp_path):
         "tested_status": "live_validated",
         "tested_date": "2026-01-01",
         "steps": [{"joint": "RShoulderPitch", "angle": -1.0, "duration": 1.0}],
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: max_duration_s
+        # muss fuer hardwarefaehige Profile gesetzt/endlich/positiv sein.
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "t_pose_like.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -598,6 +646,13 @@ def _live_validated_gesture_dir(tmp_path):
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
         ],
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: max_duration_s
+        # muss fuer hardwarefaehige Profile gesetzt/endlich/positiv sein --
+        # grosszuegig ueber der kompilierten Solldauer (0.3s), damit
+        # Tests mit einer simulierten Transportverzoegerung
+        # (play_trajectory_sleep_s) nicht faelschlich in TIMEOUT laufen,
+        # sofern sie nicht GENAU das testen wollen.
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "live_wave.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -623,20 +678,23 @@ def test_production_profile_rejects_without_a_real_collision_proof(tmp_path):
 
 
 def test_production_profile_succeeds_once_a_real_collision_proof_backend_is_injected(tmp_path):
-    # Gegenprobe: der Mechanismus selbst funktioniert -- sobald (z.B.
-    # durch ein spaeteres echtes Kollisions-Backend) ein TrajectorySafety-
-    # Validator mit verdict='pass' konfiguriert ist, darf production
-    # tatsaechlich laufen. Injektion ueber node.gesture_safety_validator
-    # (siehe PepperBridgeNode.__init__), damit gesture_catalog.py/
-    # bridge_node.py fuer ein spaeteres echtes Backend nicht geaendert
-    # werden muessen.
+    # Gegenprobe: der Mechanismus selbst funktioniert -- sobald ein
+    # Kollisions-Backend TATSAECHLICH collision_checked=True liefert
+    # (hier durch _TestDoubleFakeCollisionProofBackend simuliert, siehe
+    # dessen Docstring -- AUSDRUECKLICH kein reiner JointAndTimingValidator
+    # mehr, das war der bestaetigte Fund 2.3: 'pass' allein reicht NICHT),
+    # darf production tatsaechlich laufen. Injektion ueber
+    # node.gesture_safety_validator (siehe PepperBridgeNode.__init__),
+    # damit gesture_catalog.py/bridge_node.py fuer ein spaeteres echtes
+    # Backend nicht geaendert werden muessen.
     from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
     from ihk_pepper_bridge.trajectory_safety import JointAndTimingValidator, TrajectorySafetyValidator
     node = _FakeNode(
         _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
     )
-    node.gesture_safety_validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    node.gesture_safety_validator = TrajectorySafetyValidator(
+        backends=[JointAndTimingValidator(), _TestDoubleFakeCollisionProofBackend()])
     goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
     result = node._execute_gesture(goal_handle)
     assert result.success is True
@@ -714,11 +772,13 @@ def test_lease_revocation_during_a_running_gesture_aborts_it_and_is_not_success(
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
         play_trajectory_sleep_s=0.5,
     )
-    # Entwicklungsauftrag 04-B, AP8-R1.8: dieser Test prueft Lease-
-    # Widerruf, nicht das Kollisions-Backend -- ein JointAndTimingValidator-
-    # only-Validator wird injiziert, damit die Geste ueberhaupt startet
-    # (production wuerde ein 'inconclusive' sonst schon vorher ablehnen).
-    node.gesture_safety_validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    # Entwicklungsauftrag 04-B, AP8-R1.8/AP8-R2 2.3: dieser Test prueft
+    # Lease-Widerruf, nicht das Kollisions-Backend -- ein Test-Double mit
+    # collision_checked=True wird injiziert, damit die Geste ueberhaupt
+    # startet (production wuerde sonst schon vorher ablehnen, siehe
+    # _TestDoubleFakeCollisionProofBackend-Docstring).
+    node.gesture_safety_validator = TrajectorySafetyValidator(
+        backends=[JointAndTimingValidator(), _TestDoubleFakeCollisionProofBackend()])
     goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
 
     def _revoke_soon():
@@ -847,6 +907,7 @@ def _head_gesture_dir(tmp_path):
             {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"HeadYaw": 0.2}},
         ],
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "live_head_move.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -864,6 +925,7 @@ def _interaction_restricted_gesture_dir(tmp_path):
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
         ],
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "live_conversation_only.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -1014,39 +1076,49 @@ def test_watchdog_aborts_when_pepper_becomes_unreachable_during_gesture(tmp_path
     assert result.error_message == GestureCancelReason.PEPPER_UNREACHABLE
 
 
-def test_watchdog_aborts_on_hard_timeout_exceeding_expected_duration(tmp_path, monkeypatch):
-    # Entwicklungsauftrag 04-B, AP8-R1.3 (bestaetigter Fund 3.3):
-    # max_duration_s begrenzte bisher nur die KOMPILIERTE Solltrajektorie
-    # -- eine tatsaechlich haengende Ausfuehrung (hier durch
-    # play_trajectory_sleep_s simuliert) muss trotzdem hart abgebrochen
-    # werden. GESTURE_WATCHDOG_TIMEOUT_MARGIN_S wird fuer diesen Test auf
-    # einen kleinen Wert reduziert, damit der harte Deadline nicht die
-    # vollen (produktiven) 5s Marge abwarten muss.
-    from ihk_pepper_bridge import bridge_node as bridge_node_module
+def _short_max_duration_gesture_dir(tmp_path):
+    """max_duration_s deutlich kuerzer als eine simulierte
+    Transportverzoegerung -- fuer den harten Bewegungsdeckel-Test
+    (Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7)."""
+    import yaml
+    data = {
+        "name": "live_short_deadline",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.1, "joints": {"RShoulderPitch": 0.1}},
+        ],
+        "max_duration_s": 0.2,
+    }
+    with open(tmp_path / "live_short_deadline.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def test_watchdog_aborts_on_hard_timeout_exceeding_max_duration_s(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7 (bestaetigter Fund
+    # 2.7): der harte Bewegungsdeckel ist jetzt EXAKT
+    # transport_started_at + gesture.max_duration_s (0.2s hier) -- KEINE
+    # zusaetzliche Marge mehr. Eine simulierte Transportverzoegerung
+    # (0.5s, laenger als 0.2s, aber kuerzer als die Standard-Grace-Zeit
+    # 2.0s) muss VOR ihrem natuerlichen Ende hart abgebrochen werden.
     from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
-    monkeypatch.setattr(bridge_node_module, "GESTURE_WATCHDOG_TIMEOUT_MARGIN_S", 0.05)
     node = _FakeNode(
-        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        _short_max_duration_gesture_dir(tmp_path), dry_run=False,
         execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
-        # Laenger als expected_duration_s (0.3s) + Marge (0.05s) -- der
-        # Watchdog muss VOR dem natuerlichen Ende abbrechen -- aber
-        # trotzdem kurz genug, um innerhalb der Standard-Grace-Zeit
-        # (2.0s) noch bestaetigt zurueckzukehren (sonst ueberschreibt
-        # 'cancel_unconfirmed' den TIMEOUT-Grund im Ergebnis, siehe
-        # test_no_success_and_no_lease_release_while_transport_thread_is_still_running
-        # fuer genau diesen Fall).
         play_trajectory_sleep_s=0.5,
     )
-    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_short_deadline"))
     started = time.time()
     result = node._execute_gesture(goal_handle)
     elapsed = time.time() - started
     assert result.success is False
     assert result.error_message == GestureCancelReason.TIMEOUT
-    # Wurde deutlich vor dem natuerlichen Ende (0.5s + Grace) erkannt --
-    # der Watchdog reagiert an der naechsten Poll-Grenze nach
-    # Ueberschreiten von expected_duration_s+Marge (~0.35s).
+    # Wurde deutlich vor dem natuerlichen Ende (0.5s) erkannt -- der
+    # Watchdog reagiert an der naechsten Poll-Grenze nach Ueberschreiten
+    # von max_duration_s=0.2s.
     assert elapsed < 1.0
 
 
@@ -1089,6 +1161,10 @@ def test_no_success_and_no_lease_release_while_transport_thread_is_still_running
         time.sleep(0.01)
     assert node._active_gesture_cancel_events == {}
     assert lease_id not in node._quarantined_lease_ids
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1/3.3: derselbe
+    # Nachweis gilt auch fuer den REICHHALTIGEREN Ausfuehrungsdatensatz --
+    # exakt EIN Cleanup, keine haengengebliebene lokale Ressourcensperre.
+    assert lease_id not in node._active_executions
     release_requests = [r for r in node.release_lease_client.calls
                         if isinstance(r, ReleaseActuatorLease.Request)]
     assert len(release_requests) == 1
@@ -1128,3 +1204,377 @@ def test_second_goal_on_the_same_resource_is_blocked_while_first_is_quarantined(
     result_2 = node._execute_gesture(goal_handle_2)
     assert result_2.success is False
     assert "Ressourcenkonflikt" in result_2.error_message
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3: lokale Ressourcenquarantaene ----
+
+def test_local_resource_conflict_blocks_a_second_target_even_if_the_arbiter_would_grant_it(tmp_path):
+    # Anders als der obige Test simuliert der Fake-Arbiter hier KEINEN
+    # Konflikt (granted bleibt True) -- die LOKALE Ressourcenquarantaene
+    # (_local_resource_conflict()) muss das zweite Ziel trotzdem
+    # blockieren, BEVOR ueberhaupt eine zweite Acquire-Anfrage gestellt
+    # wird (simuliert einen neu gestarteten/zurueckgesetzten Arbiter, der
+    # die Ressource faelschlich fuer frei haelt).
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=1.0,
+    )
+    goal_handle_1 = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _cancel_first_soon():
+        _wait_until_registered(node)
+        goal_handle_1.is_cancel_requested = True
+
+    import threading as _threading
+    from ihk_pepper_bridge import bridge_node as bridge_node_module
+    original_grace = bridge_node_module.GESTURE_CANCEL_GRACE_S
+    bridge_node_module.GESTURE_CANCEL_GRACE_S = 0.1
+    try:
+        _threading.Thread(target=_cancel_first_soon, daemon=True).start()
+        result_1 = node._execute_gesture(goal_handle_1)
+        assert result_1.error_message == "cancel_unconfirmed"
+        assert node._active_executions  # noch nicht bereinigt
+
+        acquire_requests_before = len([r for r in node.acquire_lease_client.calls
+                                       if isinstance(r, AcquireActuatorLease.Request)])
+        goal_handle_2 = _FakeGoalHandle(_gesture_request(name="live_wave"))
+        result_2 = node._execute_gesture(goal_handle_2)
+        acquire_requests_after = len([r for r in node.acquire_lease_client.calls
+                                      if isinstance(r, AcquireActuatorLease.Request)])
+        assert result_2.success is False
+        assert "lokal blockiert" in result_2.error_message
+        # Die lokale Pruefung hat abgelehnt, BEVOR ueberhaupt eine zweite
+        # Acquire-Anfrage an den (hier grosszuegigen) Arbiter ging.
+        assert acquire_requests_after == acquire_requests_before
+    finally:
+        bridge_node_module.GESTURE_CANCEL_GRACE_S = original_grace
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3: Lease-Erneuerung ----
+
+def test_watchdog_renews_the_lease_when_half_the_ttl_has_elapsed(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3/2.2: direkter,
+    # deterministischer Test von _watchdog_check()s Erneuerungslogik --
+    # ueber die volle _execute_gesture()-Zeitsteuerung waere die
+    # Standard-TTL (mindestens 15s, Erneuerung erst bei 7.5s) zu langsam
+    # fuer einen Unit-Test.
+    from ihk_pepper_bridge.gesture_cancellation import ActiveGestureExecution, CancelSignal
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    gesture = node.catalog.get("live_wave")
+    execution = ActiveGestureExecution(
+        lease_id="lease-1", goal_id="goal-1", owner_id="pepper_bridge",
+        resources={"RIGHT_ARM"}, gesture_name="live_wave", cancel_signal=CancelSignal(),
+    )
+    execution.transport_started_monotonic_s = time.monotonic()
+    # Simuliert, dass die Haelfte der TTL (hier 10s) bereits verstrichen ist.
+    execution.last_renewed_monotonic_s = time.monotonic() - 6.0
+    node._active_executions["lease-1"] = execution
+
+    node._watchdog_check(gesture, execution, PROFILE_SUPERVISED_HARDWARE_TEST, 1.0, lease_ttl_s=10.0)
+
+    renew_requests = [r for r in node.renew_lease_client.calls if isinstance(r, RenewActuatorLease.Request)]
+    assert len(renew_requests) == 1
+    assert renew_requests[0].lease_id == "lease-1"
+    assert execution.cancel_signal.is_set() is False  # Erneuerung erfolgreich -- kein Abbruch
+
+
+def test_watchdog_does_not_renew_before_half_the_ttl_has_elapsed(tmp_path):
+    from ihk_pepper_bridge.gesture_cancellation import ActiveGestureExecution, CancelSignal
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    gesture = node.catalog.get("live_wave")
+    execution = ActiveGestureExecution(
+        lease_id="lease-1", goal_id="goal-1", owner_id="pepper_bridge",
+        resources={"RIGHT_ARM"}, gesture_name="live_wave", cancel_signal=CancelSignal(),
+    )
+    execution.transport_started_monotonic_s = time.monotonic()
+    execution.last_renewed_monotonic_s = time.monotonic()  # gerade erst erneuert
+    node._active_executions["lease-1"] = execution
+
+    node._watchdog_check(gesture, execution, PROFILE_SUPERVISED_HARDWARE_TEST, 1.0, lease_ttl_s=10.0)
+
+    assert node.renew_lease_client.calls == []
+
+
+def test_failed_lease_renewal_sets_lease_revoked_reason(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3 ('bei fehlgeschlagener
+    # Erneuerung das Ziel abbrechen'): direkter _watchdog_check()-Test wie
+    # oben -- ueber die volle Standard-TTL (>=15s) waere dies ueber
+    # _execute_gesture() nicht in vertretbarer Testzeit auszuloesen.
+    from ihk_pepper_bridge.gesture_cancellation import ActiveGestureExecution, CancelSignal
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    node.renew_lease_client.renew_succeeds = False
+    gesture = node.catalog.get("live_wave")
+    execution = ActiveGestureExecution(
+        lease_id="lease-1", goal_id="goal-1", owner_id="pepper_bridge",
+        resources={"RIGHT_ARM"}, gesture_name="live_wave", cancel_signal=CancelSignal(),
+    )
+    execution.transport_started_monotonic_s = time.monotonic()
+    execution.last_renewed_monotonic_s = time.monotonic() - 6.0
+    node._active_executions["lease-1"] = execution
+
+    node._watchdog_check(gesture, execution, PROFILE_SUPERVISED_HARDWARE_TEST, 1.0, lease_ttl_s=10.0)
+
+    assert execution.cancel_signal.is_set() is True
+    assert execution.cancel_signal.reason == GestureCancelReason.LEASE_REVOKED
+    # Die lokale Ressourcenquarantaene (der Ausfuehrungsdatensatz selbst)
+    # bleibt unabhaengig vom fehlgeschlagenen Renew bestehen -- nur ein
+    # expliziter Cleanup entfernt ihn.
+    assert "lease-1" in node._active_executions
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8: goal_id-Bindung von Revocations ----
+
+def test_lease_revocation_with_a_different_goal_id_does_not_affect_the_active_target(tmp_path):
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    already_revoked = node._register_active_execution(
+        "lease-1", signal, goal_id="goal-real", resources={"HEAD"}, gesture_name="wave")
+    assert already_revoked is False
+
+    node._on_lease_revoked(ActuatorLeaseMsg(
+        lease_id="lease-1", owner_id="pepper_bridge", goal_id="goal-WRONG", preempted=True,
+        preempted_reason="verwechselte/veraltete Nachricht",
+    ))
+    assert signal.is_set() is False
+    assert "lease-1" not in node._revoked_lease_ids
+
+
+def test_lease_revocation_with_the_matching_goal_id_does_affect_the_active_target(tmp_path):
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    node._register_active_execution(
+        "lease-1", signal, goal_id="goal-real", resources={"HEAD"}, gesture_name="wave")
+
+    node._on_lease_revoked(ActuatorLeaseMsg(
+        lease_id="lease-1", owner_id="pepper_bridge", goal_id="goal-real", preempted=True,
+        preempted_reason="korrekt zugeordnet",
+    ))
+    assert signal.is_set() is True
+    assert signal.reason == GestureCancelReason.LEASE_REVOKED
+
+
+def test_lease_revocation_without_any_goal_id_in_the_message_still_applies(tmp_path):
+    # Rueckwaertskompatibilitaet: eine Revocation-Nachricht OHNE goal_id
+    # (leerer String) bleibt rein lease_id-basiert wirksam.
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    node._register_active_execution(
+        "lease-1", signal, goal_id="goal-real", resources={"HEAD"}, gesture_name="wave")
+
+    node._on_lease_revoked(ActuatorLeaseMsg(
+        lease_id="lease-1", owner_id="pepper_bridge", goal_id="", preempted=True,
+        preempted_reason="keine goal_id mitgeliefert",
+    ))
+    assert signal.is_set() is True
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8: ungebundenes Cancel -> PREEMPTED ----
+
+def test_unbound_ros_cancel_sets_preempted_not_normal_user_cancel(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.8): ein
+    # allgemeines ROS-Action-Cancel beweist NICHT, dass ein normaler
+    # Benutzer abgebrochen hat -- gilt fail-closed als PREEMPTED, NICHT
+    # mehr automatisch als NORMAL_USER_CANCEL (verbietet Restore auch bei
+    # on_cancel='restore').
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    import yaml
+    data = {
+        "name": "live_wave_restore",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "on_cancel": "restore",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
+        ],
+        "max_duration_s": 5.0,
+    }
+    with open(tmp_path / "live_wave_restore.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    node = _FakeNode(
+        str(tmp_path), dry_run=False, execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave_restore"))
+
+    def _cancel_soon():
+        _wait_until_registered(node)
+        goal_handle.is_cancel_requested = True
+
+    threading.Thread(target=_cancel_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.PREEMPTED
+    # ROS2-Konvention bleibt erhalten: ein tatsaechlich angefordertes
+    # Action-Cancel wird weiterhin ueber canceled() gemeldet.
+    assert goal_handle.outcome == "canceled"
+    # KEIN Restore, obwohl on_cancel='restore' UND Safety frisch/gueltig
+    # ist -- nur ein nachweislich GEBUNDENER NORMAL_USER_CANCEL duerfte
+    # restaurieren, den es hier nicht gibt.
+    assert len(node.pepper.play_trajectory_calls) == 1
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.10: Shutdown-Reihenfolge ----
+
+def test_shutdown_during_a_running_gesture_sets_node_shutdown_and_waits_for_it_to_end(tmp_path):
+    node = _FakeNode(
+        _gesture_dir(tmp_path), dry_run=False,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.4,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request())
+    result_box = {}
+
+    def _run_gesture():
+        result_box["result"] = node._execute_gesture(goal_handle)
+
+    t = threading.Thread(target=_run_gesture, daemon=True)
+    t.start()
+    _wait_until_registered(node)
+    started = time.time()
+    still_pending = node.shutdown_and_wait_for_terminal(timeout_s=3.0)
+    elapsed = time.time() - started
+    t.join(timeout=3.0)
+    # Kein noch offener Rest -- die Geste war laengst durch den Shutdown
+    # abgebrochen und bestaetigt beendet, BEVOR die Frist ablief.
+    assert still_pending == []
+    assert elapsed < 3.0
+    assert node.interrupt_channel.stop_motion_calls >= 1
+    assert node._shutting_down is True
+    assert result_box["result"].success is False
+    assert result_box["result"].error_message == GestureCancelReason.NODE_SHUTDOWN
+    # Der Ausfuehrungsdatensatz ist nach bestaetigtem Ende bereinigt --
+    # KEINE dauerhaft haengende Quarantaene fuer eine tatsaechlich
+    # beendete Ausfuehrung.
+    assert "lease-1" not in node._active_executions
+
+
+def test_shutdown_reports_an_unconfirmed_execution_as_quarantined_after_the_timeout(tmp_path):
+    # Eine Ausfuehrung, deren Hintergrund-Thread die Shutdown-Frist
+    # ueberschreitet, wird SICHTBAR als quarantaeniert gemeldet -- sie
+    # bleibt in _active_executions (also lokal ressourcengesperrt), der
+    # Node wird aber trotzdem abgebaut (main() faehrt danach fort).
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    node._register_active_execution(
+        "lease-stuck", signal, goal_id="goal-stuck", resources={"HEAD"}, gesture_name="wave")
+    still_pending = node.shutdown_and_wait_for_terminal(timeout_s=0.3)
+    assert still_pending == ["lease-stuck"]
+    assert signal.reason == GestureCancelReason.NODE_SHUTDOWN
+    # Kein Reset/Entsperren -- der Datensatz bleibt bestehen, bis ein
+    # spaeterer, tatsaechlicher Cleanup ihn entfernt.
+    assert "lease-stuck" in node._active_executions
+
+
+def test_shutdown_with_no_active_executions_does_not_call_interrupt(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    still_pending = node.shutdown_and_wait_for_terminal(timeout_s=1.0)
+    assert still_pending == []
+    assert node.interrupt_channel.stop_motion_calls == 0
+    assert node._shutting_down is True
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8: Codewort "Eisenbahn" -> CODEWORD_INTERRUPT ----
+
+def _authorized_command(command="interrupt_and_look", authorization_status="not_required",
+                        event_id="evt-1"):
+    from ihk_pepper_interfaces.msg import InteractionCommand
+    msg = InteractionCommand()
+    msg.command = command
+    msg.authorization_status = authorization_status
+    msg.event_id = event_id
+    return msg
+
+
+def test_codeword_interrupt_preempts_a_running_gesture_and_never_restores(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    import yaml
+    data = {
+        "name": "live_wave_restore",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "on_cancel": "restore",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
+        ],
+        "max_duration_s": 5.0,
+    }
+    with open(tmp_path / "live_wave_restore.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    node = _FakeNode(
+        str(tmp_path), dry_run=False, execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave_restore"))
+
+    def _send_codeword_soon():
+        _wait_until_registered(node)
+        node._on_authorized_command(_authorized_command())
+
+    threading.Thread(target=_send_codeword_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.CODEWORD_INTERRUPT
+    # Kein ROS-Cancel wurde ueber die Action selbst angefordert -- die
+    # Bridge bricht das Ziel EIGENSTAENDIG ab (goal_handle.abort(), nicht
+    # canceled()).
+    assert goal_handle.outcome == "aborted"
+    assert node.interrupt_channel.stop_motion_calls >= 1
+    # KEIN Restore, obwohl on_cancel='restore' -- CODEWORD_INTERRUPT ist
+    # NIE ein restorefaehiger Grund (siehe restore_allowed()).
+    assert len(node.pepper.play_trajectory_calls) == 1
+
+
+def test_codeword_interrupt_ignored_when_authorization_is_denied_or_pending(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    node._register_active_execution(
+        "lease-1", signal, goal_id="goal-1", resources={"HEAD"}, gesture_name="wave")
+
+    node._on_authorized_command(_authorized_command(authorization_status="denied"))
+    assert signal.is_set() is False
+    node._on_authorized_command(_authorized_command(authorization_status="pending_confirmation"))
+    assert signal.is_set() is False
+    assert node.interrupt_channel.stop_motion_calls == 0
+
+
+def test_codeword_interrupt_ignores_unrelated_commands(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    signal = CancelSignal()
+    node._register_active_execution(
+        "lease-1", signal, goal_id="goal-1", resources={"HEAD"}, gesture_name="wave")
+
+    node._on_authorized_command(_authorized_command(command="stop"))
+    assert signal.is_set() is False
+    node._on_authorized_command(_authorized_command(command="dialogue_text"))
+    assert signal.is_set() is False
+
+
+def test_codeword_interrupt_with_no_active_gesture_does_not_call_interrupt(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._on_authorized_command(_authorized_command())
+    assert node.interrupt_channel.stop_motion_calls == 0

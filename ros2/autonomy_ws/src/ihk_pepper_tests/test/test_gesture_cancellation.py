@@ -4,7 +4,9 @@ CancelSignal, restore_allowed(), breathing_may_reactivate().
 """
 from ihk_pepper_bridge.gesture_cancellation import (
     ALL_CANCEL_REASONS,
+    ActiveGestureExecution,
     CancelSignal,
+    ExecutionPhase,
     GestureCancelReason,
     breathing_may_reactivate,
     restore_allowed,
@@ -101,3 +103,40 @@ def test_breathing_never_reactivates_for_safety_critical_reasons_even_when_safe_
         GestureCancelReason.TRANSPORT_FAILED, GestureCancelReason.NODE_SHUTDOWN,
     ):
         assert breathing_may_reactivate(reason, True) is False, reason
+
+
+# ---- ActiveGestureExecution / ExecutionPhase (Entwicklungsauftrag 04-B, AP8-R2) ----
+
+def _execution(resources=("HEAD",), lease_id="lease-1", goal_id="goal-1"):
+    return ActiveGestureExecution(
+        lease_id=lease_id, goal_id=goal_id, owner_id="pepper_bridge",
+        resources=resources, gesture_name="wave_right", cancel_signal=CancelSignal(),
+    )
+
+
+def test_new_execution_starts_in_preparing_phase_and_is_not_settled():
+    execution = _execution()
+    assert execution.phase == ExecutionPhase.PREPARING
+    assert execution.is_settled() is False
+    assert execution.transport_terminal is False
+    assert execution.quarantined is False
+
+
+def test_execution_is_settled_only_after_cleanup_completed():
+    execution = _execution()
+    execution.phase = ExecutionPhase.TERMINAL
+    execution.transport_terminal = True
+    assert execution.is_settled() is False
+    execution.cleanup_completed = True
+    assert execution.is_settled() is True
+
+
+def test_overlaps_resources_detects_shared_resources():
+    execution = _execution(resources=("HEAD", "LEFT_ARM"))
+    assert execution.overlaps_resources(("LEFT_ARM", "RIGHT_ARM")) is True
+    assert execution.overlaps_resources(("RIGHT_ARM", "BASE")) is False
+
+
+def test_resources_are_stored_as_a_frozenset():
+    execution = _execution(resources=["HEAD", "HEAD", "LEFT_ARM"])
+    assert execution.resources == frozenset({"HEAD", "LEFT_ARM"})

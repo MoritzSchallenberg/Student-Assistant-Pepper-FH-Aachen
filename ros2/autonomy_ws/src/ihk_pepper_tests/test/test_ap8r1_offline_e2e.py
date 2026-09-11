@@ -114,6 +114,7 @@ def test_scenario_c_emergency_stop_during_gesture_interrupts_without_restore_and
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
         ],
+        "max_duration_s": 5.0,
     }
     with open(tmp_path / "live_wave_breathing.yaml", "w") as f:
         yaml.safe_dump(data, f)
@@ -229,14 +230,20 @@ def test_scenario_f_missing_collision_backend_is_inconclusive_offline_ok_product
     assert result_prod.success is False
     assert "inconclusive" in result_prod.error_message
 
-    # Gegenprobe: mit einem injizierten 'pass'-Backend (simuliert ein
-    # spaeteres echtes Kollisions-Backend) darf production laufen.
+    # Gegenprobe: NUR mit einem Backend, das TATSAECHLICH
+    # collision_checked=True liefert, darf production laufen.
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.3): ein reiner
+    # JointAndTimingValidator liefert 'pass' bei collision_checked=false
+    # und ist AUSDRUECKLICH KEIN Kollisionsnachweis -- das Test-Double
+    # unten ist klar als solches benannt/dokumentiert und simuliert
+    # lediglich ein spaeteres, echtes Backend.
+    from test_bridge_node_actuator_arbiter import _TestDoubleFakeCollisionProofBackend
     node_prod_with_proof = _FakeNode(
         _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
     )
     node_prod_with_proof.gesture_safety_validator = TrajectorySafetyValidator(
-        backends=[JointAndTimingValidator()])
+        backends=[JointAndTimingValidator(), _TestDoubleFakeCollisionProofBackend()])
     result_prod_ok = node_prod_with_proof._execute_gesture(_FakeGoalHandle(_gesture_request(name="live_wave")))
     assert result_prod_ok.success is True
 

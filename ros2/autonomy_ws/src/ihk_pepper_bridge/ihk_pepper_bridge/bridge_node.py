@@ -22,8 +22,8 @@ from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
-from ihk_pepper_interfaces.msg import ActuatorLease, SafetyState, SystemHealth
-from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
+from ihk_pepper_interfaces.msg import ActuatorLease, InteractionCommand, SafetyState, SystemHealth
+from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
 
 from ihk_pepper_interaction.actuator_arbiter import HEAD, PRIORITY_ATTRACT, PRIORITY_DIALOGUE
 from ihk_pepper_interaction.interaction_state import InteractionState
@@ -31,7 +31,7 @@ from ihk_pepper_interaction.resource_derivation import resources_for_gesture, re
 
 from .pepper_client import PepperInterruptChannel, ThreadSafePepperClient
 from .gesture_catalog import GestureCatalog, GestureValidationError
-from .gesture_cancellation import CancelSignal, GestureCancelReason
+from .gesture_cancellation import ActiveGestureExecution, CancelSignal, ExecutionPhase, GestureCancelReason
 from .gesture_execution_policy import (
     HARDWARE_CAPABLE_PROFILES,
     VALID_EXECUTION_PROFILES,
@@ -66,15 +66,25 @@ SAY_POLL_INTERVAL_S = 0.1
 SAY_CANCEL_GRACE_S = 1.0
 GESTURE_POLL_INTERVAL_S = 0.1
 GESTURE_CANCEL_GRACE_S = 2.0
-# Entwicklungsauftrag 04-B, AP8-R1.3 (bestaetigter Fund 3.3): max_duration_s
-# begrenzte bisher nur die KOMPILIERTE Solltrajektorie -- eine tatsaechlich
-# haengende Transportausfuehrung (z.B. eine SSH-Verbindung, die nie
-# zurueckkehrt) wurde dadurch NICHT zuverlaessig abgebrochen. Der
-# Laufzeit-Watchdog nutzt die bereits POLICY-validierte expected_duration_s
-# (aus der zweiten Autorisierungspruefung) plus diese Marge als HARTEN,
-# absoluten Zeitdeckel -- kein neuer, unbelegter Grenzwert, nur ein
-# dokumentierter Sicherheitsaufschlag auf eine bereits gepruefte Dauer.
-GESTURE_WATCHDOG_TIMEOUT_MARGIN_S = 5.0
+# Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7 (bestaetigter Fund 2.7,
+# ersetzt die AP8-R1.3-Fassung mit fester +5.0s-Marge): 'max_duration_s
+# ist kein tatsaechlicher Laufzeitdeckel' -- eine Geste mit
+# expected_duration_s=2.0 und max_duration_s=2.0 bekam vorher eine reale
+# Deadline von 7.0s. Der harte Bewegungsdeckel ist jetzt EXAKT
+# transport_started_at + gesture.max_duration_s (keine zusaetzliche
+# Marge ausser der unvermeidlichen Poll-Granularitaet). Waehrend der
+# VORBEREITUNG (Snapshot/Kompilieren/Validieren, VOR transport.start())
+# gilt eine SEPARATE, eigens benannte Grenze -- absichtlich groSZzuegig
+# (reine Software-Vorbereitung, kein Bewegungsdeckel), damit sie den
+# eigentlichen Bewegungsdeckel nicht stillschweigend erweitert.
+GESTURE_PREPARATION_TIMEOUT_S = 10.0
+# Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.10 (bestaetigter Fund 2.9):
+# wie lange main() beim Herunterfahren HOECHSTENS auf ein bestaetigtes
+# Transport-Ende wartet, bevor unbestaetigte Ausfuehrungen sichtbar als
+# quarantaeniert gemeldet und der Node dennoch abgebaut wird (kein
+# unbegrenztes Haengenbleiben beim Shutdown).
+NODE_SHUTDOWN_WAIT_TIMEOUT_S = 5.0
+NODE_SHUTDOWN_POLL_INTERVAL_S = 0.1
 OWNER_ID = "pepper_bridge"
 
 # Entwicklungsauftrag 04-B, AP8-R1.3: uebersetzt einen GestureExecutionPolicy-
@@ -187,6 +197,13 @@ class PepperBridgeNode(Node):
             AcquireActuatorLease, "/actuator_arbiter/acquire", callback_group=cb_group)
         self.release_lease_client = self.create_client(
             ReleaseActuatorLease, "/actuator_arbiter/release", callback_group=cb_group)
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3: eine lange
+        # laufende Geste darf nicht allein auf die urspruengliche
+        # Arbiter-TTL vertrauen -- _renew_lease() haelt sie waehrend der
+        # Ausfuehrung rechtzeitig am Leben (siehe Watchdog-Schleife in
+        # _execute_gesture()).
+        self.renew_lease_client = self.create_client(
+            RenewActuatorLease, "/actuator_arbiter/renew", callback_group=cb_group)
 
         self._say_active = threading.Event()
 
@@ -291,8 +308,33 @@ class PepperBridgeNode(Node):
         self._active_gesture_cancel_events: dict = {}
         self._revoked_lease_ids: set = set()
         self._quarantined_lease_ids: set = set()
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1 ('Ein
+        # Ausfuehrungsdatensatz pro Ziel'): _active_executions ist die
+        # REICHHALTIGERE Ergaenzung zu den drei obigen, historisch
+        # gewachsenen Strukturen (die aus Ruecwaertskompatibilitaet zu
+        # bestehenden Tests unveraendert weitergefuehrt werden) --
+        # bindet zusaetzlich goal_id/resources/phase/quarantined/
+        # cleanup_completed an dieselbe lease_id, alles unter demselben
+        # Lock. Ermoeglicht die lokale Ressourcenquarantaene (Abschnitt
+        # 3.3) und die goal_id-Bindung von Revocations (Abschnitt 3.8).
+        self._active_executions: dict = {}
         self.create_subscription(
             ActuatorLease, "/actuator_arbiter/lease_revoked", self._on_lease_revoked, 10)
+
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8 (bestaetigter Fund
+        # 2.8/2.9: 'Codewort "Eisenbahn" als CODEWORD_INTERRUPT bis zur
+        # Bridge transportieren'): command_router_node.py veroeffentlicht
+        # den deterministisch erkannten, rollenfreien Befehl
+        # 'interrupt_and_look' (Codewort "Eisenbahn", Auftrag Abschnitt 12)
+        # bereits auf /interaction/authorized_command -- bisher hatte KEIN
+        # Konsument diesen Befehl tatsaechlich mit einer laufenden Geste
+        # verbunden. _on_authorized_command() bindet ihn jetzt an
+        # GestureCancelReason.CODEWORD_INTERRUPT (NIEMALS
+        # NORMAL_USER_CANCEL -- verbietet automatisch jedes
+        # on_cancel='restore', siehe restore_allowed()).
+        self.create_subscription(
+            InteractionCommand, "/interaction/authorized_command",
+            self._on_authorized_command, 10, callback_group=cb_group)
 
         self.say_action_server = ActionServer(
             self, Say, "say",
@@ -400,6 +442,33 @@ class PepperBridgeNode(Node):
         deadline = time.time() + 1.5
         while not future.done() and time.time() < deadline:
             time.sleep(0.01)
+
+    def _renew_lease(self, lease_id: str, ttl_s: float) -> bool:
+        """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 2.2/3.3
+        (bestaetigter Fund): eine lange laufende Geste darf nicht allein
+        auf die urspruengliche Arbiter-TTL vertrauen (der Arbiter entfernt
+        abgelaufene Leases automatisch) -- die Watchdog-Schleife in
+        _execute_gesture() ruft dies periodisch VOR Ablauf der TTL auf.
+        Fail-closed: ein nicht erreichbarer Arbiter/eine Zeitueberschreitung/
+        ein explizites success=False gelten ALLE als Fehlschlag -- der
+        Aufrufer bricht das Ziel dann ab (behaelt aber die LOKALE
+        Ressourcenquarantaene, siehe _local_resource_conflict())."""
+        if not self.renew_lease_client.wait_for_service(timeout_sec=1.0):
+            return False
+        req = RenewActuatorLease.Request()
+        req.lease_id = lease_id
+        req.ttl_s = ttl_s
+        future = self.renew_lease_client.call_async(req)
+        deadline = time.time() + 1.5
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.01)
+        if not future.done():
+            return False
+        try:
+            response = future.result()
+        except Exception:
+            return False
+        return bool(response.success)
 
     @staticmethod
     def _goal_id_str(goal_handle) -> str:
@@ -574,7 +643,7 @@ class PepperBridgeNode(Node):
         return GestureCancelReason.SAFETY_INVALID
 
     def _on_lease_revoked(self, msg: ActuatorLease):
-        """Entwicklungsauftrag 04-B, AP8.3/AP8-R1.7: reagiert
+        """Entwicklungsauftrag 04-B, AP8.3/AP8-R1.7/AP8-R2.8: reagiert
         AUSSCHLIESSLICH auf den eigenen, aktiven Lease -- ein Widerruf fuer
         ein FREMDES Ziel (anderer owner_id) oder ein bereits
         abgeschlossenes eigenes Ziel (lease_id nicht mehr in
@@ -584,10 +653,28 @@ class PepperBridgeNode(Node):
         damit eine Registrierung in _execute_gesture() (anderer Thread)
         NIE zwischen 'lease_id vormerken' und 'cancel_signal lesen'
         eingeschoben werden kann (bestaetigter Fund 3.8, 'Lease-
-        Revocation-Race')."""
+        Revocation-Race').
+
+        AP8-R2 (bestaetigter Fund 2.6): zusaetzlich an goal_id gebunden,
+        WENN ein Ausfuehrungsdatensatz mit bekannter goal_id existiert UND
+        die Nachricht selbst eine (nicht-leere) goal_id traegt -- eine
+        Revocation mit abweichender goal_id fuer eine (zufaellig)
+        wiederverwendete/verwechselte lease_id darf dieses Ziel NICHT
+        beeinflussen. Existiert noch KEIN Datensatz (Revocation vor
+        Registrierung, siehe AP8-R1.7), bleibt das bisherige, rein
+        lease_id-basierte Verhalten bestehen."""
         if msg.owner_id != OWNER_ID:
             return
         with self._active_execution_lock:
+            execution = self._active_executions.get(msg.lease_id)
+            if execution is not None and msg.goal_id and execution.goal_id \
+                    and msg.goal_id != execution.goal_id:
+                self.get_logger().warn(
+                    f"Lease-Widerruf fuer '{msg.lease_id}' mit abweichender goal_id "
+                    f"('{msg.goal_id}' != '{execution.goal_id}') IGNORIERT -- betrifft "
+                    "nicht das aktive Ziel."
+                )
+                return
             self._revoked_lease_ids.add(msg.lease_id)
             cancel_signal = self._active_gesture_cancel_events.get(msg.lease_id)
         if cancel_signal is not None:
@@ -597,23 +684,111 @@ class PepperBridgeNode(Node):
             )
             cancel_signal.set(GestureCancelReason.LEASE_REVOKED)
 
-    def _register_active_execution(self, lease_id: str, cancel_signal: CancelSignal) -> bool:
+    def _on_authorized_command(self, msg: InteractionCommand) -> None:
+        """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8 (bestaetigter
+        Fund 2.8/2.9): bindet das Codewort "Eisenbahn"
+        (command_router_node.py normalisiert es deterministisch zu
+        'interrupt_and_look', siehe codeword_config.py) an
+        GestureCancelReason.CODEWORD_INTERRUPT -- NIEMALS an
+        NORMAL_USER_CANCEL, damit restore_allowed() ein Restore nach
+        einer Codewort-Praemption unbedingt verweigert (siehe
+        gesture_cancellation.py).
+
+        'interrupt_and_look' ist laut InteractionCommand.msg ein
+        rollenfreier Befehl (authorization_status=='not_required', keine
+        sekundaere Bestaetigung noetig) -- 'granted' wird zusaetzlich
+        akzeptiert, falls sich das kuenftig aendert. 'denied'/
+        'pending_confirmation' loesen dagegen bewusst NICHTS aus (eine
+        noch offene/abgelehnte Autorisierung darf keine Bewegung
+        beeinflussen)."""
+        if msg.command != "interrupt_and_look":
+            return
+        if msg.authorization_status not in ("granted", "not_required"):
+            return
+        with self._active_execution_lock:
+            pending_lease_ids = [
+                lease_id for lease_id, execution in self._active_executions.items()
+                if not execution.cleanup_completed
+            ]
+            for lease_id in pending_lease_ids:
+                self._active_executions[lease_id].cancel_signal.set(
+                    GestureCancelReason.CODEWORD_INTERRUPT)
+        if pending_lease_ids:
+            self.get_logger().warn(
+                f"Codewort-Unterbrechung ('{msg.command}', event_id={msg.event_id}) -- "
+                f"{len(pending_lease_ids)} laufende Geste(n) werden abgebrochen "
+                "(CODEWORD_INTERRUPT, kein Restore)."
+            )
+            try:
+                self.interrupt_channel.stop_motion()
+            except Exception:
+                self.get_logger().warn(
+                    "_on_authorized_command(): Best-Effort-Interrupt ueber den "
+                    "Interrupt-Kanal fehlgeschlagen.", exc_info=True)
+
+    def _register_active_execution(self, lease_id: str, cancel_signal: CancelSignal,
+                                   goal_id: str = "", resources=frozenset(),
+                                   gesture_name: str = "") -> bool:
         """Registriert cancel_signal fuer lease_id ATOMAR (zusammen mit
         _on_lease_revoked() unter demselben Lock) und meldet zurueck, ob
         die Lease zu DIESEM Zeitpunkt bereits (frueher) widerrufen wurde
-        (Entwicklungsauftrag 04-B, AP8-R1.7)."""
+        (Entwicklungsauftrag 04-B, AP8-R1.7). Legt zusaetzlich einen
+        vollstaendigen ActiveGestureExecution-Datensatz an (AP8-R2,
+        Abschnitt 3.1) fuer die goal_id-Bindung und die lokale
+        Ressourcenquarantaene."""
         with self._active_execution_lock:
             self._active_gesture_cancel_events[lease_id] = cancel_signal
+            execution = ActiveGestureExecution(
+                lease_id=lease_id, goal_id=goal_id, owner_id=OWNER_ID,
+                resources=resources, gesture_name=gesture_name, cancel_signal=cancel_signal,
+            )
+            execution.phase = ExecutionPhase.READY
+            self._active_executions[lease_id] = execution
             return lease_id in self._revoked_lease_ids
 
     def _is_lease_revoked(self, lease_id: str) -> bool:
         with self._active_execution_lock:
             return lease_id in self._revoked_lease_ids
 
+    def _get_active_execution(self, lease_id: str):
+        with self._active_execution_lock:
+            return self._active_executions.get(lease_id)
+
+    def _local_resource_conflict(self, resources) -> str:
+        """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3 (bestaetigter
+        Fund 2.2): 'Die Lease-Quarantaene laeuft ab' -- _quarantined_lease_ids
+        verhinderte bisher NUR lokal ein Restore, nicht die Annahme eines
+        ZWEITEN, ueberlappenden Ziels, sobald die urspruengliche
+        Arbiter-TTL abgelaufen ist (der Arbiter entfernt abgelaufene
+        Leases automatisch und koennte die Ressource einem neuen Ziel
+        gewaehren). Diese Pruefung laeuft VOR jedem Lease-Erwerb, komplett
+        UNABHAENGIG vom (ggf. neu gestarteten/nicht erreichbaren) Arbiter
+        -- ein Ausfuehrungsdatensatz, dessen Cleanup noch nicht
+        abgeschlossen ist, blockiert ein neues Ziel auf denselben
+        Ressourcen LOKAL, egal was der Arbiter sagen wuerde. Gibt bei
+        einem Konflikt eine menschenlesbare Begruendung zurueck (sonst
+        einen leeren String)."""
+        with self._active_execution_lock:
+            for execution in self._active_executions.values():
+                if execution.cleanup_completed:
+                    continue
+                if execution.overlaps_resources(resources):
+                    return (
+                        f"lokal blockiert durch aktive/quarantaenierte Ausfuehrung "
+                        f"'{execution.gesture_name}' (lease_id={execution.lease_id}, "
+                        f"phase={execution.phase})"
+                    )
+        return ""
+
     def _unregister_active_execution(self, lease_id: str) -> None:
         with self._active_execution_lock:
             self._active_gesture_cancel_events.pop(lease_id, None)
             self._revoked_lease_ids.discard(lease_id)
+            execution = self._active_executions.get(lease_id)
+            if execution is not None:
+                execution.phase = ExecutionPhase.CLEANED
+                execution.cleanup_completed = True
+                self._active_executions.pop(lease_id, None)
 
     def _current_runtime_context(self, lease_revoked: bool = False) -> RuntimeContext:
         """Entwicklungsauftrag 04-B, AP8.1/AP8.2: baut den Laufzeitkontext
@@ -647,23 +822,30 @@ class PepperBridgeNode(Node):
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
-    def _watchdog_check(self, gesture, cancel_signal: CancelSignal, execution_profile: str,
-                        effective_speed_scale: float, hard_deadline_monotonic_s: float,
-                        lease_id: str) -> None:
-        """Entwicklungsauftrag 04-B, AP8-R1.3 (bestaetigter Fund 3.3):
-        periodisch WAEHREND einer laufenden Gestenausfuehrung aufgerufen
-        (siehe Polling-Schleife in _execute_gesture()) -- max_duration_s
-        begrenzte bisher nur die KOMPILIERTE Solltrajektorie, nicht die
-        tatsaechliche Laufzeit, und Safety-/Nav2-/Mapping-/Interaktions-/
-        Erreichbarkeitszustand wurden nur VOR Transportstart geprueft, nie
-        waehrend der laufenden Bewegung erneut. Wiederverwendet
-        GestureExecutionPolicy.authorize() -- KEINE zweite, abweichende
-        Sicherheitslogik. Setzt bei einer Verletzung EINMALIG (CancelSignal
-        ist idempotent, ein spaeterer Aufruf aendert den Grund nicht mehr)
-        einen strukturierten Cancel-Grund; das eigentliche Abbrechen
-        (Interrupt-Kanal, transport.cancel()) uebernimmt der bereits
-        bestehende cancel_event-Beobachtungspfad in
-        gesture_catalog.py::_play_v2()."""
+    def _watchdog_check(self, gesture, execution: ActiveGestureExecution, execution_profile: str,
+                        effective_speed_scale: float, lease_ttl_s: float) -> None:
+        """Entwicklungsauftrag 04-B, AP8-R1.3/AP8-R2 (bestaetigte Funde
+        3.3/2.7/2.2): periodisch WAEHREND einer laufenden Gestenausfuehrung
+        aufgerufen (siehe Polling-Schleife in _execute_gesture()).
+        Wiederverwendet GestureExecutionPolicy.authorize() -- KEINE zweite,
+        abweichende Sicherheitslogik. Setzt bei einer Verletzung EINMALIG
+        (CancelSignal ist idempotent) einen strukturierten Cancel-Grund;
+        das eigentliche Abbrechen uebernimmt der bereits bestehende
+        cancel_event-Beobachtungspfad in gesture_catalog.py::_play_v2().
+
+        AP8-R2, Abschnitt 3.7: der harte Bewegungsdeckel ist EXAKT
+        execution.transport_started_monotonic_s + gesture.max_duration_s
+        (keine zusaetzliche Marge) -- VOR Transportstart (Snapshot/
+        Kompilieren/Validieren) gilt stattdessen die separate, eigens
+        benannte GESTURE_PREPARATION_TIMEOUT_S.
+
+        AP8-R2, Abschnitt 3.3: erneuert die Lease rechtzeitig
+        (lease_ttl_s * 0.5) ueber den Arbiter, statt sich auf die
+        urspruengliche TTL zu verlassen -- schlaegt die Erneuerung fehl,
+        wird das Ziel abgebrochen (die LOKALE Ressourcenquarantaene ueber
+        _active_executions bleibt davon unberuehrt, siehe
+        _local_resource_conflict())."""
+        cancel_signal = execution.cancel_signal
         if cancel_signal.is_set():
             return
         # Entwicklungsauftrag 04-B, AP8-R1.3: node-lokales Flag statt
@@ -675,12 +857,44 @@ class PepperBridgeNode(Node):
         if self._shutting_down:
             cancel_signal.set(GestureCancelReason.NODE_SHUTDOWN)
             return
-        if time.monotonic() > hard_deadline_monotonic_s:
+
+        now = time.monotonic()
+        if execution.transport_started_monotonic_s is None:
+            # Noch in der Vorbereitungsphase (PREPARING/READY/STARTING) --
+            # SEPARATER, dokumentierter Vorbereitungsdeckel, NICHT der
+            # Bewegungsdeckel selbst (Auftrag: 'darf nicht stillschweigend
+            # den Bewegungsdeckel erweitern').
+            if now - execution.prep_started_monotonic_s > GESTURE_PREPARATION_TIMEOUT_S:
+                cancel_signal.set(GestureCancelReason.TIMEOUT)
+            return
+        # Echter, harter Bewegungsdeckel -- EXAKT max_duration_s, keine
+        # zusaetzliche Marge (bestaetigter Fund 2.7). Die Policy hat
+        # bereits sichergestellt, dass gesture.max_duration_s fuer
+        # hardwarefaehige Profile endlich/positiv ist (siehe
+        # gesture_execution_policy.py::authorize()).
+        if now > execution.transport_started_monotonic_s + gesture.max_duration_s:
             cancel_signal.set(GestureCancelReason.TIMEOUT)
             return
-        if self._is_lease_revoked(lease_id):
+
+        if self._is_lease_revoked(execution.lease_id):
             cancel_signal.set(GestureCancelReason.LEASE_REVOKED)
             return
+
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3 (bestaetigter
+        # Fund 2.2): Lease rechtzeitig erneuern, statt sich auf die
+        # urspruengliche TTL zu verlassen (der Arbiter entfernt
+        # abgelaufene Leases automatisch).
+        if now - execution.last_renewed_monotonic_s > lease_ttl_s * 0.5:
+            execution.last_renewed_monotonic_s = now
+            if not self._renew_lease(execution.lease_id, lease_ttl_s):
+                self.get_logger().error(
+                    f"PlayGesture '{execution.gesture_name}': Lease-Erneuerung fuer "
+                    f"'{execution.lease_id}' fehlgeschlagen -- Ziel wird abgebrochen (lokale "
+                    "Ressourcenquarantaene bleibt unabhaengig davon bestehen)."
+                )
+                cancel_signal.set(GestureCancelReason.LEASE_REVOKED)
+                return
+
         if execution_profile not in HARDWARE_CAPABLE_PROFILES:
             # Offline-Profile beruehren strukturell nie Hardware
             # (effective_dry_run erzwingt das unabhaengig hiervon) --
@@ -811,15 +1025,31 @@ class PepperBridgeNode(Node):
             return result
 
         goal_id = self._goal_id_str(goal_handle)
+
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.3 (bestaetigter
+        # Fund 2.2): eine lokale Ressourcenquarantaene, die UNABHAENGIG
+        # vom (ggf. neu gestarteten/nicht erreichbaren) Arbiter gilt --
+        # ein zweites Ziel auf denselben Ressourcen bleibt blockiert,
+        # solange eine fruehere Ausfuehrung nicht NACHWEISLICH beendet
+        # (cleanup_completed) ist, selbst wenn die urspruengliche
+        # Arbiter-TTL laengst abgelaufen waere.
+        local_conflict = self._local_resource_conflict(resources)
+        if local_conflict:
+            self.get_logger().warn(f"PlayGesture '{name}' abgelehnt (lokale Ressourcenquarantaene): {local_conflict}")
+            result.success = False
+            result.error_message = f"Ressourcenkonflikt: {local_conflict}"
+            goal_handle.abort()
+            return result
+
         # Entwicklungsauftrag 04-B, AP8-R1.1 (bestaetigter Fund 3.1): die
         # Lease-TTL nutzt DENSELBEN effective_speed_scale wie die erste
         # Autorisierungsentscheidung -- kein unabhaengig berechneter Wert
         # mehr (vorher: "goal_handle.request.speed_scale or 1.0", wodurch
         # die Policy z.B. mit 0.6 rechnen konnte, waehrend der Transport
         # tatsaechlich 1.0 bekam).
+        lease_ttl_s = max(decision.expected_duration_s + 10.0, 15.0)
         granted, lease_id, reason = self._acquire_lease(
-            resources, purpose=f"play_gesture:{name}", goal_id=goal_id,
-            ttl_s=max(decision.expected_duration_s + 10.0, 15.0),
+            resources, purpose=f"play_gesture:{name}", goal_id=goal_id, ttl_s=lease_ttl_s,
         )
         if not granted:
             self.get_logger().warn(f"PlayGesture '{name}' abgelehnt (Aktuator-Arbiter): {reason}")
@@ -834,9 +1064,14 @@ class PepperBridgeNode(Node):
         # -- schliesst das Zeitfenster, in dem ein Widerruf zwischen
         # Erwerb und Registrierung sonst unbemerkt verpuffen konnte
         # (die Lease-ID wurde zwar in _revoked_lease_ids gespeichert,
-        # aber vor dem Transportstart nie erneut geprueft).
+        # aber vor dem Transportstart nie erneut geprueft). AP8-R2,
+        # Abschnitt 3.1: zusaetzlich ein vollstaendiger
+        # ActiveGestureExecution-Datensatz (goal_id/resources/
+        # gesture_name) fuer die goal_id-Bindung und die lokale
+        # Ressourcenquarantaene.
         cancel_signal = CancelSignal()
-        already_revoked = self._register_active_execution(lease_id, cancel_signal)
+        already_revoked = self._register_active_execution(
+            lease_id, cancel_signal, goal_id=goal_id, resources=resources, gesture_name=name)
         if already_revoked:
             cancel_signal.set(GestureCancelReason.LEASE_REVOKED)
 
@@ -904,6 +1139,11 @@ class PepperBridgeNode(Node):
         # Ausfuehrung (auch waehrend eines fehlgeschlagenen Versuchs --
         # es ist erst "vorbei", wenn play() zurueckkehrt).
         self.gesture_in_progress_pub.publish(Bool(data=True))
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1/3.7: derselbe
+        # ActiveGestureExecution-Datensatz, der bereits registriert wurde
+        # -- traegt den harten Bewegungsdeckel (transport_started_monotonic_s)
+        # und die Lease-Erneuerungszeit fuer den Watchdog unten.
+        execution = self._get_active_execution(lease_id)
         try:
             done_event = threading.Event()
             outcome = {"error": None}
@@ -939,6 +1179,16 @@ class PepperBridgeNode(Node):
                             fail_closed_value=False,
                         )
 
+                    def _on_transport_started():
+                        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7:
+                        # GENAU jetzt beginnt die Bewegung -- der harte
+                        # Deckel wird ab HIER gemessen, nicht ab
+                        # Threadstart (das wuerde Snapshot-/Kompilier-/
+                        # Validierungszeit mit einschliessen).
+                        if execution is not None:
+                            execution.transport_started_monotonic_s = time.monotonic()
+                            execution.phase = ExecutionPhase.RUNNING
+
                     self.catalog.play(
                         self.pepper, name, effective_speed_scale, feedback_cb,
                         dry_run=effective_dry_run,
@@ -953,6 +1203,7 @@ class PepperBridgeNode(Node):
                         # ausdruecklich ausfuehren/anzeigen.
                         require_collision_proof=(execution_profile == PROFILE_PRODUCTION),
                         safety_validator=self.gesture_safety_validator,
+                        on_transport_started_fn=_on_transport_started,
                     )
                 except Exception as e:  # noqa: BLE001
                     outcome["error"] = e
@@ -962,20 +1213,26 @@ class PepperBridgeNode(Node):
             thread = threading.Thread(target=_run, daemon=True)
             thread.start()
 
-            # Entwicklungsauftrag 04-B, AP8-R1.3: harter, absoluter
-            # Zeitdeckel fuer die TATSAECHLICHE Ausfuehrung -- abgeleitet
-            # aus der bereits policy-validierten expected_duration_s
-            # (second_decision), nicht aus einem neu erfundenen Wert.
-            hard_deadline_monotonic_s = (
-                time.monotonic() + second_decision.expected_duration_s + GESTURE_WATCHDOG_TIMEOUT_MARGIN_S
-            )
             while not done_event.wait(timeout=GESTURE_POLL_INTERVAL_S):
                 if goal_handle.is_cancel_requested:
-                    cancel_signal.set(GestureCancelReason.NORMAL_USER_CANCEL)
-                self._watchdog_check(
-                    gesture, cancel_signal, execution_profile, effective_speed_scale,
-                    hard_deadline_monotonic_s, lease_id,
-                )
+                    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.8
+                    # (bestaetigter Fund 2.8): ein allgemeines ROS-Action-
+                    # Cancel beweist NICHT, dass ein normaler Benutzer
+                    # abgebrochen hat (BT-Praemption, Codewort-Weiterleitung
+                    # ueber ein anderes Ziel usw. nutzen DIESELBE
+                    # cancel_goal_async()-Mechanik) -- ein ungebundenes
+                    # Action-Cancel gilt deshalb fail-closed als PREEMPTED
+                    # (verbietet Restore UNBEDINGT, siehe
+                    # gesture_cancellation.py::restore_allowed()), NICHT
+                    # mehr automatisch als NORMAL_USER_CANCEL. Ein echter
+                    # NORMAL_USER_CANCEL braeuchte einen expliziten, an
+                    # goal_id gebundenen Pfad, den es auf Interface-Ebene
+                    # noch nicht gibt (siehe docs/GESTURE_CANCELLATION_AND_RESTORE.md).
+                    cancel_signal.set(GestureCancelReason.PREEMPTED)
+                if execution is not None:
+                    self._watchdog_check(
+                        gesture, execution, execution_profile, effective_speed_scale, lease_ttl_s,
+                    )
                 if cancel_signal.is_set():
                     self.get_logger().info(
                         f"PlayGesture '{name}' wird abgebrochen (Grund: {cancel_signal.reason})."
@@ -1017,13 +1274,15 @@ class PepperBridgeNode(Node):
                 # Entwicklungsauftrag 04-B, AP8-R1.4: EINE gemeinsame
                 # Auswertung fuer JEDEN strukturierten Abbruchgrund (ROS-
                 # Cancel, Lease-Widerruf, Watchdog-Ausloeser) -- NIE als
-                # Erfolg werten. goal_handle.canceled() nur fuer den
-                # normalen Nutzerabbruch (ROS2-Konvention), jeder andere
-                # Grund ist ein abort() mit dem strukturierten Grund als
-                # Fehlermeldung.
+                # Erfolg werten. goal_handle.canceled() (ROS2-Konvention)
+                # GENAU DANN, wenn ueber die Action selbst ein Cancel
+                # angefordert wurde (unabhaengig vom strukturierten
+                # Grund, der jetzt fuer ein ungebundenes Action-Cancel
+                # PREEMPTED ist, siehe AP8-R2 Abschnitt 3.8 -- NICHT mehr
+                # automatisch NORMAL_USER_CANCEL).
                 result.success = False
                 result.error_message = cancel_signal.reason or "abgebrochen"
-                if cancel_signal.reason == GestureCancelReason.NORMAL_USER_CANCEL:
+                if goal_handle.is_cancel_requested:
                     goal_handle.canceled()
                 else:
                     goal_handle.abort()
@@ -1259,13 +1518,93 @@ class PepperBridgeNode(Node):
         msg.position = [float(yaw), float(pitch)]
         self.joint_states_pub.publish(msg)
 
+    def shutdown_and_wait_for_terminal(self, timeout_s: float = NODE_SHUTDOWN_WAIT_TIMEOUT_S) -> list:
+        """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.10 (bestaetigter
+        Fund 2.9: 'main() schliesst aktuell den Pepper-Client, BEVOR das
+        Shutdown-Flag gesetzt wird'). Erzwingt die im Auftrag verlangte
+        Reihenfolge als EIN Aufruf, den main() VOR node.pepper.close()/
+        node.destroy_node() aufruft:
+
+          1. Shutdown-Zustand atomar setzen (self._shutting_down = True --
+             von _watchdog_check() bereits beobachtet, siehe dort).
+          2. ALLE aktiven CancelSignals auf NODE_SHUTDOWN setzen (unter
+             _active_execution_lock, damit keine Ausfuehrung dazwischen
+             neu registriert werden kann, ohne das Flag zu sehen).
+          3. Best-Effort-Interrupt ueber den Interrupt-Kanal ausloesen
+             (Fehler werden geloggt, nie propagiert -- Best-Effort per
+             Definition).
+          4. Begrenzt auf ein bestaetigtes Transport-Ende warten (Polling
+             auf _active_executions -- jede Ausfuehrung entfernt sich
+             SELBST aus dieser Struktur erst in _unregister_active_
+             execution(), das nur nach echtem Transport-Ende bzw.
+             bestaetigtem Cleanup laeuft, siehe _quarantine_unconfirmed_
+             execution()).
+          5. Nach Ablauf der Frist verbleibende (noch nicht bereinigte)
+             Ausfuehrungen SICHTBAR als quarantaeniert melden (Rueckgabe
+             + Log) -- sie bleiben absichtlich in _active_executions und
+             damit lokal ressourcengesperrt, bis ihr Hintergrund-Thread
+             (der unabhaengig von dieser Methode weiterlaeuft) tatsaechlich
+             endet. KEIN Reset/Entsperren an dieser Stelle.
+
+        Schritt 6 (Node/Verbindungen abbauen) bleibt bewusst AUSSERHALB
+        dieser Methode -- main() ruft node.pepper.close() und
+        node.destroy_node() erst NACH dieser Methode auf."""
+        self._shutting_down = True
+        with self._active_execution_lock:
+            pending_lease_ids = [
+                lease_id for lease_id, execution in self._active_executions.items()
+                if not execution.cleanup_completed
+            ]
+            for lease_id in pending_lease_ids:
+                execution = self._active_executions[lease_id]
+                execution.cancel_signal.set(GestureCancelReason.NODE_SHUTDOWN)
+        if pending_lease_ids:
+            try:
+                self.interrupt_channel.stop_motion()
+            except Exception:
+                self.get_logger().warn(
+                    "shutdown_and_wait_for_terminal(): Best-Effort-Interrupt "
+                    "ueber den Interrupt-Kanal fehlgeschlagen.", exc_info=True)
+        deadline = time.monotonic() + max(0.0, timeout_s)
+        while time.monotonic() < deadline:
+            with self._active_execution_lock:
+                still_pending = [
+                    lease_id for lease_id in pending_lease_ids
+                    if lease_id in self._active_executions
+                    and not self._active_executions[lease_id].cleanup_completed
+                ]
+            if not still_pending:
+                return []
+            time.sleep(NODE_SHUTDOWN_POLL_INTERVAL_S)
+        with self._active_execution_lock:
+            still_pending = [
+                lease_id for lease_id in pending_lease_ids
+                if lease_id in self._active_executions
+                and not self._active_executions[lease_id].cleanup_completed
+            ]
+        if still_pending:
+            self.get_logger().warn(
+                f"shutdown_and_wait_for_terminal(): {len(still_pending)} Ausfuehrung(en) "
+                f"ohne bestaetigtes Transport-Ende innerhalb {timeout_s}s -- bleiben "
+                f"QUARANTAENIERT (lease_ids={still_pending}), Node wird dennoch abgebaut."
+            )
+        return still_pending
+
     def destroy_node(self):
         """Entwicklungsauftrag 04-B, AP8-R1.3: setzt das node-lokale
         Shutdown-Flag VOR dem eigentlichen Zerstoeren -- der
         Laufzeit-Watchdog einer noch laufenden Gestenausfuehrung
         (_watchdog_check()) beobachtet dieses Flag und bricht mit
         GestureCancelReason.NODE_SHUTDOWN ab, statt unbemerkt
-        weiterzulaufen, waehrend der Node bereits abgebaut wird."""
+        weiterzulaufen, waehrend der Node bereits abgebaut wird.
+
+        Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.10: die vollstaendige
+        Shutdown-Reihenfolge (Cancel-Signale setzen, Interrupt ausloesen,
+        auf Transport-Ende warten) laeuft in shutdown_and_wait_for_terminal(),
+        die main() VOR destroy_node() aufruft -- dieses Flag hier bleibt
+        zusaetzlich als letzte Absicherung bestehen, falls destroy_node()
+        (z.B. in einem Test) ohne vorherigen shutdown_and_wait_for_terminal()-
+        Aufruf erreicht wird."""
         self._shutting_down = True
         super().destroy_node()
 
@@ -1281,6 +1620,15 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.10 (bestaetigter
+        # Fund 2.9): VORHER wurde node.pepper.close() aufgerufen, BEVOR
+        # das Shutdown-Flag gesetzt/aktive Ausfuehrungen abgebrochen
+        # wurden -- ein noch laufender Hintergrund-Thread haette dann auf
+        # eine bereits geschlossene Verbindung zugegriffen. Jetzt: Cancel-
+        # Signale setzen + Interrupt ausloesen + begrenzt auf bestaetigtes
+        # Transport-Ende warten, ERST DANACH die Pepper-Verbindung/den
+        # Node abbauen.
+        node.shutdown_and_wait_for_terminal()
         node.pepper.close()
         node.destroy_node()
         rclpy.shutdown()

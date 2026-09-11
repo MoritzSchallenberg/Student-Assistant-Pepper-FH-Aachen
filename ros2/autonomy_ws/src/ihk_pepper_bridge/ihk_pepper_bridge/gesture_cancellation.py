@@ -18,6 +18,7 @@ is_set() lesen, unveraendert funktionieren.
 from __future__ import annotations
 
 import threading
+import time
 from typing import Optional
 
 
@@ -151,3 +152,56 @@ def breathing_may_reactivate(reason: Optional[str], safety_ok_now: bool) -> bool
     if reason in _BREATHING_NEVER_REACTIVATES_REASONS:
         return False
     return bool(safety_ok_now)
+
+
+class ExecutionPhase:
+    """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1 ('Ein
+    Ausfuehrungsdatensatz pro Ziel'). Keine echte Enum-Klasse (gleiches
+    Muster wie GestureCancelReason/TransportStatus) -- einfache
+    String-Konstanten."""
+
+    PREPARING = "preparing"
+    READY = "ready"
+    STARTING = "starting"
+    RUNNING = "running"
+    CANCEL_PENDING = "cancel_pending"
+    QUARANTINED = "quarantined"
+    TERMINAL = "terminal"
+    CLEANED = "cleaned"
+
+
+class ActiveGestureExecution:
+    """Ein Ausfuehrungsdatensatz pro aktivem PlayGesture-Ziel
+    (Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.1) -- ersetzt/fasst die
+    zuvor verstreuten losen Strukturen (_active_gesture_cancel_events/
+    _revoked_lease_ids/_quarantined_lease_ids in bridge_node.py)
+    zusammen. ALLE Feldaenderungen laufen unter
+    PepperBridgeNode._active_execution_lock (siehe dort) -- diese Klasse
+    selbst erzwingt keine Nebenlaeufigkeitssicherheit, sie ist reiner
+    Datentraeger."""
+
+    def __init__(self, lease_id: str, goal_id: str, owner_id: str,
+                 resources, gesture_name: str, cancel_signal: "CancelSignal"):
+        self.lease_id = lease_id
+        self.goal_id = goal_id
+        self.owner_id = owner_id
+        self.resources = frozenset(resources)
+        self.gesture_name = gesture_name
+        self.cancel_signal = cancel_signal
+        self.phase = ExecutionPhase.PREPARING
+        self.prep_started_monotonic_s: float = time.monotonic()
+        self.transport_started_monotonic_s: Optional[float] = None
+        self.last_renewed_monotonic_s: float = time.monotonic()
+        self.transport_terminal = False
+        self.quarantined = False
+        self.cleanup_completed = False
+
+    def overlaps_resources(self, other_resources) -> bool:
+        return bool(self.resources & frozenset(other_resources))
+
+    def is_settled(self) -> bool:
+        """True, sobald diese Ausfuehrung KEINE Ressourcen mehr blockiert
+        (Cleanup abgeschlossen) -- fuer die lokale Konfliktpruefung
+        (Abschnitt 3.3) genutzt: nur NICHT abgeschlossene Datensaetze
+        blockieren ein neues, ueberlappendes Ziel."""
+        return self.cleanup_completed

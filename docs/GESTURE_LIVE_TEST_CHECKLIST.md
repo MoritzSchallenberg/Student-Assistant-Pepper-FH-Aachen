@@ -1,8 +1,28 @@
 # Checkliste: Beaufsichtigter Live-Test einer Geste
 
-Stand: 2026-09-04. Entwicklungsauftrag 3, AP14.
+Stand: 2026-09-11. Entwicklungsauftrag 3, AP14; Codepfad seit
+Entwicklungsauftrag 04-B, AP8-R2 (Abschnitt 3.11) geändert.
 Werkzeug: `ros2 run ihk_pepper_bridge gesturectl live-test <name>` (siehe
 `ihk_pepper_bridge/gesturectl.py`).
+
+## Voraussetzung: Bridge läuft bereits im Testprofil
+
+**Neu seit AP8-R2**: `live-test` löst KEINE Bewegung mehr direkt über
+`KinematicCompiler`/`QicliTrajectoryTransport` aus (das umging bisher
+Ausführungsrichtlinie/Validator/Lease/Watchdog/Cancel/Quarantäne
+vollständig). Stattdessen muss die Bridge VORHER separat gestartet sein:
+
+```
+ros2 run ihk_pepper_bridge bridge_node --ros-args \
+  -r __ns:=/pepper_bridge \
+  -p dry_run:=false \
+  -p execution_profile:=supervised_hardware_test
+```
+
+`live-test` spricht danach ausschließlich die reguläre `PlayGesture`-
+Action dieser Bridge an (`/pepper_bridge/play_gesture`, Namespace über
+`--bridge-namespace` änderbar) -- exakt derselbe Codepfad wie im
+Normalbetrieb, mit denselben Sicherungen.
 
 ## Voraussetzungen (vom CLI selbst geprüft/erzwungen)
 
@@ -13,6 +33,10 @@ Werkzeug: `ros2 run ihk_pepper_bridge gesturectl live-test <name>` (siehe
    stellen.
 3. Die Geste wurde vorher erfolgreich mit `gesturectl dry-run <name>`
    geprüft (keine Compiler-/Validierungsfehler).
+4. Die Bridge läuft bereits erreichbar im Profil
+   `supervised_hardware_test` (siehe oben) -- sonst bricht `live-test`
+   NACH der Checkliste, aber VOR jeder Aktion mit einem klaren Fehler ab
+   (`PlayGesture-Action ... nicht erreichbar`).
 
 ## Interaktive Checkliste (vom CLI abgefragt, JEDE Frage muss explizit
 ## mit "ja" beantwortet werden -- jede andere Antwort bricht sofort ab)
@@ -36,10 +60,12 @@ ausgelöst.
 
 1. **Erster Durchgang IMMER mit `speed_scale <= 0.4`** (vom CLI
    erzwungen, nicht überschreibbar außer über `--full-speed`).
-2. Bewegung wird über `QicliTrajectoryTransport` ausgeführt (derselbe
-   Transport wie im Produktivbetrieb, siehe
+2. Bewegung wird über die reguläre `PlayGesture`-Action der laufenden
+   Bridge ausgelöst (derselbe Codepfad -- inkl. Ausführungsrichtlinie,
+   Validator, Aktuator-Lease, Watchdog, Cancel-Behandlung und
+   Ressourcen-Quarantäne -- wie im Produktivbetrieb, siehe
    `docs/GESTURE_TRANSPORT.md`) -- NICHT über einen separaten
-   "Testmodus"-Codepfad.
+   "Testmodus"-Codepfad und NICHT über einen direkten Transport-Aufruf.
 3. Nach erfolgreichem, unauffälligem ersten Durchgang: optional
    `gesturectl live-test <name> --full-speed`, um mit
    `speed_scale_default` (oder einem expliziten `--speed-scale`, max.

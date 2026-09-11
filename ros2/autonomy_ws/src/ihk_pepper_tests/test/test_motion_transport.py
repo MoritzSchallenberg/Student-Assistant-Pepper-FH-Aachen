@@ -259,3 +259,97 @@ def test_cancel_with_interrupt_channel_still_times_out_correctly():
     result = transport.cancel(timeout_s=0.1)
     assert interrupt.stop_motion_calls == 1  # trotzdem sofort versucht
     assert result.cancel_confirmed is False
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.9) ----
+
+class _FailingReturnClient:
+    """play_trajectory() gibt explizit False zurueck, OHNE eine
+    Exception zu werfen -- muss trotzdem als Fehlschlag gewertet
+    werden."""
+
+    def __init__(self):
+        self.calls = []
+
+    def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute=True):
+        self.calls.append(("play_trajectory", joint_names, angle_lists, time_lists))
+        return False
+
+    def get_angle(self, joint):
+        return 0.2
+
+
+def test_false_return_from_play_trajectory_is_treated_as_failed():
+    client = _FailingReturnClient()
+    transport = QicliTrajectoryTransport(client)
+    transport.prepare(_plan())
+    transport.start()
+    status = transport.wait(timeout_s=2.0)
+    assert status == TransportStatus.FAILED
+    assert transport.last_error is not None
+
+
+def test_none_return_from_play_trajectory_still_counts_as_success():
+    # Gegenprobe: die bestehenden Fakes/die reale Implementierung geben
+    # meist None zurueck -- das bleibt weiterhin ein Erfolg, NUR ein
+    # expliziter False-Rueckgabewert zaehlt als Fehlschlag.
+    client = FakeClient()
+    transport = QicliTrajectoryTransport(client)
+    transport.prepare(_plan())
+    transport.start()
+    status = transport.wait(timeout_s=2.0)
+    assert status == TransportStatus.DONE
+
+
+class _FakeInterruptChannelReturningFalse:
+    def __init__(self):
+        self.stop_motion_calls = 0
+
+    def stop_motion(self):
+        self.stop_motion_calls += 1
+        return False
+
+
+def test_cancel_does_not_count_a_false_interrupt_return_as_confirmed_send():
+    client = FakeClient(delay_s=1.0)
+    interrupt = _FakeInterruptChannelReturningFalse()
+    transport = QicliTrajectoryTransport(client, interrupt_channel=interrupt)
+    transport.prepare(_plan())
+    transport.start()
+    result = transport.cancel(timeout_s=0.05)
+    assert interrupt.stop_motion_calls == 1
+    assert "nicht bestaetigt" in result.error_message.lower() or "false" in result.error_message.lower()
+
+
+# ---- wait_for_terminal() ----
+
+def test_wait_for_terminal_true_for_mock_transport_after_start():
+    transport = MockMotionTransport()
+    transport.prepare(_plan())
+    transport.start()
+    assert transport.wait_for_terminal() is True
+
+
+def test_wait_for_terminal_true_for_dry_run_transport_after_start():
+    transport = DryRunMotionTransport()
+    transport.prepare(_plan())
+    transport.start()
+    assert transport.wait_for_terminal() is True
+
+
+def test_wait_for_terminal_waits_for_the_real_background_thread_not_just_cancel():
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.1): cancel()
+    # kann mit cancel_confirmed=False zurueckkehren, waehrend der Thread
+    # noch laeuft -- wait_for_terminal() muss trotzdem irgendwann True
+    # liefern, SOBALD der Thread tatsaechlich endet (kein separates,
+    # unabhaengiges Ereignis).
+    client = FakeClient(delay_s=0.3)
+    transport = QicliTrajectoryTransport(client)
+    transport.prepare(_plan())
+    transport.start()
+    cancel_result = transport.cancel(timeout_s=0.05)
+    assert cancel_result.cancel_confirmed is False
+    # Unbegrenztes Warten liefert True, sobald der Thread (nach den
+    # verbleibenden ~0.25s) tatsaechlich endet.
+    assert transport.wait_for_terminal(timeout_s=2.0) is True
+    assert transport.poll() != TransportStatus.RUNNING

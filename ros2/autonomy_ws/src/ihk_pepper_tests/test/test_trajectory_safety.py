@@ -209,9 +209,14 @@ def test_validate_accepts_a_precompiled_plan_without_recompiling():
         {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
         {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
     ])
-    plan = KinematicCompiler().compile(gesture, start_pose={"HeadYaw": 0.0})
+    # Entwicklungsauftrag 04-B, AP8-R2: dieselbe start_pose muss an
+    # compile() UND validate() uebergeben werden (siehe
+    # gesture_catalog.py::_play_v2 fuer das reale Vorbild) -- die
+    # Startpose ist Teil des Plan-Fingerprints (start_pose_fingerprint).
+    start_pose = {"HeadYaw": 0.0}
+    plan = KinematicCompiler().compile(gesture, start_pose=start_pose)
     validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
-    report = validator.validate(gesture, plan=plan)
+    report = validator.validate(gesture, start_pose=start_pose, plan=plan)
     assert report.verdict == "pass"
     assert report.effective_duration_s == pytest.approx(1.0)
 
@@ -267,6 +272,107 @@ def test_a_plan_with_an_implausible_duration_for_the_given_speed_scale_is_reject
     report = validator.validate(gesture, speed_scale=0.5, plan=plan_at_wrong_scale)
     assert report.verdict == "fail"
     assert any("max_duration_s" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_with_a_mutated_angle_after_compilation_is_rejected():
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.4/3.4,
+    # Auftrags-Testliste #8): gleicher Name, gleiche Gelenkmenge, gleiche
+    # Dauer -- ABER ein Winkel wurde NACH der Kompilierung veraendert.
+    # Der Fingerprint (ueber die tatsaechlichen Feldwerte berechnet) muss
+    # das erkennen.
+    from ihk_pepper_bridge.kinematic_compiler import KinematicCompiler
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    plan = KinematicCompiler().compile(gesture, start_pose={"HeadYaw": 0.0})
+    plan.angle_lists[0][1] = 0.9  # nachtraegliche Manipulation
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, start_pose={"HeadYaw": 0.0}, plan=plan)
+    assert report.verdict == "fail"
+    assert any("Fingerprint" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_with_a_mutated_time_value_after_compilation_is_rejected():
+    from ihk_pepper_bridge.kinematic_compiler import KinematicCompiler
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    plan = KinematicCompiler().compile(gesture, start_pose={"HeadYaw": 0.0})
+    plan.time_lists[0][1] = 0.01  # nachtraeglich viel schneller gemacht
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, start_pose={"HeadYaw": 0.0}, plan=plan)
+    assert report.verdict == "fail"
+    assert any("Fingerprint" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_without_any_fingerprint_is_rejected():
+    # Ein manuell (nicht ueber KinematicCompiler.compile()) konstruierter
+    # Plan hat KEINEN Fingerprint -- gilt als nicht vertrauenswuerdig.
+    from ihk_pepper_bridge.motion_transport import TrajectoryPlan
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    foreign_plan = TrajectoryPlan(
+        joint_names=["HeadYaw"], angle_lists=[[0.0, 0.2]], time_lists=[[0.0, 1.0]],
+        source_gesture_name="test_gesture", max_duration_s=1.0,
+    )
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, plan=foreign_plan)
+    assert report.verdict == "fail"
+    assert any("Fingerprint" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_with_mismatched_list_lengths_is_rejected():
+    from ihk_pepper_bridge.motion_transport import TrajectoryPlan, compute_plan_fingerprint
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    broken_plan = TrajectoryPlan(
+        joint_names=["HeadYaw"], angle_lists=[[0.0, 0.2, 0.3]], time_lists=[[0.0, 1.0]],
+        source_gesture_name="test_gesture", max_duration_s=1.0,
+    )
+    broken_plan.fingerprint = compute_plan_fingerprint(broken_plan)  # "gueltiger" Fingerprint fuer den kaputten Plan
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, plan=broken_plan)
+    assert report.verdict == "fail"
+    assert any("Laenge" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_with_nan_angle_is_rejected():
+    from ihk_pepper_bridge.motion_transport import TrajectoryPlan, compute_plan_fingerprint
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    broken_plan = TrajectoryPlan(
+        joint_names=["HeadYaw"], angle_lists=[[0.0, float("nan")]], time_lists=[[0.0, 1.0]],
+        source_gesture_name="test_gesture", max_duration_s=1.0,
+    )
+    broken_plan.fingerprint = compute_plan_fingerprint(broken_plan)
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, plan=broken_plan)
+    assert report.verdict == "fail"
+    assert any("endlich" in e for e in report.joint_timing_errors)
+
+
+def test_a_plan_with_mismatched_start_pose_is_rejected():
+    # Entwicklungsauftrag 04-B, AP8-R2 ('Startposebindung'): derselbe
+    # Plan, aber gegen eine ANDERE Startpose als beim Kompilieren
+    # validiert.
+    from ihk_pepper_bridge.kinematic_compiler import KinematicCompiler
+    gesture = _gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.1}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2}},
+    ])
+    plan = KinematicCompiler().compile(gesture, start_pose={"HeadYaw": 0.1})
+    validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
+    report = validator.validate(gesture, start_pose={"HeadYaw": 0.3}, plan=plan)
+    assert report.verdict == "fail"
+    assert any("Startpose" in e for e in report.joint_timing_errors)
 
 
 # ---- TrajectorySafetyBackend-Basisklasse ----

@@ -36,6 +36,12 @@ def _v1_gesture(tested_status="draft", **overrides):
     data = {
         "steps": [{"joint": "RShoulderPitch", "angle": 0.5, "duration": 1.0}],
         "tested_status": tested_status,
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: max_duration_s
+        # muss fuer hardwarefaehige Profile gesetzt/endlich/positiv sein
+        # (siehe authorize()) -- ein grosszuegiger Standardwert haelt
+        # bestehende, NICHT auf dieses spezifische Verhalten zielende
+        # Tests unveraendert lauffaehig.
+        "max_duration_s": 10.0,
     }
     data.update(overrides)
     return data
@@ -49,6 +55,7 @@ def _v2_gesture(tested_status="draft", **overrides):
             {"time_from_start_s": 1.0, "joints": {"RShoulderPitch": 0.5}},
         ],
         "tested_status": tested_status,
+        "max_duration_s": 10.0,
     }
     data.update(overrides)
     return data
@@ -159,6 +166,46 @@ def test_max_duration_respected_passes(tmp_path):
     decision = GestureExecutionPolicy().authorize(
         catalog.get("slow"), RuntimeContext(), PROFILE_OFFLINE_MOCK)
     assert decision.allowed is True
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: max_duration_s als echter Deckel ----
+
+def test_missing_max_duration_s_blocks_hardware_profiles(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="live_validated", max_duration_s=None))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), _FRESH_HARDWARE_OK, PROFILE_PRODUCTION)
+    assert decision.allowed is False
+    assert decision.reason_code == "max_duration_s_fehlt_oder_ungueltig"
+
+
+def test_missing_max_duration_s_does_not_block_offline_profiles(tmp_path):
+    # Offline-Profile beruehren nie Hardware -- der harte Laufzeitdeckel
+    # ist dort bedeutungslos (kein echter Transport wird je gestartet).
+    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="draft", max_duration_s=None))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK)
+    assert decision.allowed is True
+
+
+def test_nan_max_duration_s_blocks_hardware_profiles(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="live_validated", max_duration_s=float("nan")))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), _FRESH_HARDWARE_OK, PROFILE_PRODUCTION)
+    assert decision.allowed is False
+    assert decision.reason_code == "max_duration_s_fehlt_oder_ungueltig"
+
+
+def test_zero_max_duration_s_blocks_hardware_profiles(tmp_path):
+    # 0.0 wird bereits von der bestehenden, fuer JEDES Profil geltenden
+    # max_duration_s-Ueberschreitungspruefung abgefangen (expected_duration_s
+    # > 0.0 ist fuer jede reale Geste wahr) -- ein anderer, ebenfalls
+    # korrekter reason_code als bei fehlendem/NaN max_duration_s, aber
+    # dieselbe Ablehnung.
+    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="live_validated", max_duration_s=0.0))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), _FRESH_HARDWARE_OK, PROFILE_PRODUCTION)
+    assert decision.allowed is False
+    assert decision.reason_code == "max_duration_ueberschritten"
 
 
 # ---- NaN/inf speed_scale ----

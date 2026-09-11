@@ -142,6 +142,52 @@ def test_live_test_rejects_v1_gesture(gesture_dir, monkeypatch, capsys):
     assert "nur fuer schema_version 2" in err
 
 
+class _FakeActionClientNeverAvailable:
+    """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.11: live-test muss
+    NACH der Checkliste die echte PlayGesture-Action ansprechen, statt
+    KinematicCompiler/QicliTrajectoryTransport direkt aufzurufen -- diese
+    Fake-ActionClient-Klasse simuliert eine (noch) nicht laufende Bridge,
+    ohne echtes ROS2-Netzwerk-Warten (wait_for_server liefert sofort
+    False statt den vollen Timeout auszureizen)."""
+
+    def __init__(self, node, action_type, action_name):
+        self.action_name = action_name
+
+    def wait_for_server(self, timeout_sec=None):
+        return False
+
+
+def test_live_test_uses_the_playgesture_action_not_a_direct_transport_call(
+    gesture_dir, monkeypatch, capsys
+):
+    class _ReachableClient:
+        def is_reachable(self, timeout_s=2.0):
+            return True
+
+    monkeypatch.setattr("ihk_pepper_bridge.pepper_client.ThreadSafePepperClient", _ReachableClient)
+    monkeypatch.setattr("builtins.input", lambda prompt="": "ja")
+    import rclpy.action
+    monkeypatch.setattr(rclpy.action, "ActionClient", _FakeActionClientNeverAvailable)
+
+    # KinematicCompiler/QicliTrajectoryTransport duerfen von live-test NICHT
+    # mehr direkt aufgerufen werden (Abschnitt 3.11) -- ein Fehlschlag hier
+    # waere ein Rueckfall in den alten, umgangenen Codepfad.
+    def _forbidden_compile(*a, **kw):
+        raise AssertionError(
+            "live-test darf KinematicCompiler NICHT mehr direkt aufrufen -- "
+            "es muss die PlayGesture-Action der Bridge verwenden."
+        )
+
+    monkeypatch.setattr(
+        "ihk_pepper_bridge.gesturectl.KinematicCompiler.compile", _forbidden_compile)
+
+    rc = _run(gesture_dir, "live-test", "small_v2")
+    err = capsys.readouterr().err
+    assert rc == 1
+    assert "play_gesture" in err
+    assert "nicht erreichbar" in err
+
+
 # ---- compare ----
 
 def test_compare_two_gestures_prints_diff(gesture_dir, capsys):

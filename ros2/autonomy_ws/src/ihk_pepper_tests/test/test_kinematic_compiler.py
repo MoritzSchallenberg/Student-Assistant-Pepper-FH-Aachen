@@ -97,15 +97,20 @@ def test_compile_falls_back_to_neutral_stand_pose_without_start_pose():
 
 
 def test_compile_uses_given_start_pose_instead_of_neutral():
-    # HeadYaw beginnt bei 0.0 (== NEUTRAL_STAND_POSE["HeadYaw"], da fuer
-    # HeadYaw kein expliziter start_pose-Wert uebergeben wird) -- dieser
-    # Test prueft ausschliesslich, dass ein explizit uebergebener
-    # start_pose-Wert fuer HipRoll den Neutral-Fallback ersetzt.
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.9): ein
+    # uebergebenes start_pose-Dictionary muss ALLE von der Geste
+    # benoetigten Gelenke enthalten -- ein fehlender Schluessel (hier
+    # zuvor: HeadYaw) wurde bisher unbemerkt durch NEUTRAL_STAND_POSE
+    # ergaenzt, statt fail-closed abzulehnen. HeadYaw wird deshalb hier
+    # explizit mitgegeben (Wert irrelevant fuer diesen Test, der nur
+    # prueft, dass ein expliziter start_pose-Wert fuer HipRoll den
+    # Neutral-Fallback ersetzt).
     gesture = _v2_gesture([
         {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
         {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2, "HipRoll": 0.1}},
     ])
-    plan = KinematicCompiler().compile(gesture, speed_scale=1.0, start_pose={"HipRoll": 0.2})
+    plan = KinematicCompiler().compile(
+        gesture, speed_scale=1.0, start_pose={"HeadYaw": 0.0, "HipRoll": 0.2})
     idx = plan.joint_names.index("HipRoll")
     assert plan.angle_lists[idx][0] == pytest.approx(0.2)
 
@@ -301,6 +306,22 @@ def test_compile_fails_closed_on_explicit_none_in_start_pose_for_a_needed_joint(
         KinematicCompiler().compile(
             gesture, speed_scale=1.0,
             start_pose={"HeadYaw": 0.0, "HipRoll": None},
+        )
+
+
+def test_compile_fails_closed_when_a_needed_joint_is_entirely_missing_from_start_pose():
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.9): ein
+    # KOMPLETT FEHLENDER Schluessel (nicht nur ein expliziter None-Wert)
+    # wurde bisher unbemerkt durch NEUTRAL_STAND_POSE ergaenzt --
+    # HipRoll fehlt hier vollstaendig aus start_pose.
+    gesture = _v2_gesture([
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.2, "HipRoll": 0.05}},
+    ])
+    with pytest.raises(KinematicCompileError, match="nicht lesbar"):
+        KinematicCompiler().compile(
+            gesture, speed_scale=1.0,
+            start_pose={"HeadYaw": 0.0},  # HipRoll fehlt komplett
         )
 
 

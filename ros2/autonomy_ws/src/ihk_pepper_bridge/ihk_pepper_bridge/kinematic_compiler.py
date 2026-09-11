@@ -175,7 +175,8 @@ class KinematicCompiler:
     Hardwarezugriffe -- start_pose wird injiziert, nicht selbst abgefragt."""
 
     def compile(self, gesture, speed_scale: float | None = None, start_pose: dict | None = None):
-        from .motion_transport import TrajectoryPlan  # lokal, um Zirkel-Import in Tests zu vermeiden
+        # lokal, um Zirkel-Import in Tests zu vermeiden
+        from .motion_transport import TrajectoryPlan, _fingerprint_start_pose, compute_plan_fingerprint
 
         if gesture.schema_version != 2:
             raise KinematicCompileError(
@@ -192,7 +193,8 @@ class KinematicCompiler:
         all_joints = gesture.affected_joints()
         effective_start_pose = dict(NEUTRAL_STAND_POSE)
         if start_pose is not None:
-            # Entwicklungsauftrag 04-B, AP8.4 (bestaetigter Fund): ein
+            # Entwicklungsauftrag 04-B, AP8.4/AP8-R2 (bestaetigter Fund,
+            # zuletzt erneut bestaetigt in AP8-R2 Abschnitt 2.9): ein
             # TEILWEISE fehlgeschlagener Startpose-Snapshot (get_angle()
             # scheiterte fuer einzelne Gelenke, siehe pepper_client.py::
             # restore_joints()' bestehende "if angle is not None"-Pruefung
@@ -200,11 +202,16 @@ class KinematicCompiler:
             # NEUTRAL_STAND_POSE ersetzt -- eine erratene Neutralpose ist
             # aber KEINE sichere Aussage ueber die tatsaechliche aktuelle
             # Position. Jetzt fail-closed: ein von DIESER Geste
-            # benoetigtes Gelenk mit explizitem None im uebergebenen
-            # start_pose bricht die Kompilierung ab, statt einen
-            # Uebergang zu bewerten, der gar nicht sicher bewertbar ist.
+            # benoetigtes Gelenk, das im uebergebenen start_pose FEHLT
+            # (Schluessel gar nicht vorhanden) ODER explizit None ist,
+            # bricht die Kompilierung ab, statt einen Uebergang zu
+            # bewerten, der gar nicht sicher bewertbar ist. Die vorherige
+            # Bedingung ("j in start_pose and start_pose[j] is None")
+            # erkannte NUR den zweiten Fall -- ein komplett FEHLENDER
+            # Schluessel wurde bisher unbemerkt durch NEUTRAL_STAND_POSE
+            # ergaenzt (siehe effective_start_pose-Initialisierung oben).
             failed_joints = sorted(
-                j for j in all_joints if j in start_pose and start_pose[j] is None)
+                j for j in all_joints if j not in start_pose or start_pose[j] is None)
             if failed_joints:
                 raise KinematicCompileError(
                     f"Geste '{gesture.name}': Startpose-Snapshot fuer {failed_joints} nicht "
@@ -271,11 +278,23 @@ class KinematicCompiler:
                 f"ueberschreitet max_duration_s={gesture.max_duration_s}s bei speed_scale={scale:.2f}."
             )
 
-        return TrajectoryPlan(
+        plan = TrajectoryPlan(
             joint_names=joint_names,
             angle_lists=angle_lists,
             time_lists=time_lists,
             source_gesture_name=gesture.name,
             max_duration_s=effective_duration_s,
             disable_breathing_parts=list(gesture.disable_breathing),
+            speed_scale=scale,
+            start_pose_fingerprint=_fingerprint_start_pose(start_pose),
         )
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.4 ('Vorkompilierte
+        # Plaene sind nicht vollstaendig gebunden'): der Fingerprint wird
+        # ERST NACH der vollstaendigen Konstruktion berechnet (bindet den
+        # Plan an SEINE EIGENEN, jetzt final feststehenden Felder) und
+        # dann auf dem bereits erzeugten Objekt gesetzt -- jede spaetere
+        # Mutation eines ausfuehrbaren Feldes macht eine Neuberechnung
+        # inkonsistent zu diesem gespeicherten Wert (siehe
+        # trajectory_safety.py::_plan_matches_gesture).
+        plan.fingerprint = compute_plan_fingerprint(plan)
+        return plan

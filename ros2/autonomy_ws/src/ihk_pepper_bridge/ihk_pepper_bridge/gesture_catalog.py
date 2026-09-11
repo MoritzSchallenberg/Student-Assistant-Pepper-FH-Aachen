@@ -44,7 +44,7 @@ import yaml
 from .gesture_cancellation import GestureCancelReason, breathing_may_reactivate, restore_allowed
 from .joint_limits import ALLOWED_GESTURE_JOINTS, JointLimitError, validate_angle, validate_angle_with_margin
 from .kinematic_compiler import KinematicCompileError, KinematicCompiler
-from .motion_transport import QicliTrajectoryTransport, TransportStatus
+from .motion_transport import QicliTrajectoryTransport, TransportStatus, compute_plan_fingerprint
 from .trajectory_safety import TrajectorySafetyValidator
 
 logger = logging.getLogger(__name__)
@@ -88,11 +88,23 @@ class GestureValidationError(ValueError):
 class PlaybackResult:
     """Rueckgabe von GestureCatalog.play() -- bei dry_run=True enthaelt
     plan die vollstaendig aufgeloeste (Speed-skalierte) Trajektorie, OHNE
-    dass irgendeine Hardwareaktion stattgefunden hat."""
+    dass irgendeine Hardwareaktion stattgefunden hat.
+
+    cancelled_before_start (Entwicklungsauftrag 04-B, AP8-R2, Abschnitt
+    3.6): True, wenn cancel_event bereits VOR jeder Aktion (Snapshot,
+    Breathing, Transport) gesetzt war -- in diesem Fall wurden
+    GARANTIERT weder Breathing noch Gelenke beruehrt.
+    transport_terminal_confirmed: bei einem abgebrochenen v2-Transport
+    (nicht bei dry_run/v1) True, wenn der zugrundeliegende Transport-
+    Thread NACHWEISLICH (nicht nur cancel()-bestaetigt) beendet ist,
+    bevor diese Methode zurueckkehrt -- siehe motion_transport.py::
+    MotionTransport.wait_for_terminal()."""
 
     dry_run: bool
     schema_version: int
     plan: list = field(default_factory=list)
+    cancelled_before_start: bool = False
+    transport_terminal_confirmed: bool = True
 
 
 def validate_speed_scale(schema_version: int, candidate: float) -> None:
@@ -119,6 +131,33 @@ def validate_speed_scale(schema_version: int, candidate: float) -> None:
         raise GestureValidationError(
             f"speed_scale {candidate} ausserhalb des zulaessigen Bereichs [{lo}, {hi}] "
             f"fuer schema_version {schema_version} -- wird abgelehnt, nicht geklemmt."
+        )
+
+
+def _is_finite(value) -> bool:
+    return value == value and value not in (float("inf"), float("-inf"))
+
+
+def _validate_full_snapshot(snapshot: dict, needed_joints, gesture_name: str) -> None:
+    """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.6/2.9 (bestaetigter
+    Fund): der Snapshot muss fuer JEDES benoetigte Gelenk GENAU EINEN
+    endlichen Wert enthalten -- fehlend, None, NaN oder inf bedeuten
+    fail-closed Abbruch, NIEMALS eine angenommene Neutralpose. Gilt fuer
+    v1 UND v2 gleichermassen (der Auftrag verlangt ausdruecklich, diese
+    Fehlerbehandlung auch fuer den weiterhin zugelassenen beaufsichtigten
+    v1-Pfad abzusichern). Ergaenzt (nicht ersetzt) die gleichwertige,
+    tiefer liegende Pruefung in KinematicCompiler.compile() -- hier als
+    EXPLIZITER, frueher Schritt VOR jeder Hardwareaktion (auch vor
+    Breathing-Deaktivierung), damit ein fehlerhafter Snapshot erkannt
+    wird, bevor irgendetwas an Pepper veraendert wurde."""
+    invalid = sorted(
+        j for j in needed_joints
+        if j not in snapshot or snapshot[j] is None or not _is_finite(snapshot[j])
+    )
+    if invalid:
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': Startpose-Snapshot fuer {invalid} fehlt/ungueltig "
+            "(fehlend/None/NaN/inf) -- Abbruch statt einer angenommenen Neutralpose."
         )
 
 
@@ -320,6 +359,7 @@ class GestureCatalog:
         nav2_moving: bool = False, mapping_active: bool = False,
         cancel_event=None, interrupt_channel=None, safety_ok_for_restore_fn=None,
         require_collision_proof: bool = False, safety_validator=None,
+        on_transport_started_fn=None,
     ) -> PlaybackResult:
         """Fuehrt eine Geste aus (dry_run=True: loggt/liefert nur die
         aufgeloeste Trajektorie zurueck, OHNE jede Hardwareaktion).
@@ -389,7 +429,18 @@ class GestureCatalog:
         verfuegbar ist) ohne Aenderung an dieser Methode eingesetzt werden
         kann. None (Standard) baut TrajectorySafetyValidator() mit ihren
         Standard-Backends (JointAndTimingValidator + DisabledCollision-
-        Backend, siehe dort)."""
+        Backend, siehe dort).
+
+        on_transport_started_fn (Entwicklungsauftrag 04-B, AP8-R2,
+        Abschnitt 3.7): NUR fuer v2 -- optionales Callable[[], None],
+        genau EINMAL aufgerufen, unmittelbar NACHDEM transport.start()
+        zurueckgekehrt ist (nicht vorher). Erlaubt dem Aufrufer (siehe
+        bridge_node.py), den harten Laufzeitdeckel ERST ab dem
+        tatsaechlichen Bewegungsbeginn zu messen, statt ab Threadstart
+        (der auch Snapshot-/Kompilier-/Validierungszeit mit einschliessen
+        wuerde -- 'benoetigte Prozess-/Snapshot-/Vorbereitungszeit
+        separat begrenzen... darf nicht stillschweigend den
+        Bewegungsdeckel erweitern')."""
         gesture = self.get(name)
 
         if gesture.allowed_interaction_states and current_interaction_state is not None:
@@ -416,7 +467,7 @@ class GestureCatalog:
         validate_speed_scale(2, scale)
         return self._play_v2(
             pepper_client, gesture, scale, feedback_cb, dry_run, cancel_event, interrupt_channel,
-            safety_ok_for_restore_fn, require_collision_proof, safety_validator,
+            safety_ok_for_restore_fn, require_collision_proof, safety_validator, on_transport_started_fn,
         )
 
     def _play_v1(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run, cancel_event=None,
@@ -437,9 +488,19 @@ class GestureCatalog:
         if dry_run:
             return PlaybackResult(dry_run=True, schema_version=1, plan=planned)
 
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.6: ein bereits
+        # gesetztes CancelSignal verhindert JEDE Aktion -- kein Snapshot,
+        # kein Breathing, kein set_angle().
+        if cancel_event is not None and cancel_event.is_set():
+            return PlaybackResult(dry_run=False, schema_version=1, plan=[], cancelled_before_start=True)
+
+        snapshot = None
+        if gesture.restore_after:
+            snapshot = pepper_client.snapshot_joints(gesture.affected_joints())
+            _validate_full_snapshot(snapshot, gesture.affected_joints(), gesture.name)
+
         for part in gesture.disable_breathing:
             pepper_client.set_breathing(False, part)
-        snapshot = pepper_client.snapshot_joints(gesture.affected_joints()) if gesture.restore_after else None
         effective_reason = None
         try:
             total = len(planned)
@@ -480,7 +541,7 @@ class GestureCatalog:
 
     def _play_v2(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run,
                  cancel_event=None, interrupt_channel=None, safety_ok_for_restore_fn=None,
-                 require_collision_proof=False, safety_validator=None):
+                 require_collision_proof=False, safety_validator=None, on_transport_started_fn=None):
         """Nutzt seit Entwicklungsauftrag 3, AP12 den KinematicCompiler +
         QicliTrajectoryTransport statt Keyframes direkt in
         play_trajectory()-Argumente umzurechnen (siehe kinematic_compiler.py-
@@ -514,7 +575,19 @@ class GestureCatalog:
         Lease-Widerruf, Praemption, Not-Stopp, Bumper, ungueltiger
         SafetyState, Nav2-/Mapping-/Interaktionskonflikt, Pepper-
         Verbindungsverlust, Transportfehler, Node-Shutdown) verbietet
-        Restore UND automatische Breathing-Reaktivierung UNBEDINGT."""
+        Restore UND automatische Breathing-Reaktivierung UNBEDINGT.
+
+        Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.5/3.6 (bestaetigte
+        Funde 2.3/2.5/2.6): die Reihenfolge ist jetzt VERBINDLICH
+        Cancel-Check -> Snapshot lesen+validieren -> kompilieren+
+        validieren -> Produktions-Gate -> erneuter Cancel-Check ->
+        ERST DANACH Breathing deaktivieren -> Transport. Vorher wurde
+        Breathing bereits VOR dem Snapshot deaktiviert (blieb bei einem
+        Snapshot-Fehler dauerhaft deaktiviert, ohne jeden Cleanup-Pfad)
+        -- und require_collision_proof pruefte nur verdict=='pass', NICHT
+        zusaetzlich collision_checked==True (ein reiner
+        JointAndTimingValidator liefert 'pass' bei collision_checked=false
+        und durfte deshalb faelschlich in production ausfuehren)."""
         compiler = KinematicCompiler()
         safety_validator = safety_validator if safety_validator is not None else TrajectorySafetyValidator()
 
@@ -528,52 +601,119 @@ class GestureCatalog:
                 )
             return PlaybackResult(dry_run=True, schema_version=2, plan=_trajectory_plan_to_legacy_dicts(plan))
 
-        for part in gesture.disable_breathing:
-            pepper_client.set_breathing(False, part)
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.6: ein bereits
+        # gesetztes CancelSignal verhindert JEDE Aktion -- kein Snapshot,
+        # kein Breathing, kein Transportstart (Auftrags-Testliste #13).
+        if cancel_event is not None and cancel_event.is_set():
+            return PlaybackResult(dry_run=False, schema_version=2, plan=[], cancelled_before_start=True)
+
         # Entwicklungsauftrag 04-B, AP8-R1.2 (bestaetigter Fund 3.2): die
         # Startpose wird JETZT IMMER erfasst, unabhaengig von
         # restore_after -- restore_after entscheidet NUR noch, ob
-        # dieselbe Pose SPAETER als Restore-Ziel verwendet wird. Vorher
-        # wurde bei restore_after=false (neutral_stand.yaml,
-        # look_at_person.yaml) gar keine Startpose gelesen, wodurch der
-        # Uebergang von der TATSAECHLICHEN Pepper-Haltung zum ersten
-        # Keyframe faelschlich gegen NEUTRAL_STAND_POSE statt gegen die
-        # echte aktuelle Pose geprueft/kompiliert wurde.
+        # dieselbe Pose SPAETER als Restore-Ziel verwendet wird.
+        # AP8-R2, Abschnitt 3.6: der Snapshot wird SOFORT validiert
+        # (fehlend/None/NaN/inf fail-closed), NOCH BEVOR irgendeine
+        # Hardwareaktion (auch Breathing) stattfindet.
         snapshot = pepper_client.snapshot_joints(gesture.affected_joints())
+        _validate_full_snapshot(snapshot, gesture.affected_joints(), gesture.name)
         restore_snapshot = snapshot if gesture.restore_after else None
+
+        # Kompilieren + vollstaendig validieren -- IMMER NOCH bevor
+        # irgendeine Hardwareaktion (Breathing/Transport) stattfindet.
+        plan = compiler.compile(gesture, speed_scale=speed_scale, start_pose=snapshot)
+        report = safety_validator.validate(
+            gesture, start_pose=snapshot, speed_scale=speed_scale, plan=plan)
+        if report.verdict == "fail":
+            raise KinematicCompileError(
+                "; ".join(report.joint_timing_errors)
+                or f"TrajectorySafetyReport fuer '{gesture.name}' meldet 'fail'."
+            )
+        if require_collision_proof and not (report.verdict == "pass" and report.collision_checked):
+            # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.3):
+            # verdict=='pass' ALLEIN ist KEIN Kollisionsnachweis -- ein
+            # reiner JointAndTimingValidator liefert 'pass' bei
+            # collision_checked=false. production verlangt BEIDES.
+            raise KinematicCompileError(
+                f"Geste '{gesture.name}': TrajectorySafetyReport meldet verdict='{report.verdict}', "
+                f"collision_checked={report.collision_checked} -- production verlangt sowohl "
+                "verdict='pass' ALS AUCH einen echten Kollisionsnachweis (collision_checked=True)."
+            )
+
+        # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.6: unmittelbar vor
+        # jeder Hardwareaktion (Breathing/Transport) ERNEUT pruefen.
+        if cancel_event is not None and cancel_event.is_set():
+            return PlaybackResult(dry_run=False, schema_version=2, plan=[], cancelled_before_start=True)
+
+        # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.4/Test
+        # 'Backend versucht, den geprueften Plan nachtraeglich zu
+        # veraendern'): safety_validator.validate() oben hat plan bereits
+        # GEPRUEFT -- ein Aufrufer, der eine Referenz auf dasselbe
+        # plan-Objekt haelt, koennte es aber ZWISCHEN validate() und
+        # transport.prepare() noch mutieren (z.B. ein manipuliertes
+        # Backend). Der Fingerprint wird deshalb HIER, unmittelbar vor
+        # der Uebergabe an den Transport, ERNEUT verifiziert -- der
+        # Transport bekommt GARANTIERT nur den unveraenderten, geprueften
+        # Plan, sonst wird die Ausfuehrung abgelehnt.
+        if compute_plan_fingerprint(plan) != plan.fingerprint:
+            raise KinematicCompileError(
+                f"Geste '{gesture.name}': der validierte TrajectoryPlan wurde NACH der "
+                "Sicherheitspruefung veraendert (Fingerprint-Abweichung) -- Ausfuehrung "
+                "abgelehnt, Transport erhaelt diesen Plan NICHT."
+            )
+
         transport = None
         effective_reason = None
+        breathing_disabled = False
         try:
-            plan = compiler.compile(gesture, speed_scale=speed_scale, start_pose=snapshot)
-            report = safety_validator.validate(
-                gesture, start_pose=snapshot, speed_scale=speed_scale, plan=plan)
-            if report.verdict == "fail":
-                raise KinematicCompileError(
-                    "; ".join(report.joint_timing_errors)
-                    or f"TrajectorySafetyReport fuer '{gesture.name}' meldet 'fail'."
-                )
-            if require_collision_proof and report.verdict != "pass":
-                raise KinematicCompileError(
-                    f"Geste '{gesture.name}': TrajectorySafetyReport meldet '{report.verdict}' "
-                    "(kein vollstaendiger Kollisionsnachweis) -- in diesem Profil nicht ausfuehrbar."
-                )
+            for part in gesture.disable_breathing:
+                pepper_client.set_breathing(False, part)
+            breathing_disabled = True
+
             transport = QicliTrajectoryTransport(pepper_client, interrupt_channel=interrupt_channel)
             transport.prepare(plan, restore_snapshot=restore_snapshot)
             transport.start()
+            if on_transport_started_fn is not None:
+                # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: GENAU
+                # jetzt beginnt die Bewegung -- der Aufrufer misst seinen
+                # harten Laufzeitdeckel ab DIESEM Zeitpunkt, nicht ab
+                # Threadstart (das wuerde Snapshot-/Kompilier-/
+                # Validierungszeit mit einschliessen).
+                on_transport_started_fn()
             if cancel_event is None:
                 status = transport.wait()
             else:
                 status = transport.poll()
                 while status == TransportStatus.RUNNING:
                     if cancel_event.is_set():
-                        status = transport.cancel().final_transport_state
+                        cancel_result = transport.cancel()
+                        if not cancel_result.cancel_confirmed:
+                            # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter
+                            # Fund 2.1, 'das ueberwachte Thread-Ende ist
+                            # nicht das Transportende'): NICHT so tun, als
+                            # sei der Transport beendet, nur weil cancel()
+                            # sein Timeout ueberschritten hat. Auf das
+                            # TATSAECHLICHE Ende des zugrundeliegenden
+                            # Transport-Threads warten (unbegrenzt -- die
+                            # Bridge selbst gibt separat eine begrenzte
+                            # Action-Cancel-Grace-Zeit vor und meldet in
+                            # dieser Zeit 'cancel_unconfirmed', siehe
+                            # bridge_node.py; diese Methode hier darf aber
+                            # erst zurueckkehren, wenn der Transport
+                            # NACHWEISLICH beendet ist, sonst wuerde der
+                            # aeussere Bridge-Worker faelschlich vorzeitig
+                            # als fertig gelten).
+                            transport.wait_for_terminal()
+                            status = transport.poll()
+                        else:
+                            status = cancel_result.final_transport_state
                         break
                     status = transport.wait(timeout_s=0.1)
             if feedback_cb:
                 feedback_cb("trajectory_sent", 1.0)
             if status == TransportStatus.FAILED:
                 effective_reason = GestureCancelReason.TRANSPORT_FAILED
-                raise transport.last_error
+                raise transport.last_error or RuntimeError(
+                    f"Transport fuer Geste '{gesture.name}' meldet FAILED ohne Fehlerdetails.")
         finally:
             was_cancelled = cancel_event is not None and cancel_event.is_set()
             if effective_reason is None and was_cancelled:
@@ -583,21 +723,50 @@ class GestureCatalog:
                 effective_reason = getattr(cancel_event, "reason", None) or GestureCancelReason.NORMAL_USER_CANCEL
             safety_ok_now = safety_ok_for_restore_fn() if safety_ok_for_restore_fn is not None else False
             if restore_snapshot is not None and transport is not None:
-                if effective_reason is None or restore_allowed(effective_reason, gesture.on_cancel, safety_ok_now):
+                # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.9
+                # (bestaetigter Fund, Testliste #18: 'normale Beendigung
+                # mit zwischenzeitlich ungueltiger Sicherheit -> kein
+                # Restore'): eine normale Beendigung (effective_reason is
+                # None) restaurierte bisher UNBEDINGT, ohne safety_ok_now
+                # ueberhaupt zu pruefen -- inkonsistent mit
+                # breathing_may_reactivate() (das fuer denselben Fall
+                # bereits korrekt safety_ok_now verlangt) UND mit Abschnitt
+                # 3.9 ('auch bei normalem Abschluss nur restaurieren, wenn
+                # ... Safety frisch und gueltig'). Jetzt: normale
+                # Beendigung verlangt EBENFALLS einen aktuell gueltigen
+                # Sicherheitszustand, ein Abbruchgrund entscheidet weiterhin
+                # ueber restore_allowed() (das reason in
+                # _RESTORE_POSSIBLE_REASONS bereits selbst prueft).
+                should_restore = safety_ok_now if effective_reason is None else restore_allowed(
+                    effective_reason, gesture.on_cancel, safety_ok_now)
+                if should_restore:
                     transport.restore()
+                elif effective_reason is None:
+                    logger.warning(
+                        "Geste '%s' normal beendet, aber Sicherheitszustand JETZT nicht "
+                        "frisch/gueltig -- Pepper bleibt an der Endposition stehen (KEINE "
+                        "automatische Rueckkehr).",
+                        gesture.name,
+                    )
                 else:
                     logger.warning(
                         "Geste '%s' beendet mit Abbruchgrund '%s' (on_cancel=%s) -- Pepper bleibt "
                         "an der Abbruchposition stehen (KEINE automatische Rueckkehr).",
                         gesture.name, effective_reason, gesture.on_cancel,
                     )
-            if breathing_may_reactivate(effective_reason, safety_ok_now):
-                for part in gesture.disable_breathing:
-                    pepper_client.set_breathing(True, part)
-            elif gesture.disable_breathing:
-                logger.warning(
-                    "Geste '%s': Breathing bleibt nach Abbruchgrund '%s' deaktiviert -- keine "
-                    "automatische Reaktivierung ohne frisch bestaetigten sicheren Zustand.",
-                    gesture.name, effective_reason,
-                )
+            # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.5):
+            # Breathing wird NUR reaktiviert, wenn es in DIESEM Aufruf
+            # tatsaechlich deaktiviert wurde (breathing_disabled) -- sonst
+            # waere ein Reaktivierungsaufruf fuer ein NIE deaktiviertes
+            # Breathing ein unnoetiger, unbegruendeter Hardwarezugriff.
+            if breathing_disabled:
+                if breathing_may_reactivate(effective_reason, safety_ok_now):
+                    for part in gesture.disable_breathing:
+                        pepper_client.set_breathing(True, part)
+                elif gesture.disable_breathing:
+                    logger.warning(
+                        "Geste '%s': Breathing bleibt nach Abbruchgrund '%s' deaktiviert -- keine "
+                        "automatische Reaktivierung ohne frisch bestaetigten sicheren Zustand.",
+                        gesture.name, effective_reason,
+                    )
         return PlaybackResult(dry_run=False, schema_version=2, plan=_trajectory_plan_to_legacy_dicts(plan))

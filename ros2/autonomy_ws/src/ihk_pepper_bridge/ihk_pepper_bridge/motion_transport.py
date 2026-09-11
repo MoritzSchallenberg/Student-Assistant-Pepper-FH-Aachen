@@ -12,6 +12,8 @@ ueber ALMotion, nie die Basis).
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import threading
 import time
@@ -19,6 +21,49 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
+
+
+def _is_finite(value) -> bool:
+    return value == value and value not in (float("inf"), float("-inf"))  # value==value ist False fuer NaN
+
+
+def compute_plan_fingerprint(plan: "TrajectoryPlan") -> str:
+    """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.4 ('Vorkompilierte
+    Plaene sind nicht vollstaendig gebunden'): deterministischer
+    SHA-256-Fingerprint ueber die tatsaechlich AUSFUEHRBAREN Felder eines
+    TrajectoryPlan (Gelenkreihenfolge, Winkelwerte, Zeitwerte, Enddauer,
+    Breathing-Metadaten, Gestenname). Wird von KinematicCompiler.compile()
+    EINMAL berechnet und auf plan.fingerprint gespeichert; jede spaetere
+    Pruefung (siehe trajectory_safety.py::_plan_matches_gesture) rechnet
+    ihn aus den AKTUELLEN Feldwerten neu und vergleicht -- eine
+    nachtraegliche Aenderung AUCH NUR EINES Winkels/Zeitpunkts/Gelenks
+    aendert den neu berechneten Hash und wird dadurch erkannt. Reine
+    Funktion, kein kryptografischer Manipulationsschutz gegen einen
+    Angreifer mit Codeausfuehrung im selben Prozess -- aber ein robuster
+    Selbstkonsistenz-Check gegen versehentliche/spaetere Mutation
+    zwischen Kompilierung und Transport."""
+    payload = {
+        "joint_names": list(plan.joint_names),
+        "angle_lists": [list(a) for a in plan.angle_lists],
+        "time_lists": [list(t) for t in plan.time_lists],
+        "source_gesture_name": plan.source_gesture_name,
+        "max_duration_s": plan.max_duration_s,
+        "disable_breathing_parts": list(plan.disable_breathing_parts),
+    }
+    blob = json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
+
+
+def _fingerprint_start_pose(start_pose: dict | None) -> str:
+    """Eigener Fingerprint fuer die Startpose (Entwicklungsauftrag 04-B,
+    AP8-R2, 'Startposebindung') -- getrennt von compute_plan_fingerprint(),
+    da zwei unterschiedliche Startposen zufaellig dieselben angle_lists
+    ergeben koennten (z.B. wenn kein betroffenes Gelenk vom Unterschied
+    betroffen ist)."""
+    if not start_pose:
+        return "none"
+    blob = json.dumps({k: start_pose[k] for k in sorted(start_pose)}, sort_keys=True, default=str).encode("utf-8")
+    return hashlib.sha256(blob).hexdigest()
 
 # Entwicklungsauftrag 04-B, AP5B, Abschnitt 10: Standard-Obergrenze fuer
 # cancel()s begrenzte Wartezeit auf eine Bestaetigung -- kein
@@ -76,6 +121,17 @@ class TrajectoryPlan:
     source_gesture_name: str
     max_duration_s: float
     disable_breathing_parts: list = field(default_factory=list)
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.4: Bindung des Plans
+    # an die Eingaben, aus denen er kompiliert wurde -- leere Strings
+    # (Standard) bedeuten "nicht ueber KinematicCompiler.compile()
+    # erzeugt" und werden von trajectory_safety.py::_plan_matches_gesture
+    # als NICHT vertrauenswuerdig behandelt. fingerprint bindet den Plan
+    # an SICH SELBST (siehe compute_plan_fingerprint() -- erkennt eine
+    # nachtraegliche Mutation JEDES ausfuehrbaren Feldes).
+    # speed_scale/start_pose_fingerprint binden ihn an die Eingaben.
+    fingerprint: str = ""
+    start_pose_fingerprint: str = ""
+    speed_scale: float = 0.0
 
 
 class MotionTransport(ABC):
@@ -114,6 +170,22 @@ class MotionTransport(ABC):
         Schnappschuss-Winkel zurueck -- NIE Gelenk fuer Gelenk in einer
         Schleife (das war der urspruengliche Fehler in
         qicli.py::restore_joments(), siehe AP12-Bericht)."""
+
+    def wait_for_terminal(self, timeout_s: float | None = None) -> bool:
+        """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.2 (bestaetigter
+        Fund 2.1, 'das ueberwachte Thread-Ende ist nicht das
+        Transportende'): liefert True, sobald der Transport NACHWEISLICH
+        terminal ist (DONE/FAILED/CANCELLED) -- im Unterschied zu
+        cancel()'s cancel_confirmed beweist dies das tatsaechliche Ende
+        des zugrundeliegenden Ausfuehrungsmechanismus (bei
+        QicliTrajectoryTransport: des Hintergrund-Threads selbst), NIE
+        nur eine Cancel-Bestaetigung/den Rueckgabewert eines aeusseren
+        Python-Workers. Konkrete Default-Implementierung (statt
+        @abstractmethod): fuer die synchronen Transports unten
+        (Mock/DryRun) ist poll() bereits terminal, sobald start()
+        zurueckgekehrt ist -- nur QicliTrajectoryTransport ueberschreibt
+        dies mit einem echten Warten auf seinen Hintergrund-Thread."""
+        return self.poll() != TransportStatus.RUNNING
 
 
 class MockMotionTransport(MotionTransport):
@@ -260,8 +332,23 @@ class QicliTrajectoryTransport(MotionTransport):
 
     def _run(self):
         try:
-            self._client.play_trajectory(self._plan.joint_names, self._plan.angle_lists, self._plan.time_lists)
-            self._status = TransportStatus.CANCELLED if self._cancel_requested.is_set() else TransportStatus.DONE
+            result = self._client.play_trajectory(
+                self._plan.joint_names, self._plan.angle_lists, self._plan.time_lists)
+            # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.9):
+            # ein expliziter False-Rueckgabewert (qicli meldet damit
+            # einen Fehlschlag, OHNE eine Exception zu werfen) wurde
+            # bisher wie ein Erfolg behandelt. None (die meisten
+            # bestehenden Fakes/reale Implementierung geben nichts
+            # zurueck) bleibt weiterhin ein Erfolg -- NUR "is False"
+            # (nicht "not result", das würde auch 0/[]/"" faelschlich
+            # als Fehler werten) zaehlt als Fehlschlag.
+            if result is False:
+                self.last_error = RuntimeError(
+                    "play_trajectory() lieferte False -- qicli meldet einen Fehlschlag."
+                )
+                self._status = TransportStatus.FAILED
+            else:
+                self._status = TransportStatus.CANCELLED if self._cancel_requested.is_set() else TransportStatus.DONE
         except Exception as e:  # noqa: BLE001 -- muss jeden Transportfehler auffangen, nie crashen
             self.last_error = e
             self._status = TransportStatus.FAILED
@@ -278,6 +365,16 @@ class QicliTrajectoryTransport(MotionTransport):
         beibehaelt)."""
         self._done_event.wait(timeout_s)
         return self._status
+
+    def wait_for_terminal(self, timeout_s: float | None = None) -> bool:
+        """Entwicklungsauftrag 04-B, AP8-R2: wartet auf das ECHTE Ende
+        des Hintergrund-Threads (_done_event, nur in _run()s finally
+        gesetzt) -- im Gegensatz zu cancel(), das nach timeout_s
+        aufgibt, ohne dass der Thread deshalb tatsaechlich beendet
+        waere. timeout_s=None wartet UNBEGRENZT (siehe Aufrufer in
+        gesture_catalog.py::_play_v2 fuer die bewusste Trennung von der
+        begrenzten Action-Cancel-Grace-Zeit an der Bridge)."""
+        return self._done_event.wait(timeout_s)
 
     def cancel(self, timeout_s: float = DEFAULT_CANCEL_TIMEOUT_S) -> CancelResult:
         start = time.monotonic()
@@ -300,8 +397,18 @@ class QicliTrajectoryTransport(MotionTransport):
         interrupt_error = ""
         if self._interrupt_channel is not None:
             try:
-                self._interrupt_channel.stop_motion()
-                interrupt_sent = True
+                interrupt_result = self._interrupt_channel.stop_motion()
+                # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund
+                # 2.9): ein expliziter False-Rueckgabewert bedeutet
+                # "Interrupt NICHT bestaetigt gesendet" -- wird NICHT
+                # mehr wie ein erfolgreicher Interrupt behandelt. None
+                # (die meisten bestehenden Implementierungen geben
+                # nichts zurueck) bleibt weiterhin "gesendet".
+                if interrupt_result is False:
+                    interrupt_error = "stop_motion() lieferte False (Interrupt nicht bestaetigt)."
+                    logger.warning("Interrupt-Kanal stop_motion() meldete False -- NICHT als gesendet gewertet.")
+                else:
+                    interrupt_sent = True
             except Exception as e:  # noqa: BLE001 -- Abbruch darf selbst nicht crashen
                 interrupt_error = str(e)
                 logger.warning("Interrupt-Kanal stop_motion() fehlgeschlagen.", exc_info=True)

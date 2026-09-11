@@ -225,6 +225,24 @@ class GestureExecutionPolicy:
         # offline_preview "beruehren aber nie Hardware" -- Freshness ist
         # dort bedeutungslos, da nichts ausgefuehrt wird). ----
         if execution_profile in HARDWARE_CAPABLE_PROFILES:
+            # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7 (bestaetigter
+            # Fund 2.7): 'max_duration_s ist kein tatsaechlicher
+            # Laufzeitdeckel' -- der Laufzeit-Watchdog (bridge_node.py::
+            # _watchdog_check()) leitet seine harte Deadline DIREKT aus
+            # gesture.max_duration_s ab (transport_started_at +
+            # max_duration_s, OHNE zusaetzliche Marge). Ein fehlender oder
+            # nicht endlicher/positiver Wert wuerde dort keinen sinnvollen
+            # Deckel ergeben -- deshalb wird die Hardwareausfuehrung HIER,
+            # VOR jedem Ressourcenzugriff, fail-closed gesperrt.
+            if gesture.max_duration_s is None or gesture.max_duration_s != gesture.max_duration_s \
+                    or gesture.max_duration_s in (float("inf"), float("-inf")) or gesture.max_duration_s <= 0:
+                return GestureDecision(
+                    False, "max_duration_s_fehlt_oder_ungueltig",
+                    f"Geste '{gesture.name}': max_duration_s={gesture.max_duration_s!r} ist nicht "
+                    "gesetzt/nicht endlich/nicht positiv -- Hardwareausfuehrung bleibt gesperrt, "
+                    "solange kein tatsaechlicher Laufzeitdeckel definiert ist.",
+                    gesture.tested_status, effective_speed_scale, expected_duration_s, resources,
+                )
             if runtime_context.safety_ok is not True:
                 return GestureDecision(
                     False, "safety_state_ungueltig_oder_unbekannt",

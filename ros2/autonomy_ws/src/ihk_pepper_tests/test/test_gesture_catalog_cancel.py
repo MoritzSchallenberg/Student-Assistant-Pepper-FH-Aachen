@@ -248,12 +248,41 @@ def test_on_cancel_restore_with_unsafe_context_does_not_restore(tmp_path):
 
 def test_normal_completion_still_restores_regardless_of_on_cancel(tmp_path):
     # Ohne Abbruch bleibt das bestehende Verhalten unveraendert -- egal,
-    # welchen on_cancel-Wert die Geste traegt.
+    # welchen on_cancel-Wert die Geste traegt -- SOLANGE die Sicherheit
+    # JETZT frisch/gueltig ist (siehe AP8-R2-Test direkt darunter fuer
+    # den Gegenfall). safety_ok_for_restore_fn wird hier deshalb explizit
+    # als "gueltig" injiziert statt sich auf den fail-closed-Default
+    # (None -> False) zu verlassen.
     catalog = _v2_catalog(tmp_path, on_cancel="hold")
+    client = FakePepperClient()
+    catalog.play(client, "test_gesture", safety_ok_for_restore_fn=lambda: True)
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    assert len(play_trajectory_calls) == 2  # Geste + normale Rueckkehr
+
+
+def test_normal_completion_does_not_restore_when_safety_is_currently_invalid(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.9 (Testliste #18):
+    # eine normale (nicht abgebrochene) Beendigung restaurierte bisher
+    # UNBEDINGT, ohne den AKTUELLEN Sicherheitszustand ueberhaupt zu
+    # pruefen -- inkonsistent mit der Breathing-Reaktivierung (die das
+    # bereits korrekt tat) und mit Abschnitt 3.9. Ein explizit als NICHT
+    # sicher gemeldeter Zustand darf KEINE automatische Rueckkehr ausloesen.
+    catalog = _v2_catalog(tmp_path)
+    client = FakePepperClient()
+    catalog.play(client, "test_gesture", safety_ok_for_restore_fn=lambda: False)
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    assert len(play_trajectory_calls) == 1  # NUR die Geste, KEINE Rueckkehr
+
+
+def test_normal_completion_without_a_safety_fn_fails_closed_and_does_not_restore(tmp_path):
+    # Derselbe Fall wie oben, aber ganz ohne safety_ok_for_restore_fn
+    # (Default None) -- muss GENAUSO fail-closed (KEIN Restore) enden,
+    # nicht stillschweigend "kein Check noetig" bedeuten.
+    catalog = _v2_catalog(tmp_path)
     client = FakePepperClient()
     catalog.play(client, "test_gesture")
     play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
-    assert len(play_trajectory_calls) == 2  # Geste + normale Rueckkehr
+    assert len(play_trajectory_calls) == 1
 
 
 def test_invalid_on_cancel_value_is_rejected_as_a_schema_error():
@@ -324,3 +353,132 @@ def test_v2_interrupt_channel_is_passed_through_to_the_transport(tmp_path):
     cancel_event.set()
     thread.join(timeout=3.0)
     assert interrupt.stop_motion_calls == 1
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2: Reihenfolge/Cancel-vor-Start ----
+
+def test_v2_cancel_already_set_before_play_touches_nothing(tmp_path):
+    # Abschnitt 3.6/Testliste #13: CancelSignal bereits VOR play() gesetzt
+    # -- kein Snapshot, kein Breathing, kein Transportstart.
+    catalog = _v2_catalog(tmp_path, disable_breathing=["Arms"])
+    client = FakePepperClient()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    result = catalog.play(client, "test_gesture", cancel_event=cancel_event)
+    assert result.cancelled_before_start is True
+    assert client.calls == []
+    assert client.breathing_calls == []
+
+
+def test_v1_cancel_already_set_before_play_touches_nothing(tmp_path):
+    catalog = _v1_catalog(tmp_path)
+    client = FakePepperClient()
+    cancel_event = threading.Event()
+    cancel_event.set()
+    result = catalog.play(client, "seq", cancel_event=cancel_event)
+    assert result.cancelled_before_start is True
+    assert client.calls == []
+
+
+def test_v2_snapshot_missing_a_needed_joint_is_rejected_fail_closed(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.9): ein
+    # Snapshot, in dem ein benoetigtes Gelenk komplett fehlt, wird NICHT
+    # mehr akzeptiert -- keine angenommene Neutralpose.
+    catalog = _v2_catalog(tmp_path)
+
+    class _IncompleteSnapshotClient(FakePepperClient):
+        def snapshot_joints(self, joints):
+            full = super().snapshot_joints(joints)
+            full.pop("RShoulderPitch", None)
+            return full
+
+    client = _IncompleteSnapshotClient()
+    with pytest.raises(Exception, match="fehlt/ungueltig"):
+        catalog.play(client, "test_gesture")
+    assert client.calls == []
+    assert client.breathing_calls == []
+
+
+def test_v2_snapshot_exception_prevents_breathing_and_transport(tmp_path):
+    # Abschnitt 3.6/Testliste #11: wirft snapshot_joints() selbst eine
+    # Exception, darf DAS NICHT erst nach set_breathing(False)/Transport
+    # bemerkt werden -- der Snapshot-Aufruf steht VOR jeder
+    # Hardwareaktion, eine Exception dort propagiert unveraendert nach
+    # aussen, OHNE dass Breathing je deaktiviert oder ein Transport
+    # gestartet wurde.
+    catalog = _v2_catalog(tmp_path, disable_breathing=["Arms"])
+
+    class _ExplodingSnapshotClient(FakePepperClient):
+        def snapshot_joints(self, joints):
+            raise RuntimeError("SSH-Verbindung zu Pepper abgebrochen (simuliert)")
+
+    client = _ExplodingSnapshotClient()
+    with pytest.raises(RuntimeError, match="SSH-Verbindung"):
+        catalog.play(client, "test_gesture")
+    assert client.calls == []
+    assert client.breathing_calls == []
+
+
+def test_v2_unconfirmed_cancel_blocks_until_the_real_transport_thread_ends(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R2 (bestaetigter Fund 2.1): cancel()s
+    # internes Timeout (2.0s) ist kuerzer als die simulierte
+    # play_trajectory()-Dauer -- _play_v2() darf NICHT zurueckkehren,
+    # bevor der Transport-Thread TATSAECHLICH beendet ist.
+    catalog = _v2_catalog(tmp_path)
+    client = FakePepperClient(delay_s=2.2)
+    cancel_event = threading.Event()
+
+    def _run():
+        catalog.play(client, "test_gesture", cancel_event=cancel_event)
+
+    thread = threading.Thread(target=_run)
+    started = time.time()
+    thread.start()
+    time.sleep(0.1)
+    cancel_event.set()
+    thread.join(timeout=5.0)
+    elapsed = time.time() - started
+    assert not thread.is_alive()
+    # Laenger als das interne cancel()-Timeout (2.0s) -- die urspruengliche,
+    # engere Obergrenze war unter voller Testsuiten-Systemlast (GIL-
+    # Konkurrenz durch andere sleep-basierte Tests) flaky; die eigentliche
+    # Aussage (kein vorzeitiges Zurueckkehren VOR den 2.0s) bleibt scharf.
+    assert elapsed >= 2.0
+    assert elapsed < 10.0
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 2.4/3.4/3.6: Plan-Manipulation NACH der Pruefung ----
+
+class _TamperingFakeSafetyValidator:
+    """Simuliert ein (fehlerhaftes/manipuliertes) Backend, das das
+    bereits geprueften plan-Objekt WAEHREND validate() unbemerkt
+    veraendert, bevor es 'pass' zurueckgibt -- exakt der im Auftrag
+    beschriebene Angriffsfall ('Backend versucht, den geprueften Plan
+    nachtraeglich zu veraendern'). Die Faelschung geschieht NACH der
+    fingerprint-Pruefung INNERHALB von validate() (siehe
+    trajectory_safety.py::_plan_matches_gesture()), aber VOR der
+    zusaetzlichen erneuten Pruefung in _play_v2() direkt vor
+    transport.prepare()."""
+
+    def validate(self, gesture, start_pose=None, speed_scale=None, plan=None):
+        from ihk_pepper_bridge.trajectory_safety import TrajectorySafetyReport
+        # Manipulation NACH einer (hier ausgelassenen) eigenen Pruefung --
+        # ein winziger Winkel-Unterschied, der eine echte Bewegungsaenderung
+        # waere.
+        plan.angle_lists[0][0] += 0.3
+        return TrajectorySafetyReport(
+            gesture_name=gesture.name, verdict="pass", collision_checked=False,
+            backend_names=["_TamperingFakeSafetyValidator (TEST-DOUBLE, manipuliert absichtlich)"],
+        )
+
+
+def test_a_backend_that_mutates_the_plan_after_validation_never_reaches_the_transport(tmp_path):
+    from ihk_pepper_bridge.kinematic_compiler import KinematicCompileError
+    catalog = _v2_catalog(tmp_path)
+    client = FakePepperClient()
+    with pytest.raises(KinematicCompileError, match="Fingerprint-Abweichung"):
+        catalog.play(client, "test_gesture", safety_validator=_TamperingFakeSafetyValidator())
+    # KEINE Hardwareaktion -- weder Breathing noch play_trajectory --
+    # wurde ausgeloest, obwohl der manipulierende Validator 'pass' meldete.
+    assert client.calls == []
+    assert client.breathing_calls == []

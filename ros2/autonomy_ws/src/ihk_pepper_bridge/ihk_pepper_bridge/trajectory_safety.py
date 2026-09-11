@@ -199,19 +199,83 @@ class DisabledCollisionBackend(TrajectorySafetyBackend):
         )
 
 
-def _plan_matches_gesture(gesture, plan, speed_scale: Optional[float]) -> Optional[str]:
-    """Entwicklungsauftrag 04-B, AP8-R1.8 ('Vertrauensgrenze bei
+def _is_finite(value) -> bool:
+    return value == value and value not in (float("inf"), float("-inf"))
+
+
+def _plan_structurally_intact(plan) -> Optional[str]:
+    """Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.4 (bestaetigter Fund
+    2.4): reine Struktur-/Endlichkeitspruefung des Plans SELBST, UNABHAENGIG
+    von der Geste -- Listenlaengen, identische Zeitachse je Gelenk,
+    NaN/inf in jedem Winkel/jeder Zeit, endliche max_duration_s. Deckt
+    'manipulierte Zeitachse, Listenlaenge, NaN/inf oder Gelenkreihenfolge'
+    (Auftrag, Testliste #9) unabhaengig vom Fingerprint-Vergleich ab."""
+    if len(plan.angle_lists) != len(plan.joint_names) or len(plan.time_lists) != len(plan.joint_names):
+        return (
+            f"Listenlaengen stimmen nicht ueberein: {len(plan.joint_names)} Gelenke, "
+            f"{len(plan.angle_lists)} Winkellisten, {len(plan.time_lists)} Zeitlisten."
+        )
+    if not plan.time_lists or not plan.time_lists[0]:
+        return "time_lists ist leer."
+    reference_times = plan.time_lists[0]
+    for i, joint in enumerate(plan.joint_names):
+        angles, times = plan.angle_lists[i], plan.time_lists[i]
+        if len(angles) != len(times):
+            return f"Gelenk '{joint}': angle_lists/time_lists-Laenge stimmt nicht ueberein."
+        if times != reference_times:
+            return f"Gelenk '{joint}': Zeitachse weicht von Gelenk '{plan.joint_names[0]}' ab (nicht identisch)."
+        for a in angles:
+            if not _is_finite(a):
+                return f"Gelenk '{joint}': nicht-endlicher Winkel {a!r}."
+        for t in times:
+            if not _is_finite(t):
+                return f"Gelenk '{joint}': nicht-endliche Zeit {t!r}."
+    if not _is_finite(plan.max_duration_s):
+        return f"max_duration_s ist nicht endlich: {plan.max_duration_s!r}."
+    return None
+
+
+def _plan_matches_gesture(gesture, plan, speed_scale: Optional[float],
+                          start_pose: Optional[dict] = None) -> Optional[str]:
+    """Entwicklungsauftrag 04-B, AP8-R1.8/AP8-R2.4 ('Vertrauensgrenze bei
     vorkompilierten Plaenen'): TrajectorySafetyValidator.validate(...,
     plan=plan) darf einen von AUSSEN uebergebenen, bereits kompilierten
     TrajectoryPlan NICHT blind als gueltig fuer DIESE Geste behandeln --
     sonst koennte ein fremder/veraenderter Plan die Pflichtpruefung
-    umgehen. Keine kryptografische Provenienz (dafuer muesste
-    TrajectoryPlan selbst signiert werden, was ausserhalb dieses
-    In-Prozess-Vertrauensraums keinen zusaetzlichen Schutz brachte) --
-    aber eine echte Struktur-/Plausibilitaetspruefung: Gestenname,
-    Gelenkmenge UND (wenn speed_scale bekannt ist) die aus Geste+
-    speed_scale erwartete effektive Dauer muessen zum Plan passen.
-    Gibt bei einer Abweichung eine Fehlermeldung zurueck (sonst None)."""
+    umgehen.
+
+    Zwei unabhaengige Ebenen:
+    1. _plan_structurally_intact(): Dimensionen/NaN-inf/identische
+       Zeitachse -- unabhaengig von der Geste.
+    2. Fingerprint-Selbstkonsistenz (compute_plan_fingerprint()):
+       KinematicCompiler.compile() speichert EINMAL einen Hash ueber die
+       tatsaechlich ausfuehrbaren Felder (Gelenkreihenfolge, Winkel,
+       Zeiten, Enddauer, Breathing-Metadaten). Diese Funktion rechnet den
+       Hash aus den AKTUELLEN Feldwerten NEU und vergleicht ihn mit dem
+       gespeicherten -- eine Aenderung AUCH NUR EINES Winkels/Zeitpunkts
+       NACH der Kompilierung aendert den neu berechneten Hash und wird
+       dadurch zuverlaessig erkannt (Auftrag, Testliste #8/#10). Ein Plan
+       ohne (leeren) Fingerprint gilt als NICHT ueber
+       KinematicCompiler.compile() erzeugt und wird ebenfalls abgelehnt.
+    Zusaetzlich: Gestenname, Gelenkmenge, Breathing-Metadaten, Speed-Scale
+    und Startpose-Fingerprint muessen zur Geste/den uebergebenen Aufrufparametern
+    passen. Gibt bei einer Abweichung eine Fehlermeldung zurueck (sonst None)."""
+    structural_error = _plan_structurally_intact(plan)
+    if structural_error is not None:
+        return structural_error
+
+    if not getattr(plan, "fingerprint", ""):
+        return (
+            "Plan besitzt keinen Fingerprint -- nicht ueber KinematicCompiler.compile() "
+            "erzeugt (oder das fingerprint-Feld wurde entfernt/geloescht)."
+        )
+    from .motion_transport import compute_plan_fingerprint  # lokal, siehe kinematic_compiler.py-Vorbild
+    if compute_plan_fingerprint(plan) != plan.fingerprint:
+        return (
+            "Plan-Fingerprint stimmt nicht mit dem tatsaechlichen Plan-Inhalt ueberein -- "
+            "der Plan wurde nach der Kompilierung veraendert."
+        )
+
     if plan.source_gesture_name != gesture.name:
         return (
             f"Plan.source_gesture_name={plan.source_gesture_name!r} passt nicht zur "
@@ -224,14 +288,27 @@ def _plan_matches_gesture(gesture, plan, speed_scale: Optional[float]) -> Option
                 f"Plan-Gelenkmenge {sorted(plan.joint_names)} weicht von der Geste "
                 f"{gesture.name!r} ({sorted(expected_joints)}) ab."
             )
+        if set(plan.disable_breathing_parts) != set(gesture.disable_breathing):
+            return (
+                f"Plan.disable_breathing_parts={sorted(plan.disable_breathing_parts)} weicht von "
+                f"der Geste ({sorted(gesture.disable_breathing)}) ab."
+            )
         if gesture.keyframes and speed_scale:
             raw_last_t = gesture.keyframes[-1]["time_from_start_s"]
             expected_duration = raw_last_t / speed_scale
-            if plan.max_duration_s is not None and abs(plan.max_duration_s - expected_duration) > 1e-6:
+            if abs(plan.max_duration_s - expected_duration) > 1e-6:
                 return (
                     f"Plan.max_duration_s={plan.max_duration_s:.6f}s passt nicht zur aus "
                     f"Geste+speed_scale={speed_scale} erwarteten Dauer {expected_duration:.6f}s."
                 )
+            if plan.speed_scale and abs(plan.speed_scale - speed_scale) > 1e-9:
+                return (
+                    f"Plan.speed_scale={plan.speed_scale!r} passt nicht zum angeforderten "
+                    f"speed_scale={speed_scale!r}."
+                )
+    from .motion_transport import _fingerprint_start_pose  # lokal, siehe oben
+    if getattr(plan, "start_pose_fingerprint", "") and plan.start_pose_fingerprint != _fingerprint_start_pose(start_pose):
+        return "Plan-Startpose-Fingerprint passt nicht zur uebergebenen Startpose (start_pose)."
     return None
 
 
@@ -315,7 +392,7 @@ class TrajectorySafetyValidator:
             except KinematicCompileError as e:
                 compile_error = str(e)
         else:
-            mismatch = _plan_matches_gesture(gesture, plan, speed_scale)
+            mismatch = _plan_matches_gesture(gesture, plan, speed_scale, start_pose)
             if mismatch is not None:
                 compile_error = f"Vorkompilierter Plan verworfen (Struktur-/Plausibilitaetspruefung): {mismatch}"
                 plan = None

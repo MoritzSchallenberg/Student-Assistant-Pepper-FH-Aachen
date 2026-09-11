@@ -21,7 +21,7 @@ import sys
 
 from .gesture_catalog import GestureCatalog, GestureValidationError
 from .kinematic_compiler import KinematicCompileError, KinematicCompiler
-from .motion_transport import DryRunMotionTransport, QicliTrajectoryTransport, TransportStatus
+from .motion_transport import DryRunMotionTransport
 from .trajectory_safety import TrajectorySafetyValidator
 
 
@@ -383,7 +383,19 @@ def cmd_live_test(args):
     """Gate fuer einen beaufsichtigten Live-Test -- siehe
     docs/GESTURE_LIVE_TEST_CHECKLIST.md. Schreibt NIE selbst
     tested_status: live_validated in eine YAML (Auftrag-Vorgabe) --
-    das bleibt ein manueller, bewusster Schritt nach dem Test."""
+    das bleibt ein manueller, bewusster Schritt nach dem Test.
+
+    Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.11 (bestaetigter Fund
+    2.9/'kein hardwarefaehiger CLI-Bypass'): dieser Befehl rief bisher
+    KinematicCompiler -> QicliTrajectoryTransport -> Pepper-Client
+    DIREKT auf -- vollstaendig AN Policy/Validator/Lease/Watchdog/Cancel/
+    Quarantaene VORBEI. Nach der manuellen Checkliste wird jetzt
+    stattdessen die ECHTE PlayGesture-Action der bereits laufenden Bridge
+    (im Profil 'supervised_hardware_test') angesprochen -- derselbe
+    Codepfad wie im Normalbetrieb, mit allen dort geltenden Sicherungen.
+    Reine Lese-/Simulationsbefehle (capture-pose/preview/
+    preview-trajectory/dry-run) bleiben bewusst direkt (Auftrag,
+    Abschnitt 3.11 letzter Satz)."""
     catalog, errors = _load_catalog(args.gesture_dir)
     if errors:
         for e in errors:
@@ -399,8 +411,8 @@ def cmd_live_test(args):
         return 1
 
     from .pepper_client import ThreadSafePepperClient
-    client = ThreadSafePepperClient()
-    if not client.is_reachable():
+    probe_client = ThreadSafePepperClient()
+    if not probe_client.is_reachable():
         print("Pepper nicht erreichbar (Port 22 antwortet nicht) -- live-test abgebrochen, "
               "bleibt bei tested_status aus der YAML.", file=sys.stderr)
         return 1
@@ -414,18 +426,61 @@ def cmd_live_test(args):
             return 1
 
     speed = 0.4 if not args.full_speed else min(args.speed_scale or gesture.speed_scale_default, 1.5)
-    print(f"Fuehre '{gesture.name}' mit speed_scale={speed} aus (erster Aufruf: "
-          "immer <= 0.4, siehe Checkliste) ...")
-    plan = KinematicCompiler().compile(gesture, speed_scale=speed, start_pose=client.snapshot_joints(gesture.affected_joints()))
-    transport = QicliTrajectoryTransport(client)
-    transport.prepare(plan, restore_snapshot=client.snapshot_joints(plan.joint_names) if gesture.restore_after else None)
-    transport.start()
-    status = transport.wait(timeout_s=plan.max_duration_s + 10.0)
-    transport.restore()
-    print(f"Ergebnis: {status}")
-    if status == TransportStatus.FAILED:
-        print(f"FEHLER: {transport.last_error}", file=sys.stderr)
-        return 1
+    action_name = f"/{args.bridge_namespace}/play_gesture" if args.bridge_namespace else "/play_gesture"
+    print(f"Sende PlayGesture-Ziel '{gesture.name}' mit speed_scale={speed} an "
+          f"'{action_name}' (erster Aufruf: immer <= 0.4, siehe Checkliste). Voraussetzung: "
+          "die Bridge laeuft bereits mit '-p execution_profile:=supervised_hardware_test "
+          "-p dry_run:=false' -- Policy/Validator/Lease/Watchdog/Cancel/Quarantaene der "
+          "Bridge gelten dabei genauso wie im Normalbetrieb.")
+
+    import rclpy
+    from rclpy.action import ActionClient
+    from ihk_pepper_interfaces.action import PlayGesture as PlayGestureAction
+
+    rclpy.init(args=None)
+    client_node = rclpy.create_node("gesturectl_live_test_client")
+    try:
+        action_client = ActionClient(client_node, PlayGestureAction, action_name)
+        if not action_client.wait_for_server(timeout_sec=10.0):
+            print(
+                f"FEHLER: PlayGesture-Action '{action_name}' nicht erreichbar -- laeuft die "
+                "Bridge im Profil 'supervised_hardware_test'? Keine Bewegung ausgeloest.",
+                file=sys.stderr,
+            )
+            return 1
+        goal = PlayGestureAction.Goal()
+        goal.gesture_name = gesture.name
+        goal.speed_scale = float(speed)
+        send_future = action_client.send_goal_async(goal)
+        rclpy.spin_until_future_complete(client_node, send_future, timeout_sec=10.0)
+        goal_handle = send_future.result()
+        if goal_handle is None or not goal_handle.accepted:
+            print(
+                "FEHLER: Ziel von der Bridge NICHT angenommen (Policy-/Lease-Ablehnung?) -- "
+                "keine Bewegung ausgeloest.", file=sys.stderr,
+            )
+            return 1
+        result_future = goal_handle.get_result_async()
+        # Bewusst KEIN zusaetzliches CLI-seitiges Timeout hier -- die
+        # Bridge selbst erzwingt den echten Bewegungsdeckel
+        # (gesture.max_duration_s) UND die separate Vorbereitungszeit-
+        # grenze (GESTURE_PREPARATION_TIMEOUT_S); ein zweites,
+        # unabhaengiges CLI-Timeout wuerde diese Deckel nur verdoppeln,
+        # ohne selbst irgendeine Hardwareaktion beeinflussen zu koennen.
+        rclpy.spin_until_future_complete(client_node, result_future)
+        action_result = result_future.result()
+        if action_result is None:
+            print("FEHLER: keine Ergebnis-Antwort von der Bridge erhalten.", file=sys.stderr)
+            return 1
+        result = action_result.result
+        print(f"Ergebnis: success={result.success} error_message={result.error_message!r}")
+        if not result.success:
+            print(f"FEHLER: {result.error_message}", file=sys.stderr)
+            return 1
+    finally:
+        client_node.destroy_node()
+        rclpy.shutdown()
+
     print(
         "Test durchgefuehrt. gesturectl setzt tested_status NICHT automatisch -- "
         f"bei erfolgreichem, beaufsichtigtem Test 'tested_status: live_validated' und "
@@ -482,6 +537,12 @@ def build_parser():
     p.add_argument("name")
     p.add_argument("--full-speed", action="store_true", help="zweiter Durchgang nach dem 0.4-Test")
     p.add_argument("--speed-scale", type=float, default=None)
+    p.add_argument(
+        "--bridge-namespace", default="pepper_bridge",
+        help="Namespace der laufenden Bridge (Entwicklungsauftrag 04-B, AP8-R2, "
+        "Abschnitt 3.11 -- live-test spricht die echte PlayGesture-Action an, "
+        "leer lassen fuer eine Bridge ohne Namespace)",
+    )
     p.set_defaults(func=cmd_live_test)
 
     return parser
