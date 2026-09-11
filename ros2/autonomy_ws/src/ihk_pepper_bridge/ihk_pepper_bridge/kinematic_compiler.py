@@ -63,6 +63,14 @@ MAX_JOINT_ACCEL_RAD_S2 = 25.0
 # haette einen speed_scale > 1 nicht erfasst).
 MAX_JOINT_VELOCITY_RAD_S = 3.0
 
+# Entwicklungsauftrag 04-B, AP8.5/AP8.7: einfache, monoton erhoehte
+# Versionskennung des Pruefumfangs von compile() -- wird in
+# TrajectorySafetyReport (trajectory_safety.py) und im spaeteren
+# Offline-Evidence-Report (gesturectl verify-offline, AP8.7) referenziert,
+# damit ein Report nachvollziehbar an EINEN bestimmten Pruefstand
+# gebunden ist. Kein Ersatz fuer eine echte Paketversion -- rein informell.
+COMPILER_VERSION = "ap8.4"
+
 # Neutrale Fallback-Haltung (rad) fuer Gelenke ohne uebergebenen start_pose
 # UND ohne fruehere Erwaehnung in der Geste -- entspricht der in AP13 als
 # eigene Geste "neutral_stand" hinterlegten Pose (0.0 bzw. dokumentierter

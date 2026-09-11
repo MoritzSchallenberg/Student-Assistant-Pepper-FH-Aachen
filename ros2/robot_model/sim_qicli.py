@@ -120,6 +120,43 @@ class SimQicli(Node):
         self.restore_joints(snapshot, duration)
         self._log_entry("lower_arms", duration=duration)
 
+    def play_synchronized_trajectory(self, joint_names, angle_lists, time_lists, steps_per_segment=10):
+        """Spielt eine VOLLSTAENDIG synchronisierte Mehrgelenk-Trajektorie
+        ab (Entwicklungsauftrag 04-B, AP8.7): ALLE Gelenke bewegen sich
+        GEMEINSAM entlang derselben Zeitachse -- bei einem echten
+        TrajectoryPlan aus kinematic_compiler.py ist time_lists fuer JEDES
+        Gelenk identisch (siehe dortige Moduldoku, fill_missing_joint_holds).
+        Im Unterschied zur sequenziellen Annaeherung in gesturectl.py::
+        cmd_preview (dort je ein set_angle()-Aufruf NACH dem anderen,
+        AUSDRUECKLICH NICHT repraesentativ fuer echtes Timing dokumentiert)
+        interpoliert diese Methode JEDEN Zeitschritt aller Gelenke
+        GLEICHZEITIG und publiziert sie in EINER gemeinsamen
+        /joint_states-Nachricht je Zwischenschritt. Bleibt weiterhin reines
+        /joint_states-Publishing -- KEINE echte ALMotion-Ansteuerung, KEIN
+        Kollisions-/Kontaktnachweis (siehe trajectory_safety.py in
+        ihk_pepper_bridge, DisabledCollisionBackend)."""
+        if not joint_names or not time_lists or not time_lists[0]:
+            return
+        shared_times = time_lists[0]
+        current = {j: self.angles.get(j, 0.0) for j in joint_names}
+        prev_t = 0.0
+        for idx, t in enumerate(shared_times):
+            segment_duration = max(t - prev_t, 0.0)
+            segment_start = dict(current)
+            segment_end = {j: angle_lists[k][idx] for k, j in enumerate(joint_names)}
+            steps = max(1, int(steps_per_segment * max(segment_duration, 0.05)))
+            for step in range(1, steps + 1):
+                frac = step / steps
+                for j in joint_names:
+                    self.angles[j] = segment_start[j] + (segment_end[j] - segment_start[j]) * frac
+                self._publish()
+                if segment_duration > 0:
+                    time.sleep(segment_duration / steps)
+            current = dict(segment_end)
+            prev_t = t
+        self._log_entry(
+            "play_synchronized_trajectory", joint_names=joint_names, time_lists=shared_times)
+
     def wave(self, side="R", repeats=3):
         sp, er, ey = f"{side}ShoulderPitch", f"{side}ElbowRoll", f"{side}ElbowYaw"
         snapshot = self.snapshot_joints([sp, er, ey])

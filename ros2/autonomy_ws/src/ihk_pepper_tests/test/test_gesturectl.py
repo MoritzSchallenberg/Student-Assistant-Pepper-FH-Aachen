@@ -64,6 +64,27 @@ def test_show_prints_keyframes(gesture_dir, capsys):
     assert "HeadPitch" in out
 
 
+# ---- preview-trajectory (Entwicklungsauftrag 04-B, AP8.5/AP8.7) ----
+# Braucht einen echten rclpy-Node (SimQicli) -- wie bei der bestehenden
+# 'preview'-Unterkommando bewusst KEIN Funktionstest hier (kein
+# rclpy.init() in der Unit-Test-Umgebung), nur die Parser-Registrierung.
+
+def test_preview_trajectory_is_registered_with_speed_scale_option():
+    parser = gesturectl.build_parser()
+    args = parser.parse_args(["preview-trajectory", "small_v2", "--speed-scale", "0.5"])
+    assert args.func is gesturectl.cmd_preview_trajectory
+    assert args.name == "small_v2"
+    assert args.speed_scale == 0.5
+
+
+def test_preview_trajectory_rejects_v1_gesture_before_touching_sim_qicli(gesture_dir, capsys):
+    # v1-Gesten haben keinen gemeinsamen TrajectoryPlan -- muss VOR jedem
+    # sim_qicli-Import/rclpy-Zugriff ablehnen.
+    rc = _run(gesture_dir, "preview-trajectory", "seq")
+    assert rc == 1
+    assert "schema_version 2" in capsys.readouterr().err
+
+
 # ---- dry-run (darf NIE Hardware anfassen) ----
 
 def test_dry_run_v1_never_touches_hardware(gesture_dir, capsys):

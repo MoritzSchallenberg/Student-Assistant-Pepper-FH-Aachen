@@ -22,6 +22,7 @@ import sys
 from .gesture_catalog import GestureCatalog, GestureValidationError
 from .kinematic_compiler import KinematicCompileError, KinematicCompiler
 from .motion_transport import DryRunMotionTransport, QicliTrajectoryTransport, TransportStatus
+from .trajectory_safety import TrajectorySafetyValidator
 
 
 def _default_gesture_dir():
@@ -225,6 +226,86 @@ def cmd_preview(args):
     return 0
 
 
+def cmd_preview_trajectory(args):
+    """Entwicklungsauftrag 04-B, AP8.5/AP8.7: SYNCHRONISIERTE Vorschau aus
+    dem tatsaechlichen TrajectoryPlan -- im Unterschied zu 'preview'
+    (sequenzielle Annaeherung, siehe dortiger Docstring) bewegen sich hier
+    ALLE betroffenen Gelenke GLEICHZEITIG entlang derselben Zeitachse
+    (SimQicli.play_synchronized_trajectory(), siehe robot_model/
+    sim_qicli.py). Druckt VOR der Wiedergabe den vollen
+    TrajectorySafetyReport (Gelenk-/Timing-Ergebnis, Kollisions-Backend-
+    Status, Hinweisflaggen). WICHTIG: bleibt eine reine /joint_states-
+    Visualisierung -- beweist WEDER Kollisionsfreiheit NOCH ein reales
+    Timing auf der Hardware (qicli/ALMotion koennen abweichen). Ersetzt
+    KEINEN beaufsichtigten Hardwaretest (docs/GESTURE_HARDWARE_ACCEPTANCE.md)."""
+    catalog, errors = _load_catalog(args.gesture_dir)
+    if errors:
+        for e in errors:
+            print(f"FEHLER beim Laden: {e}", file=sys.stderr)
+    try:
+        gesture = catalog.get(args.name)
+    except KeyError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+    if gesture.schema_version != 2:
+        print("preview-trajectory ist nur fuer schema_version 2 sinnvoll (v1 hat keinen "
+              "gemeinsamen TrajectoryPlan) -- 'preview' fuer v1 verwenden.", file=sys.stderr)
+        return 1
+
+    robot_model_dir = _find_robot_model_path()
+    if robot_model_dir not in sys.path:
+        sys.path.insert(0, robot_model_dir)
+    try:
+        from sim_qicli import SimQicli
+    except ImportError:
+        print(
+            "sim_qicli.py nicht gefunden (PEPPER_ROBOT_MODEL_PATH pruefen). "
+            "Vorschau braucht: 'ros2 launch pepper_description display_scripted.launch.py' "
+            "in einem zweiten Terminal, danach diesen Befehl erneut.",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("Hinweis: 'ros2 launch pepper_description display_scripted.launch.py' "
+          "muss in einem zweiten Terminal bereits laufen, sonst bewegt sich nichts sichtbar.")
+    sim = SimQicli(log_path=f"/tmp/gesturectl_preview_trajectory_{gesture.name}.json")
+    try:
+        speed = args.speed_scale or gesture.speed_scale_default
+        start_pose = sim.get_angles(gesture.affected_joints())
+        try:
+            plan = KinematicCompiler().compile(gesture, speed_scale=speed, start_pose=start_pose)
+        except KinematicCompileError as e:
+            print(f"KINEMATIK-COMPILER-FEHLER: {e}", file=sys.stderr)
+            return 1
+
+        report = TrajectorySafetyValidator().validate(gesture, start_pose=start_pose, plan=plan)
+        print(f"=== TrajectorySafetyReport '{gesture.name}' (compiler_version={report.compiler_version}) ===")
+        print(f"verdict: {report.verdict}")
+        print(f"affected_joints: {report.affected_joints}")
+        print(f"effective_duration_s: {report.effective_duration_s:.2f}" if report.effective_duration_s else "effective_duration_s: n/a")
+        print(f"collision_checked: {report.collision_checked} ({report.collision_backend_note})")
+        for msg in report.requires_manual_review:
+            print(f"  MANUELLE PRUEFUNG NOETIG: {msg}")
+        for msg in report.joint_timing_errors:
+            print(f"  FEHLER: {msg}", file=sys.stderr)
+        if report.verdict == "fail":
+            print("Abbruch: TrajectorySafetyReport meldet 'fail' -- keine Vorschau abgespielt.", file=sys.stderr)
+            return 1
+
+        snapshot = sim.snapshot_joints(plan.joint_names) if gesture.restore_after else None
+        sim.play_synchronized_trajectory(plan.joint_names, plan.angle_lists, plan.time_lists)
+        if snapshot is not None:
+            sim.restore_joints(snapshot)
+        print(
+            f"Synchronisierte Vorschau '{gesture.name}' fertig (verdict={report.verdict}, "
+            "KEIN Kollisionsnachweis, KEIN Hardwaretest). "
+            f"Log: /tmp/gesturectl_preview_trajectory_{gesture.name}.json"
+        )
+    finally:
+        sim.close()
+    return 0
+
+
 def cmd_capture_pose(args):
     """REINER Lesezugriff -- ruft NIE set_breathing/set_angle/
     play_trajectory auf, loest also NIE eine Bewegung aus und loest NIE
@@ -379,6 +460,14 @@ def build_parser():
     p.add_argument("name")
     p.add_argument("--speed-scale", type=float, default=None)
     p.set_defaults(func=cmd_preview)
+
+    p = sub.add_parser(
+        "preview-trajectory",
+        help="synchronisierte RViz-Vorschau aus dem echten TrajectoryPlan + TrajectorySafetyReport",
+    )
+    p.add_argument("name")
+    p.add_argument("--speed-scale", type=float, default=None)
+    p.set_defaults(func=cmd_preview_trajectory)
 
     p = sub.add_parser("capture-pose", help="aktuelle Gelenkwinkel lesen (REIN lesend)")
     p.add_argument("--joints", default=None, help="kommagetrennt, sonst alle freigegebenen Gelenke")
