@@ -51,6 +51,7 @@ class _FakeNode:
     _handle_cancel = ActuatorArbiterNode._handle_cancel
     _get_default_ttl = ActuatorArbiterNode._get_default_ttl
     _publish_state = ActuatorArbiterNode._publish_state
+    _publish_lease_revoked = ActuatorArbiterNode._publish_lease_revoked
 
     def __init__(self):
         self._params = {"default_ttl_s": 30.0}
@@ -62,6 +63,8 @@ class _FakeNode:
         self.state_pub = _FakePublisher()
         self.diagnostics_pub = _FakePublisher()
         self.base_lease_valid_pub = _FakePublisher()
+        # Entwicklungsauftrag 04-B, AP8.3.
+        self.lease_revoked_pub = _FakePublisher()
 
     def get_parameter(self, name):
         return _FakeParam(self._params[name])
@@ -205,3 +208,50 @@ def test_publish_state_base_lease_invalid_when_no_base_lease():
     node.mark_safety_ok()
     node._publish_state()
     assert node.base_lease_valid_pub.published[-1].data is False
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.3: gezieltes Widerrufs-Ereignis ----
+
+def test_cancel_publishes_a_targeted_lease_revoked_event():
+    node = _FakeNode()
+    node.mark_safety_ok()
+    acquire_resp = node._handle_acquire(
+        _acquire_request(owner_id="pepper_bridge", goal_id="goal-1"), AcquireActuatorLease.Response())
+    cancel_req = CancelActuation.Request()
+    cancel_req.lease_id = acquire_resp.lease_id
+    cancel_req.reason = "user_stop"
+    node._handle_cancel(cancel_req, CancelActuation.Response())
+    published = node.lease_revoked_pub.published
+    assert len(published) == 1
+    assert published[0].lease_id == acquire_resp.lease_id
+    assert published[0].owner_id == "pepper_bridge"
+    assert published[0].preempted_reason == "user_stop"
+
+
+def test_bumper_publishes_a_lease_revoked_event_per_revoked_lease():
+    node = _FakeNode()
+    node.mark_safety_ok()
+    a = node._handle_acquire(
+        _acquire_request(owner_id="pepper_bridge", resources=(SPEECH,), goal_id="g1"),
+        AcquireActuatorLease.Response())
+    b = node._handle_acquire(
+        _acquire_request(owner_id="pepper_bridge", resources=(HEAD,), goal_id="g2"),
+        AcquireActuatorLease.Response())
+    node.mark_safety_ok(bumper_active=True)
+    published_ids = {m.lease_id for m in node.lease_revoked_pub.published}
+    assert a.lease_id in published_ids
+    assert b.lease_id in published_ids
+
+
+def test_preemption_during_acquire_publishes_a_lease_revoked_event():
+    node = _FakeNode()
+    node.mark_safety_ok()
+    from ihk_pepper_interaction.actuator_arbiter import PRIORITY_ATTRACT, PRIORITY_DIALOGUE
+    low = node._handle_acquire(
+        _acquire_request(owner_id="attract", priority=PRIORITY_ATTRACT, goal_id="g1"),
+        AcquireActuatorLease.Response())
+    node._handle_acquire(
+        _acquire_request(owner_id="dialog", priority=PRIORITY_DIALOGUE, goal_id="g2"),
+        AcquireActuatorLease.Response())
+    published_ids = {m.lease_id for m in node.lease_revoked_pub.published}
+    assert low.lease_id in published_ids

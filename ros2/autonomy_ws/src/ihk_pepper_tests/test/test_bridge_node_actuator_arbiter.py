@@ -140,11 +140,13 @@ class _FakeNode:
     _on_safety_state_for_gestures = PepperBridgeNode._on_safety_state_for_gestures
     _on_mapping_active = PepperBridgeNode._on_mapping_active
     _on_interaction_state = PepperBridgeNode._on_interaction_state
+    _on_lease_revoked = PepperBridgeNode._on_lease_revoked
     _current_runtime_context = PepperBridgeNode._current_runtime_context
 
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
                  say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK,
-                 safety_ok=None, pepper_reachable=None, nav2_moving=None, mapping_active=None):
+                 safety_ok=None, pepper_reachable=None, nav2_moving=None, mapping_active=None,
+                 play_trajectory_sleep_s=0.0):
         from ihk_pepper_bridge import safety_topics
         self._params = {
             "dry_run": dry_run, "execution_profile": execution_profile,
@@ -155,7 +157,7 @@ class _FakeNode:
         self.gesture_policy = GestureExecutionPolicy()
         self.catalog = GestureCatalog(gesture_dir)
         assert self.catalog.reload() == []
-        self.pepper = _FakePepperClient(say_fn=say_fn)
+        self.pepper = _FakePepperClient(say_fn=say_fn, play_trajectory_sleep_s=play_trajectory_sleep_s)
         self.interrupt_channel = _FakeInterruptChannel()
         self.acquire_lease_client = _FakeArbiterClient(
             available=arbiter_available, granted=arbiter_granted,
@@ -173,6 +175,8 @@ class _FakeNode:
         self._mapping_active_fresh = safety_topics.FreshBool(True)
         self._interaction_state_fresh = safety_topics.FreshValue(None)
         self._pepper_reachable_fresh = safety_topics.FreshBool(False)
+        self._active_gesture_cancel_events = {}
+        self._revoked_lease_ids = set()
         now = time.monotonic()  # _current_runtime_context() vergleicht gegen time.monotonic()
         if nav2_moving is not None:
             self._nav2_moving_fresh.update(nav2_moving, now)
@@ -201,9 +205,11 @@ class _FakePublisher:
 
 
 class _FakePepperClient:
-    def __init__(self, say_fn=None):
+    def __init__(self, say_fn=None, play_trajectory_sleep_s=0.0):
         self.say_text_only_calls = []
         self._say_fn = say_fn
+        self._play_trajectory_sleep_s = play_trajectory_sleep_s
+        self.play_trajectory_calls = []
 
     def say_text_only(self, text):
         self.say_text_only_calls.append(text)
@@ -230,7 +236,9 @@ class _FakePepperClient:
         return NEUTRAL_STAND_POSE.get(joint, 0.0)
 
     def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute=True):
-        pass
+        self.play_trajectory_calls.append((joint_names, angle_lists, time_lists))
+        if self._play_trajectory_sleep_s:
+            time.sleep(self._play_trajectory_sleep_s)
 
 
 def _gesture_dir(tmp_path):
@@ -517,6 +525,83 @@ def test_on_interaction_state_handler_decodes_the_enum_name(tmp_path):
     node = _FakeNode(_gesture_dir(tmp_path))
     node._on_interaction_state(UInt8(data=int(InteractionState.CONVERSATION_READY)))
     assert node._current_runtime_context().current_interaction_state == "CONVERSATION_READY"
+
+
+def test_lease_revocation_during_a_running_gesture_aborts_it_and_is_not_success(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8.3: ein Lease-Widerruf muss das
+    # EXAKT betroffene, gerade laufende Ziel abbrechen -- niemals als
+    # Erfolg gemeldet werden, selbst wenn catalog.play() ohne Exception
+    # zurueckkehrt.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _revoke_soon():
+        # Wartet, bis die Lease tatsaechlich erworben und registriert ist.
+        for _ in range(50):
+            if node._active_gesture_cancel_events:
+                break
+            time.sleep(0.01)
+        lease_id = next(iter(node._active_gesture_cancel_events))
+        from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+        node._on_lease_revoked(ActuatorLeaseMsg(
+            lease_id=lease_id, owner_id="pepper_bridge", goal_id="", preempted=True,
+            preempted_reason="praemptiert durch 'motion_guard' (Prioritaet 1)",
+        ))
+
+    threading.Thread(target=_revoke_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == "lease_widerrufen"
+    assert goal_handle.outcome == "aborted"
+    # Nach Abschluss der Geste ist die Lease-Registrierung wieder sauber.
+    assert node._active_gesture_cancel_events == {}
+    assert node._revoked_lease_ids == set()
+
+
+def test_lease_revocation_for_a_different_owner_has_no_effect(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._active_gesture_cancel_events["some-lease"] = threading.Event()
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    node._on_lease_revoked(ActuatorLeaseMsg(
+        lease_id="some-lease", owner_id="run_dialogue_action_server", goal_id="", preempted=True,
+        preempted_reason="irrelevant",
+    ))
+    assert node._active_gesture_cancel_events["some-lease"].is_set() is False
+    assert "some-lease" not in node._revoked_lease_ids
+
+
+def test_lease_revocation_is_idempotent_for_repeated_notifications(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    event = threading.Event()
+    node._active_gesture_cancel_events["lease-x"] = event
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    msg = ActuatorLeaseMsg(
+        lease_id="lease-x", owner_id="pepper_bridge", goal_id="", preempted=True,
+        preempted_reason="doppelt",
+    )
+    node._on_lease_revoked(msg)
+    node._on_lease_revoked(msg)
+    assert event.is_set() is True  # kein Fehler durch den zweiten Aufruf
+
+
+def test_an_old_revocation_does_not_affect_a_later_unrelated_goal(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
+    node._on_lease_revoked(ActuatorLeaseMsg(
+        lease_id="old-lease", owner_id="pepper_bridge", goal_id="", preempted=True,
+        preempted_reason="alt",
+    ))
+    # Ein spaeteres, voellig unabhaengiges Ziel mit einer ANDEREN lease_id
+    # ist davon nicht betroffen.
+    new_event = threading.Event()
+    node._active_gesture_cancel_events["new-lease"] = new_event
+    assert new_event.is_set() is False
+    assert "new-lease" not in node._revoked_lease_ids
 
 
 def test_gesture_becoming_unsafe_between_first_and_second_check_is_rejected(tmp_path):

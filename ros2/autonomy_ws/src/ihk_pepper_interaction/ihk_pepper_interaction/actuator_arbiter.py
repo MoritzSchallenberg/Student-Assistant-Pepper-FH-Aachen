@@ -172,9 +172,25 @@ class ActuatorArbiter:
         self._expire_stale()
         now = self._now()
 
+        # Entwicklungsauftrag 04-B, AP8.3 (bestaetigter Fund, siehe
+        # DEVELOPMENT_ORDER_04_B_REPORT.md AP8 Commit 1/11, Abschnitt
+        # 3.5): frueher wurde JEDE Lease DESSELBEN owner_id von der
+        # Konfliktpruefung ausgenommen -- zwei Ziele derselben Bridge
+        # (z.B. zwei PlayGesture-Anfragen mit unterschiedlicher goal_id)
+        # konnten dadurch BEIDE dieselbe Ressource (z.B. RIGHT_ARM)
+        # gleichzeitig halten. Jetzt wird eine bestehende Lease NUR DANN
+        # von der Konfliktpruefung ausgenommen, wenn SOWOHL owner_id ALS
+        # AUCH goal_id (nicht leer) mit der bestehenden Lease
+        # uebereinstimmen (echtes Re-Acquire/eine Erneuerung DESSELBEN
+        # Ziels durch denselben Besitzer) -- ein leeres goal_id (Aufrufer,
+        # die es nicht mitgeben) wird NIE als "dasselbe Ziel" behandelt,
+        # und eine goal_id-Uebereinstimmung ALLEIN (ohne denselben Owner)
+        # schuetzt ebenfalls nicht -- sonst waere genau derselbe Fehler
+        # unter anderem Namen wieder da.
         conflicting = [
             lease for lease in self._leases.values()
-            if lease.owner_id != owner_id and _conflicts(resources, lease.resources)
+            if not (goal_id and lease.owner_id == owner_id and lease.goal_id == goal_id)
+            and _conflicts(resources, lease.resources)
         ]
 
         to_preempt = []

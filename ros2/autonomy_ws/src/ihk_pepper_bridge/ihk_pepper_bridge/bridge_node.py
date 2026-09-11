@@ -22,7 +22,7 @@ from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
-from ihk_pepper_interfaces.msg import SafetyState, SystemHealth
+from ihk_pepper_interfaces.msg import ActuatorLease, SafetyState, SystemHealth
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
 from ihk_pepper_interaction.actuator_arbiter import HEAD, PRIORITY_ATTRACT, PRIORITY_DIALOGUE
@@ -209,6 +209,24 @@ class PepperBridgeNode(Node):
         # (siehe dort), statt einen zweiten, blockierenden Netzwerk-Check
         # im Gesten-Ausfuehrungspfad selbst einzufuegen.
         self._pepper_reachable_fresh = safety_topics.FreshBool(False)
+
+        # Entwicklungsauftrag 04-B, AP8.3: verbindet einen Lease-Widerruf
+        # tatsaechlich mit dem exakt betroffenen laufenden Ziel (bisher
+        # nur ueber periodisches Abfragen von ~/state theoretisch
+        # erkennbar, siehe DEVELOPMENT_ORDER_04_B_REPORT.md AP8 Commit
+        # 1/11, Abschnitt 3.5). _active_gesture_cancel_events bindet
+        # lease_id -> dasselbe threading.Event, das die laufende Geste
+        # ohnehin schon beobachtet (cancel_event in _execute_gesture()) --
+        # ein Widerruf setzt es GENAU wie ein normales Action-Cancel,
+        # nutzt also den bereits bestehenden Abbruchpfad, keinen zweiten.
+        # _revoked_lease_ids faengt zusaetzlich den kurzen Zeitraum ab,
+        # in dem eine Lease ZWISCHEN Erwerb und der zweiten
+        # Autorisierungspruefung widerrufen wird (bevor der Eintrag in
+        # _active_gesture_cancel_events ueberhaupt existiert).
+        self._active_gesture_cancel_events: dict = {}
+        self._revoked_lease_ids: set = set()
+        self.create_subscription(
+            ActuatorLease, "/actuator_arbiter/lease_revoked", self._on_lease_revoked, 10)
 
         self.say_action_server = ActionServer(
             self, Say, "say",
@@ -471,6 +489,24 @@ class PepperBridgeNode(Node):
             name = None  # unbekannter Enum-Wert -- gilt wie "nicht empfangen"
         self._interaction_state_fresh.update(name, time.monotonic())
 
+    def _on_lease_revoked(self, msg: ActuatorLease):
+        """Entwicklungsauftrag 04-B, AP8.3: reagiert AUSSCHLIESSLICH auf
+        den eigenen, aktiven Lease -- ein Widerruf fuer ein FREMDES Ziel
+        (anderer owner_id) oder ein bereits abgeschlossenes eigenes Ziel
+        (lease_id nicht mehr in _active_gesture_cancel_events) hat KEINE
+        Wirkung. Setzt dasselbe cancel_event, das eine laufende Geste
+        ohnehin schon beobachtet -- kein zweiter Abbruchpfad."""
+        if msg.owner_id != OWNER_ID:
+            return
+        self._revoked_lease_ids.add(msg.lease_id)
+        cancel_event = self._active_gesture_cancel_events.get(msg.lease_id)
+        if cancel_event is not None:
+            self.get_logger().warn(
+                f"Aktuator-Lease '{msg.lease_id}' widerrufen ({msg.preempted_reason}) -- "
+                "laufendes Ziel wird abgebrochen."
+            )
+            cancel_event.set()
+
     def _current_runtime_context(self, lease_revoked: bool = False) -> RuntimeContext:
         """Entwicklungsauftrag 04-B, AP8.1/AP8.2: baut den Laufzeitkontext
         fuer GestureExecutionPolicy.authorize() aus den aktuell an der
@@ -577,10 +613,16 @@ class PepperBridgeNode(Node):
         # ersten Pruefung und dem Lease-Erwerb geaendert haben (siehe
         # Klassendoku gesture_execution_policy.py). Eine Ablehnung hier
         # gibt die gerade erworbene Lease sofort wieder frei, OHNE den
-        # Ausfuehrungs-Thread je zu starten.
+        # Ausfuehrungs-Thread je zu starten. lease_revoked (AP8.3): faengt
+        # den kurzen Zeitraum ab, in dem GENAU DIESE Lease zwischen Erwerb
+        # und dieser Pruefung bereits widerrufen wurde (siehe
+        # _on_lease_revoked()) -- consume statt nur lesen, damit derselbe
+        # Eintrag nicht faelschlich ein spaeteres Ziel beeinflusst.
+        lease_already_revoked = lease_id in self._revoked_lease_ids
+        self._revoked_lease_ids.discard(lease_id)
         second_decision = self.gesture_policy.authorize(
-            gesture, self._current_runtime_context(), execution_profile,
-            requested_speed_scale=goal_handle.request.speed_scale,
+            gesture, self._current_runtime_context(lease_revoked=lease_already_revoked),
+            execution_profile, requested_speed_scale=goal_handle.request.speed_scale,
         )
         if not second_decision.allowed:
             self.get_logger().warn(
@@ -601,6 +643,11 @@ class PepperBridgeNode(Node):
         # finally auf False zurueckgesetzt.
         self.gesture_in_progress_pub.publish(Bool(data=True))
         cancel_event = threading.Event()
+        # Entwicklungsauftrag 04-B, AP8.3: ab hier kann ein Lease-Widerruf
+        # (_on_lease_revoked()) dieses GENAUE Ziel erreichen -- registriert
+        # VOR dem Start des Ausfuehrungs-Threads, entfernt im finally
+        # unten (egal wie die Geste endet).
+        self._active_gesture_cancel_events[lease_id] = cancel_event
         try:
             done_event = threading.Event()
             outcome = {"error": None}
@@ -643,7 +690,16 @@ class PepperBridgeNode(Node):
                     cancel_event.set()
                     done_event.wait(GESTURE_CANCEL_GRACE_S)
                     break
+                if cancel_event.is_set():
+                    # Entwicklungsauftrag 04-B, AP8.3: extern gesetzt (z.B.
+                    # _on_lease_revoked()), NICHT ueber ein ROS-Cancel --
+                    # trotzdem auf das Ergebnis der laufenden
+                    # catalog.play()-Abbruchbehandlung warten, aber
+                    # unten NIE als Erfolg werten.
+                    done_event.wait(GESTURE_CANCEL_GRACE_S)
+                    break
 
+            lease_revoked_during_run = lease_id in self._revoked_lease_ids
             if outcome["error"] is not None:
                 e = outcome["error"]
                 if isinstance(e, (KeyError, GestureValidationError)):
@@ -657,11 +713,21 @@ class PepperBridgeNode(Node):
                 result.success = False
                 result.error_message = "abgebrochen"
                 goal_handle.canceled()
+            elif lease_revoked_during_run:
+                # Entwicklungsauftrag 04-B, AP8.3: cancel_event kam vom
+                # Lease-Widerruf, NICHT von einem regulaeren ROS-Cancel --
+                # NIE als Erfolg werten, selbst wenn catalog.play() ohne
+                # Exception zurueckkam.
+                result.success = False
+                result.error_message = "lease_widerrufen"
+                goal_handle.abort()
             else:
                 result.success = True
                 goal_handle.succeed()
         finally:
             self.gesture_in_progress_pub.publish(Bool(data=False))
+            self._active_gesture_cancel_events.pop(lease_id, None)
+            self._revoked_lease_ids.discard(lease_id)
             self._release_lease(lease_id)
         return result
 

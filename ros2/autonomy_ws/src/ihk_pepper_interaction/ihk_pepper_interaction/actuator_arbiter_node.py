@@ -68,6 +68,20 @@ class ActuatorArbiterNode(Node):
         self.state_pub = self.create_publisher(ActuatorState, "~/state", 10)
         self.diagnostics_pub = self.create_publisher(String, "~/diagnostics", 10)
         self.base_lease_valid_pub = self.create_publisher(Bool, "~/base_lease_valid", 10)
+        # Entwicklungsauftrag 04-B, AP8.3: bestaetigter Fund (siehe
+        # DEVELOPMENT_ORDER_04_B_REPORT.md AP8 Commit 1/11, Abschnitt
+        # 3.5) -- ein Lease-Widerruf wurde bisher NUR ueber periodisches
+        # Abfragen von ~/state erkennbar (der widerrufene Lease
+        # verschwindet dort einfach aus active_leases, kein an
+        # lease_id/goal_id/owner_id/Grund gebundenes Ereignis). Neues,
+        # dediziertes Topic -- EIN ActuatorLease-Eintrag PRO
+        # widerrufenem/praemptiertem Ziel, im selben Moment
+        # veroeffentlicht, in dem es passiert (Praemption bei acquire(),
+        # Not-Stopp/Bumper, expliziter CancelActuation-Aufruf).
+        # Wiederverwendet ActuatorLease.msg (traegt bereits lease_id/
+        # owner_id/goal_id/preempted/preempted_reason) -- kein neuer
+        # Nachrichtentyp noetig.
+        self.lease_revoked_pub = self.create_publisher(ActuatorLease, "~/lease_revoked", 10)
 
         self.create_service(
             AcquireActuatorLease, "~/acquire", self._handle_acquire, callback_group=cb_group)
@@ -100,7 +114,21 @@ class ActuatorArbiterNode(Node):
                     f"Not-Stopp/Bumper -- {len(revoked)} Lease(s) sofort widerrufen: "
                     f"{[le.owner_id for le in revoked]}"
                 )
+                for lease in revoked:
+                    self._publish_lease_revoked(lease, reason)
             self._publish_state()
+
+    def _publish_lease_revoked(self, lease, reason: str) -> None:
+        """Entwicklungsauftrag 04-B, AP8.3: EIN gezieltes Ereignis fuer
+        GENAU dieses widerrufene Ziel -- der Besitzer (siehe
+        bridge_node.py::_on_lease_revoked) reagiert nur auf einen
+        lease_id-Treffer gegen seine EIGENE, gerade aktive Lease, niemals
+        auf ein spaeteres, andersartiges Ziel."""
+        self.lease_revoked_pub.publish(ActuatorLease(
+            lease_id=lease.lease_id, owner_id=lease.owner_id, purpose=lease.purpose,
+            resources=sorted(lease.resources), priority=lease.priority,
+            remaining_s=0.0, goal_id=lease.goal_id, preempted=True, preempted_reason=reason,
+        ))
 
     def _safety_ok(self) -> bool:
         if self._safety_state is None or self._safety_state_received_at is None:
@@ -137,6 +165,8 @@ class ActuatorArbiterNode(Node):
                 f"Lease gewaehrt: owner={request.owner_id} resources={sorted(request.resources)} "
                 f"purpose={request.purpose}"
             )
+            for preempted_lease in result.preempted_leases:
+                self._publish_lease_revoked(preempted_lease, preempted_lease.preempted_reason)
         self._publish_state()
         return response
 
@@ -163,6 +193,7 @@ class ActuatorArbiterNode(Node):
         self._arbiter.release(lease.lease_id)
         self._last_abort_reason = request.reason or "cancel_actuation"
         self._last_abort_confirmed = True
+        self._publish_lease_revoked(lease, self._last_abort_reason)
         response.found = True
         response.already_inactive = False
         response.message = f"Lease '{lease.lease_id}' widerrufen (owner={lease.owner_id})"

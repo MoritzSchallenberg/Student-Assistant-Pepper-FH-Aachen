@@ -204,3 +204,71 @@ def test_monotonic_time_basis_is_used_not_wall_clock(clock):
     result = arbiter.acquire("a", {HEAD}, "x", safety_ok=True, priority=PRIORITY_DIALOGUE, ttl_s=1.0)
     assert result.lease.started_at == clock.t
     assert result.lease.expires_at == clock.t + 1.0
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.3: gleicher Owner, verschiedene Ziele ----
+
+def test_same_owner_different_goal_id_conflicts_on_overlapping_resources(arbiter):
+    # Bestaetigter Fund (siehe DEVELOPMENT_ORDER_04_B_REPORT.md, AP8
+    # Commit 1/11, Abschnitt 3.5): zwei PlayGesture-Ziele DERSELBEN
+    # Bridge mit unterschiedlicher goal_id duerfen NIE beide RIGHT_ARM
+    # gleichzeitig halten.
+    first = arbiter.acquire(
+        "pepper_bridge", {RIGHT_ARM}, "play_gesture:wave_right", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-1")
+    assert first.granted is True
+    second = arbiter.acquire(
+        "pepper_bridge", {RIGHT_ARM}, "play_gesture:t_pose", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-2")
+    assert second.granted is False
+    assert "pepper_bridge" in second.conflicting_owners
+    # Niemals zwei parallele Hardwaretrajektorien -- die erste Lease
+    # bleibt unveraendert aktiv.
+    assert arbiter.get_lease(first.lease.lease_id) is not None
+
+
+def test_same_owner_disjoint_resources_run_in_parallel(arbiter):
+    first = arbiter.acquire(
+        "pepper_bridge", {RIGHT_ARM}, "play_gesture:wave_right", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-1")
+    second = arbiter.acquire(
+        "pepper_bridge", {LEFT_ARM}, "play_gesture:point_to_self", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-2")
+    assert first.granted is True
+    assert second.granted is True
+
+
+def test_same_owner_same_goal_id_can_reacquire_without_self_conflict(arbiter):
+    # Ein echtes Re-Acquire/eine Erneuerung DESSELBEN Ziels (dieselbe
+    # goal_id) darf nicht an der eigenen, noch aktiven Lease scheitern.
+    first = arbiter.acquire(
+        "pepper_bridge", {RIGHT_ARM}, "play_gesture:wave_right", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-1")
+    assert first.granted is True
+    second = arbiter.acquire(
+        "pepper_bridge", {RIGHT_ARM}, "play_gesture:wave_right", PRIORITY_DIALOGUE,
+        safety_ok=True, goal_id="goal-1")
+    assert second.granted is True
+
+
+def test_same_owner_empty_goal_id_still_conflicts_with_itself(arbiter):
+    # Ein leeres goal_id (Aufrufer, die keins mitgeben) darf NIE als
+    # "dasselbe Ziel" gelten -- sonst waere genau derselbe Fehler unter
+    # einem anderen Namen wieder da.
+    first = arbiter.acquire(
+        "legacy_owner", {HEAD}, "purpose_a", PRIORITY_DIALOGUE, safety_ok=True)
+    assert first.granted is True
+    second = arbiter.acquire(
+        "legacy_owner", {HEAD}, "purpose_b", PRIORITY_DIALOGUE, safety_ok=True)
+    assert second.granted is False
+
+
+def test_different_owners_with_the_same_goal_id_still_conflict(arbiter):
+    # goal_id-Uebereinstimmung allein reicht NICHT -- der Ausschluss gilt
+    # nur fuer DENSELBEN owner_id UND dieselbe goal_id zusammen.
+    first = arbiter.acquire(
+        "owner_a", {HEAD}, "purpose_a", PRIORITY_DIALOGUE, safety_ok=True, goal_id="shared-id")
+    assert first.granted is True
+    second = arbiter.acquire(
+        "owner_b", {HEAD}, "purpose_b", PRIORITY_DIALOGUE, safety_ok=True, goal_id="shared-id")
+    assert second.granted is False
