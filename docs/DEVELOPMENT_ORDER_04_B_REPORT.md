@@ -1852,3 +1852,206 @@ fehlerfrei; alle 23 v2-Gesten liefern einen `TrajectorySafetyReport`
 alle geänderten Dateien -- keine Treffer. `navigation_live.launch.py`
 wurde zu keinem Zeitpunkt gestartet. Kein Push, keine Änderung an
 `main`, `git status --short` sauber nach dem Korrekturcommit.
+
+## AP8-R2: Transportterminalität, atomare Bewegungsfreigabe und beweisgebundene Trajektorien
+
+Korrekturauftrag nach einer erneuten Prüfung der AP8-R1-Commits.
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `2cbb70f`,
+working tree sauber (`git status --short` 0 Zeilen), Python `1600
+bestanden, 3 übersprungen`, BT.CPP `23 bestanden, 0 fehlgeschlagen, 0
+deaktiviert, 4 übersprungen` -- entspricht exakt dem gemeldeten Stand,
+keine Abweichung. Finaler Stand nach dem Korrekturcommit `ef38305`:
+Python `1645 bestanden, 3 übersprungen` (45 neue/erweiterte Tests),
+BT.CPP unverändert `23/0/0/4`, `git status --short` erneut sauber.
+
+### Alle neun bestätigten Restlücken (Auftrag Abschnitt 2)
+
+1. **2.1 Überwachtes Thread-Ende ≠ Transportende**: `MotionTransport`
+   erhält eine echte `wait_for_terminal(timeout_s=None)`-Methode
+   (Basisklasse: `poll() != RUNNING`, korrekt für synchrone Mock-/
+   Dry-Run-Transporte). `QicliTrajectoryTransport` überschreibt sie mit
+   einem Warten auf das reale `_done_event`. `_play_v2()` ruft bei
+   unbestätigtem `cancel()` jetzt `transport.wait_for_terminal()`
+   (unbegrenzt) auf, BEVOR es zurückkehrt -- der äußere Bridge-Worker
+   (und damit `done_event`) endet dadurch strukturell erst mit dem
+   ECHTEN Transport-Ende, nicht mit dem bloßen Ablauf von `cancel()`s
+   internem Timeout.
+2. **2.2 Lease-Quarantäne läuft ab**: `bridge_node.py::
+   _local_resource_conflict()` prüft VOR jedem `_acquire_lease()`
+   zusätzlich alle noch nicht abgeschlossenen `_active_executions` auf
+   Ressourcenüberlappung -- unabhängig vom (ggf. neu gestarteten oder
+   zurückgesetzten) Arbiter. `_renew_lease()` erneuert die Lease bei
+   halbem TTL über den Watchdog; scheitert das, wird der Abbruchgrund
+   `LEASE_REVOKED` gesetzt, die lokale Ausführungssperre bleibt aber
+   unabhängig vom Renew-Ergebnis bestehen.
+3. **2.3 Produktions-Kollisionsnachweis umgehbar**: `_play_v2()` prüft
+   jetzt `require_collision_proof` gegen `verdict=='pass' UND
+   collision_checked==True` (vorher nur `verdict`). Ein reiner
+   `JointAndTimingValidator` liefert weiterhin `collision_checked=false`
+   und wird production NICHT mehr durchlassen. Zwei bestehende Tests, die
+   einen reinen `JointAndTimingValidator` fälschlich als
+   "Kollisionsnachweis" behandelt hatten, wurden korrigiert -- ein neuer,
+   ausdrücklich als TEST-DOUBLE dokumentierter
+   `_TestDoubleFakeCollisionProofBackend` (niemals als echtes Backend
+   dokumentiert) liefert jetzt `collision_checked=True`.
+4. **2.4 Vorkompilierte Pläne nicht vollständig gebunden**:
+   `compute_plan_fingerprint()`/`_fingerprint_start_pose()` (neu in
+   `motion_transport.py`) berechnen einen SHA-256-Fingerabdruck über
+   ALLE ausführbaren Planfelder (Gelenke, Winkel, Zeiten, Dauer,
+   Breathing-Teile) bzw. die Startpose -- selbstreferentiell aus den
+   AKTUELLEN Feldwerten, nicht nur den Eingaben, damit jede
+   Nachbearbeitung erkennbar bleibt. `trajectory_safety.py::
+   _plan_matches_gesture()` prüft zusätzlich Listenlängen, identische
+   Zeitachsen, NaN/inf in jedem Wert und die Fingerprint-Übereinstimmung.
+5. **2.5 Hardware verändert vor abgeschlossener Freigabe**: `_play_v2()`
+   liest/validiert den Snapshot jetzt SOFORT (fail-closed bei fehlend/
+   None/NaN/inf, `_validate_full_snapshot()`), kompiliert und validiert
+   den Plan, prüft das Produktionsgate -- ALLES bevor Breathing
+   deaktiviert oder der Transport überhaupt konstruiert wird.
+6. **2.6 Revocation-Fenster offen**: unmittelbar vor dem Deaktivieren von
+   Breathing wird `cancel_event` erneut geprüft (kein Start bei bereits
+   gesetztem Signal). `_on_lease_revoked()` ignoriert jetzt eine
+   Revocation mit einer von der aktiven Ausführung ABWEICHENDEN
+   `goal_id` vollständig (verifiziert gegen
+   `actuator_arbiter_node.py::_publish_lease_revoked()`, das `goal_id`
+   echt aus der Lease befüllt).
+7. **2.7 `max_duration_s` kein echter Laufzeitdeckel**: der harte
+   Bewegungsdeckel ist jetzt exakt
+   `transport_started_monotonic_s + gesture.max_duration_s`, OHNE
+   zusätzliche Marge (ersetzt die alte `+5.0s`-Fassung). Die getrennte,
+   bewusst großzügige `GESTURE_PREPARATION_TIMEOUT_S` deckt nur die
+   Vorbereitungsphase (Snapshot/Kompilieren/Validieren) ab und erweitert
+   den eigentlichen Bewegungsdeckel nicht. `gesture_execution_policy.py`
+   verweigert Hardwareprofilen zusätzlich jede Geste mit fehlendem/NaN/
+   unendlichem/nicht-positivem `max_duration_s`.
+8. **2.8 Cancel-Gründe nicht an ihre Quelle gebunden**: ein bloßes
+   ROS-Action-Cancel setzt jetzt `PREEMPTED` statt automatisch
+   `NORMAL_USER_CANCEL` -- macht Restore nach einem ungebundenen Cancel
+   strukturell unmöglich (`restore_allowed()` erlaubt Restore
+   ausschließlich für `NORMAL_USER_CANCEL`). Das Codewort "Eisenbahn"
+   (`command_router_node.py` normalisiert es zu `interrupt_and_look`,
+   veröffentlicht auf `/interaction/authorized_command`) wird jetzt über
+   eine neue Subscription (`bridge_node.py::_on_authorized_command()`)
+   tatsächlich an `CODEWORD_INTERRUPT` gebunden -- vorher hatte KEIN
+   Konsument dieses Topic mit einer laufenden Geste verbunden.
+9. **2.9 Weitere fail-closed-Lücken**: ein im Snapshot komplett
+   fehlendes (nicht nur `None`-wertiges) Gelenk wird jetzt in
+   `kinematic_compiler.py` korrekt abgelehnt.
+   `QicliTrajectoryTransport._run()` behandelt `play_trajectory()==False`
+   jetzt als `FAILED` (vorher als Erfolg gewertet); ein `False`-Rückgabewert
+   von `stop_motion()` zählt nicht mehr als bestätigt gesendet. Eine
+   normale (nicht abgebrochene) Beendigung restaurierte bisher
+   UNBEDINGT, ohne den aktuellen Sicherheitszustand zu prüfen --
+   inkonsistent mit der Breathing-Reaktivierung (die das bereits korrekt
+   tat); jetzt vereinheitlicht fail-closed. `main()` ruft jetzt
+   `node.shutdown_and_wait_for_terminal()` (Shutdown-Flag ->
+   `CancelSignal`s auf `NODE_SHUTDOWN` -> Best-Effort-Interrupt ->
+   begrenztes Warten auf bestätigtes Transport-Ende -> sichtbare
+   Quarantänemeldung) VOR `node.pepper.close()`/`node.destroy_node()`
+   auf (vorher umgekehrt). `gesturectl live-test` ruft nach der
+   Checkliste nicht mehr `KinematicCompiler`/`QicliTrajectoryTransport`
+   direkt auf, sondern die echte `PlayGesture`-Action einer bereits
+   laufenden Bridge im Profil `supervised_hardware_test` --
+   `capture-pose`/`preview`/`preview-trajectory`/`dry-run` bleiben
+   bewusst direkt.
+
+### Ausführungsdatensatz (Abschnitt 3.1)
+
+Neu in `gesture_cancellation.py`: `ExecutionPhase` (8 Phasen:
+`PREPARING, READY, STARTING, RUNNING, CANCEL_PENDING, QUARANTINED,
+TERMINAL, CLEANED`) und `ActiveGestureExecution` (`lease_id, goal_id,
+owner_id, resources, gesture_name, cancel_signal, phase,
+transport_started_monotonic_s, last_renewed_monotonic_s,
+transport_terminal, quarantined, cleanup_completed`). Registriert in
+`bridge_node.py::_active_executions` (unter demselben
+`_active_execution_lock` wie die historisch gewachsenen, aus
+Rückwärtskompatibilität weitergeführten losen Strukturen
+`_active_gesture_cancel_events`/`_revoked_lease_ids`/
+`_quarantined_lease_ids`). Alle Zustandsübergänge laufen unter diesem
+gemeinsamen Lock.
+
+### Commit-Struktur (Abschnitt 6)
+
+Der Auftrag empfahl zwei getrennte Commits (9/14 "bind validated
+trajectories to an atomic pre-start safety gate", 10/14 "make transport
+terminality and lease quarantine durable"). Beide Themen sind oben klar
+benannt, laufen aber in EINEM Commit (`ef38305`, "AP8 (9-10/14): atomic
+pre-start safety gate + durable transport terminality/lease
+quarantine"), weil die Änderungen in denselben Methoden
+(`_play_v2()`/`_execute_gesture()`) und denselben Testdateien so eng
+verzahnt sind, dass ein Diff-Split auf Hunk-Ebene ein reales Risiko
+getragen hätte, einen der beiden Commits in einem nicht eigenständig
+build- und testbaren Zwischenzustand zu hinterlassen (Abschnitt 5
+verlangt volle Regression NACH JEDEM Commit). Ein einzelner,
+vollständig getesteter Commit mit klar benannten Teilthemen wiegt hier
+schwerer als eine erzwungene, aber unehrliche Aufspaltung -- konsistent
+mit der bereits in AP8-R1 etablierten Praxis.
+
+### Korrigierte Szenarien D/F/H
+
+Szenario D (`test_scenario_d_unconfirmed_transport_never_reports_success_and_keeps_the_lease`)
+bewies bereits vorher `cancel_unconfirmed`+keine Lease-Freigabe direkt
+über `GESTURE_CANCEL_GRACE_S`, ohne den Arbiter zu simulieren -- die im
+Auftrag kritisierte Vermischung ("die Fake-Arbiter-Konfliktprüfung darf
+den Quarantänemechanismus selbst nicht ersetzen") betraf ausschließlich
+die SEPARATEN Konfliktprüfungstests, die jetzt durch
+`test_local_resource_conflict_blocks_a_second_target_even_if_the_arbiter_would_grant_it`
+ersetzt/ergänzt sind (beweist die lokale Sperre OHNE eine Arbiter-Antwort
+zu manipulieren). Szenario F
+(`test_scenario_f_missing_collision_backend_is_inconclusive_offline_ok_production_blocked`)
+nutzt jetzt den ausdrücklich als Test-Double dokumentierten
+`_TestDoubleFakeCollisionProofBackend` für die Produktions-Gegenprobe
+statt eines rohen `JointAndTimingValidator`. Szenario H (beide
+Revocation-Timing-Tests) bleibt inhaltlich gültig und wurde durch neue,
+GEZIELT auf die goal_id-Bindung geprüfte Tests
+(`test_lease_revocation_with_a_different_goal_id_does_not_affect_the_active_target`
+u.a.) ergänzt.
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete), `python3 -m pytest
+ihk_pepper_tests/test -q` → **1645 bestanden, 3 übersprungen** (vorher
+1600/3 -- 45 neue/erweiterte Tests), `colcon test --packages-select
+ihk_pepper_behavior_tree` → **23 Tests, 0 Fehler, 0 Fehlschläge, 4
+übersprungen** (unverändert). Alle 24 Gestendateien laden fehlerfrei,
+alle 23 v2-Gesten kompilieren mit vollem Snapshot (0 Fehlschläge).
+`t_pose` bleibt unverändert `tested_status: live_validated`, v1, und
+über die bestehende (in AP8-R2 nicht angetastete) v1-Produktionssperre
+weiterhin aus `production` ausgeschlossen. Kein SSH-/qicli-Aufruf, kein
+`/cmd_vel`, kein Start von `navigation_live.launch.py`, keine
+Hardwarebewegung in irgendeinem automatischen Test. Kein Push, keine
+Änderung an `main`, keine Änderung an einem bestehenden Commit,
+`git status --short` sauber nach dem Korrekturcommit `ef38305`.
+
+### Offene `hwverificationrequired`-Punkte
+
+Unverändert gegenüber AP8-R1: es existiert weiterhin KEIN echtes
+Kollisions-Backend -- `production` bleibt für Gesten strukturell
+gesperrt (`DisabledCollisionBackend`, ehrlich dokumentiert), bis ein
+reales Backend verfügbar ist. `gesturectl live-test` wurde in dieser
+Session nicht gegen echte Hardware ausgeführt (kein Pepper angeschlossen)
+-- die Umstellung auf die echte `PlayGesture`-Action ist strukturell
+verifiziert (Unit-Test mit Fake-ActionClient), aber NICHT live gegen
+einen laufenden Bridge-Prozess getestet. Die im Auftrag als "bevorzugt"
+bezeichnete `ValidatedTrajectory`/`compile_and_validate()`-Architektur
+(Abschnitt 3.4) wurde NICHT als eigener neuer Typ eingeführt --
+stattdessen wurde der bestehende `plan=`-Injektionspfad gemäß der im
+Auftrag selbst vorgesehenen Ausweichklausel ("falls der bestehende
+plan=-Pfad erhalten bleibt, muss er sämtliche ausführbaren Felder
+kanonisch prüfen") vollständig gehärtet (Fingerprint- und
+Strukturprüfung). Eine spätere Umstellung auf einen dedizierten
+`compile_and_validate()`-Rückgabetyp bleibt möglich, ist aber nicht
+zwingend.
+
+### Katalogkuratierung (11/14) kann beginnen
+
+Alle neun bestätigten Restlücken sind geschlossen und durch
+deterministische, event-/barrierebasierte Tests abgesichert (keine
+zufällig bestehenden Sleep-basierten Nachweise). Die Laufzeitkette
+(Bridge → Policy → Validator → Lease/Quarantäne → Watchdog →
+Transport) ist jetzt durchgängig atomar/fail-closed für den
+tatsächlichen Bewegungsstart, das tatsächliche Bewegungsende, Cancel-
+Gründe und Restore/Breathing. Die Katalogkuratierung (11/14) kann auf
+dieser Grundlage sicher beginnen -- keine der neun Lücken betrifft die
+YAML-Metadaten-Struktur selbst, die 11/14 erweitern soll.
