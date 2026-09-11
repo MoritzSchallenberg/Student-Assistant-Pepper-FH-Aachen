@@ -1538,3 +1538,107 @@ ONNX-Modell, ein echtes Mikrofon, echtes Nav2) einzeln nachgewiesen
 werden -- AP8s neue Gesten sollten nach demselben Muster wie AP7.1
 zunächst gegen Mocks/Dry-Run-Modi entwickelt und erst nach bestandener
 Hardwareabnahme freigegeben werden.
+
+## AP8: Sichere Gestenlaufzeit, kinematische Bewegungsqualität und beaufsichtigbare Gestenentwicklung
+
+Nachfolgeauftrag zu AP7.1 -- härtet die tatsächliche Gesten-
+Ausführungsgrenze (`pepper_bridge`), statt neue Bewegungen zu bauen.
+Auf demselben Branch (`order-04b-kiconnect-gesture-memory-lifecycle-audio`),
+direkt auf dem AP7.1-Abschluss-Commit (`74d6286`) aufbauend.
+
+### Commit 1/11: audit gesture runtime boundary and catalogue baseline
+
+**Baseline verifiziert** (Branch `order-04b-kiconnect-gesture-memory-lifecycle-audio`,
+HEAD `74d6286`, working tree sauber -- `git status --porcelain` 0
+Zeilen): Python `python3 -m pytest ihk_pepper_tests/test` → **1454
+passed, 3 skipped** (entspricht dem gemeldeten Stand). BT.CPP
+`colcon test-result --all` → **23 tests, 0 errors, 0 failures, 4
+skipped** (entspricht dem gemeldeten Stand). Sekundäre Prüfung: 24
+Gesten-YAML-Dateien geladen, `tested_status`-Verteilung per `grep`
+gezählt -- **1 `live_validated` (t_pose), 7 `dry_run_validated`, 16
+`draft`** (entspricht exakt der im Auftrag gemeldeten Liste, KEIN
+Statuswert wurde allein aufgrund der Auftragsliste übernommen, sondern
+aus den tatsächlichen Dateien nachgezählt). Secret-Scan (`git grep`
+gegen AWS-/GitHub-/Slack-/OpenAI-Token-Muster und private-Key-Header)
+ohne Treffer. `git ls-files` zeigt keine `.env`/keine `*.db`/`*.sqlite`
+-- nur `.env.example`/`ansible/inventory/production.example.yml`/ein
+Ansible-Jinja2-Template (`env_secrets.j2`, keine echten Werte). `.env`
+selbst ist über `.gitignore` ausgeschlossen (per `git check-ignore -v`
+bestätigt, nicht nur aus Dateiabwesenheit gefolgert).
+
+**Bestätigte Lücken** (gegen Auftrag Abschnitt 3, per Code-Lektüre
+verifiziert):
+
+- **3.1 (Produktionsfreigabe endet vor der Ausführungsgrenze)**:
+  bestätigt. `bridge_node.py::_execute_gesture()` ruft
+  `self.catalog.get(name)`/`self.catalog.play(...)` auf, OHNE
+  `gesture.tested_status` an irgendeiner Stelle zu prüfen --
+  `gesture_catalog.py::GestureCatalog.play()` kennt `tested_status`
+  nur als geladenes Feld (`VALID_TESTED_STATUS`-Schemaprüfung beim
+  Laden), aber keine Zeile in `play()`/`_play_v1()`/`_play_v2()`
+  vergleicht ihn gegen einen erlaubten Wertebereich. Ein direkter
+  Action-Aufruf gegen `/pepper_bridge/play_gesture` kann daher JEDE
+  Geste unabhängig von ihrem Verifikationsstatus anfordern.
+- **3.2 (Laufzeitzustände nicht bis zur Ausführungsgrenze)**:
+  bestätigt. `_execute_gesture()` übergibt an `self.catalog.play(...)`
+  ausschließlich `nav2_moving=self._nav2_moving` -- die Parameter
+  `mapping_active`/`current_interaction_state`, die `play()` bereits
+  entgegennimmt und tatsächlich auswertet, werden an dieser
+  Aufrufstelle NIE gesetzt (bleiben bei den Funktions-Defaults `False`/
+  `None`). `bridge_node.py` abonniert weder ein Mapping- noch ein
+  Interaktionszustand-Topic.
+- **3.3 (Metadaten gelesen, aber nicht durchgesetzt)**: bestätigt.
+  `max_duration_s` wird in `Gesture.__init__` nur eingelesen, in keiner
+  `play()`-Methode verglichen. `on_cancel` wird eingelesen
+  (`self.on_cancel = data.get("on_cancel", "hold")`), aber NIRGENDS
+  gegen einen erlaubten Wertebereich geprüft (kein
+  `VALID_ON_CANCEL`-Äquivalent zu `VALID_TESTED_STATUS`) und in
+  `_play_v2()` nicht ausgewertet -- der `finally`-Block ruft
+  `transport.restore()` UNBEDINGT auf, sobald ein `snapshot`
+  existierte, unabhängig davon, ob der Abbruch ein normaler Cancel
+  oder ein sicherheitsbedingter Abbruch war.
+- **3.4 (skalierte Trajektorie nicht vollständig geprüft)**: bestätigt.
+  `Gesture._validate_v2_velocity()` prüft Geschwindigkeit auf der
+  UNSKALIERTEN `time_from_start_s`-Achse (Ladezeitpunkt, vor jeder
+  `speed_scale`-Anwendung). `KinematicCompiler.compile()` skaliert die
+  Zeitachse (`times = [t/scale ...]`) und prüft Beschleunigung darauf
+  (`_check_acceleration(joint, times, angles)` -- bereits auf der
+  skalierten Achse, entgegen einer ersten Fehleinschätzung beim
+  Code-Lesen), ABER prüft Geschwindigkeit auf dieser skalierten Achse
+  NICHT erneut. Der Übergang von der tatsächlichen Startpose
+  (`start_pose`/`NEUTRAL_STAND_POSE`) zum ersten Keyframe wird an
+  keiner Stelle geprüft -- ein Keyframe mit `time_from_start_s == 0.0`,
+  dessen Gelenkwerte von der Startpose abweichen, verlangt einen
+  Sprung in Nullzeit, ohne dass eine Prüfung das erkennt.
+  `max_duration_s` wird nicht gegen die effektive (skalierte) Dauer
+  geprüft (folgt aus 3.3).
+- **3.5 (Lease-Widerruf ≠ Action-Cancellation)**: bestätigt.
+  `actuator_arbiter.py::acquire()`, Zeile
+  `if lease.owner_id != owner_id and _conflicts(...)` -- schließt
+  Leases DESSELBEN `owner_id` explizit von der Konfliktprüfung aus.
+  Zwei `play_gesture`-Ziele derselben Bridge (`owner_id="pepper_bridge"`)
+  mit unterschiedlicher `goal_id`, aber überlappenden Ressourcen
+  (z.B. beide `RIGHT_ARM`), würden dadurch BEIDE eine Lease erhalten.
+  `bridge_node.py` abonniert `/actuator_arbiter/state` (bzw. eine
+  vergleichbare Benachrichtigung) an KEINER Stelle -- ein per
+  `emergency_revoke_all()`/`_handle_cancel()` widerrufener Lease wird
+  von der Bridge nicht bemerkt, solange die laufende `play_trajectory()`-
+  SSH-Anfrage selbst nicht durch einen unabhängigen Kanal unterbrochen
+  wird.
+- **3.6 (Inventar/Dokumentation auseinandergelaufen)**: bestätigt.
+  `docs/GESTURE_AUTHORING.md` nennt an mehreren Stellen "20" Gesten;
+  das tatsächliche Verzeichnis enthält 24 Dateien (siehe oben). Kein
+  automatisch generierter Abgleich zwischen Katalog und Dokumentation
+  existiert bisher.
+
+**Bereits erfüllt** (keine erneute Implementierung nötig, nur bei der
+Umsetzung zu beachten): Beschleunigungsprüfung nach Speed-Skalierung
+(`KinematicCompiler._check_acceleration`, siehe 3.4-Korrektur oben),
+`fill_missing_joint_holds()` verhindert bereits fehlende
+Gelenk-Zeitachsen, `validate_angle_with_margin()` validiert bereits
+JEDEN -- auch synthetisch aufgefüllten -- Winkel, der bestehende
+Aktuator-Arbiter erlaubt bereits Präemption niedrigerer Priorität und
+schützt sicherheitskritische Leases (`is_safety_critical()`), das
+begrenzte `cancel()`-Timeout und der unabhängige Interrupt-Kanal
+existieren bereits (`PepperInterruptChannel`), `RESTORE_DURATION_S`
+nutzt bereits EINEN synchronen Aufruf statt Gelenk-für-Gelenk-Schleife.
