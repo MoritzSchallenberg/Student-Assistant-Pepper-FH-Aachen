@@ -133,6 +133,139 @@ def test_v2_cancel_event_set_during_playback_triggers_transport_cancel(tmp_path)
     assert (True, None) not in client.breathing_calls or True  # kein disable_breathing hier konfiguriert
 
 
+class _FakeInterruptForRestoreTests:
+    def stop_motion(self):
+        pass
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.3: on_cancel-Semantik ----
+
+def test_on_cancel_restore_with_safety_ok_restores_the_snapshot(tmp_path):
+    catalog = _v2_catalog(tmp_path, on_cancel="restore")
+    client = FakePepperClient(delay_s=0.3)
+    cancel_event = threading.Event()
+    result_holder = {}
+
+    def _run():
+        result_holder["result"] = catalog.play(
+            client, "test_gesture", cancel_event=cancel_event,
+            safety_ok_for_restore_fn=lambda: True,
+            interrupt_channel=_FakeInterruptForRestoreTests(),
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    time.sleep(0.1)
+    cancel_event.set()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    # Ein Aufruf fuer die (abgebrochene) Geste, ein zweiter fuer die
+    # erlaubte Restore-Trajektorie (kein Halteposition-Aufruf, da ein
+    # interrupt_channel uebergeben wird -- siehe motion_transport.py).
+    assert len(play_trajectory_calls) == 2
+
+
+def test_on_cancel_hold_never_restores_even_when_safety_is_ok(tmp_path):
+    catalog = _v2_catalog(tmp_path, on_cancel="hold")
+    client = FakePepperClient(delay_s=0.3)
+    cancel_event = threading.Event()
+    result_holder = {}
+
+    def _run():
+        result_holder["result"] = catalog.play(
+            client, "test_gesture", cancel_event=cancel_event,
+            safety_ok_for_restore_fn=lambda: True,
+            interrupt_channel=_FakeInterruptForRestoreTests(),
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    time.sleep(0.1)
+    cancel_event.set()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    # NUR der (abgebrochene) Geste-Aufruf -- KEINE automatische Rueckkehr
+    # (kein Halteposition-Aufruf, da ein interrupt_channel uebergeben wird).
+    assert len(play_trajectory_calls) == 1
+
+
+def test_on_cancel_restore_without_a_safe_context_does_not_restore(tmp_path):
+    # Kein safety_ok_for_restore_fn uebergeben -- gilt fail-closed wie False.
+    catalog = _v2_catalog(tmp_path, on_cancel="restore")
+    client = FakePepperClient(delay_s=0.3)
+    cancel_event = threading.Event()
+
+    def _run():
+        catalog.play(
+            client, "test_gesture", cancel_event=cancel_event,
+            interrupt_channel=_FakeInterruptForRestoreTests(),
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    time.sleep(0.1)
+    cancel_event.set()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    assert len(play_trajectory_calls) == 1
+
+
+def test_on_cancel_restore_with_unsafe_context_does_not_restore(tmp_path):
+    # Simuliert einen Not-Stopp/Bumper-Abbruch waehrend der Ausfuehrung --
+    # NIEMALS eine Restore-Trajektorie, selbst bei on_cancel=restore.
+    catalog = _v2_catalog(tmp_path, on_cancel="restore")
+    client = FakePepperClient(delay_s=0.3)
+    cancel_event = threading.Event()
+
+    def _run():
+        catalog.play(
+            client, "test_gesture", cancel_event=cancel_event,
+            safety_ok_for_restore_fn=lambda: False,
+            interrupt_channel=_FakeInterruptForRestoreTests(),
+        )
+
+    thread = threading.Thread(target=_run)
+    thread.start()
+    time.sleep(0.1)
+    cancel_event.set()
+    thread.join(timeout=3.0)
+
+    assert not thread.is_alive()
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    assert len(play_trajectory_calls) == 1
+
+
+def test_normal_completion_still_restores_regardless_of_on_cancel(tmp_path):
+    # Ohne Abbruch bleibt das bestehende Verhalten unveraendert -- egal,
+    # welchen on_cancel-Wert die Geste traegt.
+    catalog = _v2_catalog(tmp_path, on_cancel="hold")
+    client = FakePepperClient()
+    catalog.play(client, "test_gesture")
+    play_trajectory_calls = [c for c in client.calls if c[0] == "play_trajectory"]
+    assert len(play_trajectory_calls) == 2  # Geste + normale Rueckkehr
+
+
+def test_invalid_on_cancel_value_is_rejected_as_a_schema_error():
+    from ihk_pepper_bridge.gesture_catalog import GestureValidationError
+    data = {
+        "schema_version": 2,
+        "name": "bad_gesture",
+        "on_cancel": "explode",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"LShoulderPitch": 0.5}},
+            {"time_from_start_s": 1.0, "joints": {"LShoulderPitch": 0.0}},
+        ],
+    }
+    with pytest.raises(GestureValidationError, match="on_cancel"):
+        Gesture(data, "bad_gesture.yaml")
+
+
 def test_v1_cancel_event_stops_between_steps(tmp_path):
     catalog = _v1_catalog(tmp_path)
     client = FakePepperClient()

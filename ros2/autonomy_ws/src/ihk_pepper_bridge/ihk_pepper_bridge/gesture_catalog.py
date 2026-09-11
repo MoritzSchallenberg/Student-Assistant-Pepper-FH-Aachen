@@ -35,6 +35,7 @@ Bewusst NICHT Teil dieses Auftrags: automatisches Trainieren neuer
 Bewegungen. Nur das Format + der Player werden hier bereitgestellt.
 """
 import glob
+import logging
 import os
 from dataclasses import dataclass, field
 
@@ -43,6 +44,8 @@ import yaml
 from .joint_limits import ALLOWED_GESTURE_JOINTS, JointLimitError, validate_angle, validate_angle_with_margin
 from .kinematic_compiler import KinematicCompiler
 from .motion_transport import QicliTrajectoryTransport, TransportStatus
+
+logger = logging.getLogger(__name__)
 
 MIN_SPEED_SCALE_V1 = 0.1
 MAX_SPEED_SCALE_V1 = 3.0
@@ -62,6 +65,16 @@ MAX_SPEED_SCALE_V2 = 1.5
 MAX_JOINT_VELOCITY_RAD_S = 3.0
 
 VALID_TESTED_STATUS = ("draft", "dry_run_validated", "live_validated")
+# Entwicklungsauftrag 04-B, AP8.3: "hold" (Standard) -- nach einem
+# Abbruch bleibt Pepper an der Position stehen, an der er gerade war,
+# KEINE automatische Rueckkehr. "restore" -- eine begrenzte
+# Rueckkehr-Trajektorie ist ERLAUBT, aber NUR wenn zum Abbruchzeitpunkt
+# ein gueltiger Lease UND ein frischer, gueltiger Sicherheitszustand
+# vorliegen (siehe GestureCatalog.play()::safety_ok_for_restore_fn) --
+# ein sicherheitsbedingter Abbruch (Not-Stopp/Bumper/SafetyState
+# ungueltig) darf NIEMALS eine Restore-Trajektorie ausloesen, selbst bei
+# on_cancel="restore".
+VALID_ON_CANCEL = ("hold", "restore")
 _HEAD_JOINTS = frozenset({"HeadYaw", "HeadPitch"})
 
 
@@ -125,6 +138,15 @@ class Gesture:
             raise GestureValidationError(
                 f"Geste '{self.name}': unbekannter tested_status '{self.tested_status}' "
                 f"(erlaubt: {VALID_TESTED_STATUS})"
+            )
+        # Entwicklungsauftrag 04-B, AP8.3 (bestaetigter Fund): ein
+        # ungueltiger on_cancel-Wert wurde bisher NICHT als Schemafehler
+        # abgelehnt (nur tested_status wurde geprueft) -- jetzt symmetrisch
+        # zur obigen Pruefung.
+        if self.on_cancel not in VALID_ON_CANCEL:
+            raise GestureValidationError(
+                f"Geste '{self.name}': unbekannter on_cancel '{self.on_cancel}' "
+                f"(erlaubt: {VALID_ON_CANCEL})"
             )
 
         if self.schema_version == 1:
@@ -262,7 +284,7 @@ class GestureCatalog:
         self, pepper_client, name: str, speed_scale: float = None, feedback_cb=None,
         dry_run: bool = False, current_interaction_state: str = None,
         nav2_moving: bool = False, mapping_active: bool = False,
-        cancel_event=None, interrupt_channel=None,
+        cancel_event=None, interrupt_channel=None, safety_ok_for_restore_fn=None,
     ) -> PlaybackResult:
         """Fuehrt eine Geste aus (dry_run=True: loggt/liefert nur die
         aufgeloeste Trajektorie zurueck, OHNE jede Hardwareaktion).
@@ -294,7 +316,18 @@ class GestureCatalog:
         Abbruchkanal, siehe pepper_client.py::PepperInterruptChannel).
         Beide Parameter bleiben optional -- ohne sie ist das Verhalten
         unveraendert wie vor diesem Auftrag (blockierender Aufruf bis
-        zum natuerlichen Ende)."""
+        zum natuerlichen Ende).
+
+        safety_ok_for_restore_fn (Entwicklungsauftrag 04-B, AP8.3):
+        optionales Callable[[], bool], NUR fuer v2 bei einem Abbruch
+        (cancel_event ausgeloest) relevant -- entscheidet, ob eine
+        Restore-Trajektorie (gesture.on_cancel == "restore") jetzt
+        tatsaechlich gestartet werden darf. None (Standard) bedeutet
+        "nicht geprueft" -- gilt fail-closed wie False (KEIN Restore).
+        Ein sicherheitsbedingter Abbruch muss ueber den Rueckgabewert
+        dieser Funktion selbst als 'nicht sicher' erkennbar sein (der
+        Aufrufer uebergibt typischerweise denselben frischen
+        SafetyState-Check, den er auch fuer die Autorisierung nutzt)."""
         gesture = self.get(name)
 
         if gesture.allowed_interaction_states and current_interaction_state is not None:
@@ -318,7 +351,10 @@ class GestureCatalog:
             speed_scale if speed_scale is not None else gesture.speed_scale_default,
             MIN_SPEED_SCALE_V2, MAX_SPEED_SCALE_V2,
         )
-        return self._play_v2(pepper_client, gesture, scale, feedback_cb, dry_run, cancel_event, interrupt_channel)
+        return self._play_v2(
+            pepper_client, gesture, scale, feedback_cb, dry_run, cancel_event, interrupt_channel,
+            safety_ok_for_restore_fn,
+        )
 
     def _play_v1(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run, cancel_event=None):
         planned = [
@@ -350,7 +386,7 @@ class GestureCatalog:
         return PlaybackResult(dry_run=False, schema_version=1, plan=planned)
 
     def _play_v2(self, pepper_client, gesture, speed_scale, feedback_cb, dry_run,
-                 cancel_event=None, interrupt_channel=None):
+                 cancel_event=None, interrupt_channel=None, safety_ok_for_restore_fn=None):
         """Nutzt seit Entwicklungsauftrag 3, AP12 den KinematicCompiler +
         QicliTrajectoryTransport statt Keyframes direkt in
         play_trajectory()-Argumente umzurechnen (siehe kinematic_compiler.py-
@@ -361,7 +397,19 @@ class GestureCatalog:
 
         cancel_event/interrupt_channel (Entwicklungsauftrag 04-B, AP5B):
         siehe play()-Docstring. Ohne cancel_event blockiert diese Methode
-        weiterhin unveraendert bis zum natuerlichen Ende (transport.wait())."""
+        weiterhin unveraendert bis zum natuerlichen Ende (transport.wait()).
+
+        on_cancel-Auswertung (Entwicklungsauftrag 04-B, AP8.3, bestaetigter
+        Fund): der finally-Block restaurierte bisher UNBEDINGT, sobald ein
+        snapshot existierte -- auch nach einem sicherheitsbedingten
+        Abbruch. Jetzt: eine NORMAL beendete Geste (kein cancel_event
+        ausgeloest) restauriert weiterhin unveraendert wie bisher. Eine
+        ABGEBROCHENE Geste restauriert NUR, wenn gesture.on_cancel ==
+        "restore" UND safety_ok_for_restore_fn() zum Abbruchzeitpunkt
+        True liefert -- gesture.on_cancel == "hold" (Standard) oder ein
+        fehlendes/negatives safety_ok_for_restore_fn() bedeuten IMMER
+        "an der Abbruchposition stehen bleiben", niemals eine automatische
+        Rueckkehr."""
         compiler = KinematicCompiler()
 
         if dry_run:
@@ -391,8 +439,24 @@ class GestureCatalog:
             if status == TransportStatus.FAILED:
                 raise transport.last_error
         finally:
+            was_cancelled = cancel_event is not None and cancel_event.is_set()
             if snapshot is not None and transport is not None:
-                transport.restore()
+                if not was_cancelled:
+                    transport.restore()
+                elif gesture.on_cancel == "restore":
+                    safety_ok_now = (
+                        safety_ok_for_restore_fn() if safety_ok_for_restore_fn is not None else False
+                    )
+                    if safety_ok_now:
+                        transport.restore()
+                    else:
+                        logger.warning(
+                            "Geste '%s' abgebrochen mit on_cancel=restore, aber kein gueltiger "
+                            "Lease/Sicherheitszustand zum Abbruchzeitpunkt -- Pepper bleibt an der "
+                            "Abbruchposition stehen (KEINE automatische Rueckkehr).",
+                            gesture.name,
+                        )
+                # on_cancel == "hold": nie restaurieren, Pepper bleibt stehen.
             for part in gesture.disable_breathing:
                 pepper_client.set_breathing(True, part)
         return PlaybackResult(dry_run=False, schema_version=2, plan=_trajectory_plan_to_legacy_dicts(plan))

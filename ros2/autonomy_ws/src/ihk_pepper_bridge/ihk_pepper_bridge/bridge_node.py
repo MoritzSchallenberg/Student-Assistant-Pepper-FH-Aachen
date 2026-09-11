@@ -666,6 +666,23 @@ class PepperBridgeNode(Node):
                         self.get_parameter("dry_run").value
                         or execution_profile not in HARDWARE_CAPABLE_PROFILES
                     )
+
+                    def _safety_ok_for_restore():
+                        # Entwicklungsauftrag 04-B, AP8.3: eine
+                        # Restore-Trajektorie (gesture.on_cancel ==
+                        # "restore") braucht sowohl einen weiterhin
+                        # gueltigen Lease ALS AUCH einen frischen,
+                        # gueltigen Sicherheitszustand ZUM ABBRUCHZEITPUNKT
+                        # -- ein Not-Stopp/Bumper/widerrufener Lease liefert
+                        # hier IMMER False, unabhaengig von on_cancel.
+                        if lease_id in self._revoked_lease_ids:
+                            return False
+                        return self._safety_ok_fresh.effective(
+                            time.monotonic(),
+                            self.get_parameter("safety_state_max_age_s").value,
+                            fail_closed_value=False,
+                        )
+
                     self.catalog.play(
                         self.pepper, name, speed, feedback_cb,
                         dry_run=effective_dry_run,
@@ -676,6 +693,7 @@ class PepperBridgeNode(Node):
                         nav2_moving=self._nav2_moving,
                         cancel_event=cancel_event,
                         interrupt_channel=self.interrupt_channel,
+                        safety_ok_for_restore_fn=_safety_ok_for_restore,
                     )
                 except Exception as e:  # noqa: BLE001
                     outcome["error"] = e
