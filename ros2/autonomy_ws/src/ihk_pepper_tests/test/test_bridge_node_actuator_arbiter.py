@@ -10,6 +10,7 @@ import time
 
 from ihk_pepper_bridge.bridge_node import PepperBridgeNode
 from ihk_pepper_bridge.gesture_catalog import GestureCatalog
+from ihk_pepper_bridge.gesture_execution_policy import GestureExecutionPolicy, PROFILE_OFFLINE_MOCK
 from ihk_pepper_interfaces.action import PlayGesture, Say
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
@@ -134,10 +135,12 @@ class _FakeNode:
     _execute_say = PepperBridgeNode._execute_say
     _execute_gesture = PepperBridgeNode._execute_gesture
     _on_nav2_moving = PepperBridgeNode._on_nav2_moving
+    _current_runtime_context = PepperBridgeNode._current_runtime_context
 
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
-                 say_fn=None):
-        self._params = {"dry_run": dry_run}
+                 say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK):
+        self._params = {"dry_run": dry_run, "execution_profile": execution_profile}
+        self.gesture_policy = GestureExecutionPolicy()
         self.catalog = GestureCatalog(gesture_dir)
         assert self.catalog.reload() == []
         self.pepper = _FakePepperClient(say_fn=say_fn)
@@ -353,3 +356,41 @@ def test_gesture_acquire_request_carries_derived_resources(tmp_path):
     assert len(acquire_requests) == 1
     # greet_open bewegt Kopf+beide Arme (siehe config/gestures/greet_open.yaml).
     assert set(acquire_requests[0].resources) == {"HEAD", "LEFT_ARM", "RIGHT_ARM"}
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.1: Ausfuehrungsrichtlinie an der Bridge ----
+
+def test_gesture_execution_policy_rejects_a_dry_run_validated_gesture_in_production(tmp_path):
+    # greet_open.yaml ist dry_run_validated, NICHT live_validated (siehe
+    # config/gestures/greet_open.yaml) -- production darf es nicht
+    # ausfuehren, selbst wenn der Arbiter grosszuegig gewaehrt haette.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION)
+    goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "tested_status_unzureichend" in result.error_message
+    assert goal_handle.outcome == "aborted"
+    # Keine Lease, kein Thread, keine Hardwareaktion -- die Ablehnung
+    # geschieht VOR jedem Ressourcenzugriff.
+    assert node.acquire_lease_client.calls == []
+    assert [m.data for m in node.gesture_in_progress_pub.published] == []
+
+
+def test_gesture_execution_policy_allows_the_same_gesture_in_offline_mock(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_OFFLINE_MOCK)
+    goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is True
+
+
+def test_a_direct_action_call_cannot_bypass_the_policy_via_a_higher_speed_scale(tmp_path):
+    # Auftrag Abschnitt 5: "Ein direkter Aufruf von /pepper_bridge/
+    # play_gesture umgeht ihn nicht" -- selbst mit einem manipulierten
+    # speed_scale bleibt tested_status massgeblich.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION)
+    goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open", speed_scale=0.5))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "tested_status_unzureichend" in result.error_message

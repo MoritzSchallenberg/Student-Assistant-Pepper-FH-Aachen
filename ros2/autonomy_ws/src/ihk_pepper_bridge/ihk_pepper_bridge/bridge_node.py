@@ -30,6 +30,13 @@ from ihk_pepper_interaction.resource_derivation import resources_for_gesture, re
 
 from .pepper_client import PepperInterruptChannel, ThreadSafePepperClient
 from .gesture_catalog import GestureCatalog, GestureValidationError
+from .gesture_execution_policy import (
+    HARDWARE_CAPABLE_PROFILES,
+    VALID_EXECUTION_PROFILES,
+    GestureExecutionPolicy,
+    PROFILE_OFFLINE_MOCK,
+    RuntimeContext,
+)
 from .joint_limits import validate_angle_with_margin
 from .tts_guard import TtsTextRejected, validate_tts_text
 from . import safety_topics
@@ -94,6 +101,23 @@ class PepperBridgeNode(Node):
                 "pepper_bridge im dry_run-Modus -- KEINE echte SSH-Verbindung zu Pepper, "
                 "Say/PlayGesture melden sofort Erfolg ohne jede Hardwareaktion."
             )
+
+        # Entwicklungsauftrag 04-B, AP8.1: execution_profile ist die
+        # AUTORITATIVE Ausfuehrungsgrenze fuer Gesten -- unabhaengig vom
+        # bereits bestehenden dry_run-Parameter (der nur SSH/qicli
+        # global an-/ausschaltet, aber nichts ueber tested_status weiss).
+        # Sicherer Default "offline_mock": auch ein Bridge-Start OHNE
+        # explizites Launch-Argument beruehrt damit NIE Hardware, selbst
+        # wenn dry_run versehentlich auf False stuende (Verteidigung in
+        # der Tiefe, siehe _execute_gesture()).
+        self.declare_parameter("execution_profile", PROFILE_OFFLINE_MOCK)
+        execution_profile = self.get_parameter("execution_profile").value
+        if execution_profile not in VALID_EXECUTION_PROFILES:
+            raise ValueError(
+                f"pepper_bridge: unbekanntes execution_profile '{execution_profile}' "
+                f"(erlaubt: {VALID_EXECUTION_PROFILES})"
+            )
+        self.gesture_policy = GestureExecutionPolicy()
 
         gesture_dir = self.get_parameter("gesture_dir").value
         self.catalog = GestureCatalog(gesture_dir)
@@ -379,6 +403,32 @@ class PepperBridgeNode(Node):
     def _on_nav2_moving(self, msg: Bool):
         self._nav2_moving = msg.data
 
+    def _current_runtime_context(self, lease_revoked: bool = False) -> RuntimeContext:
+        """Entwicklungsauftrag 04-B, AP8.1/AP8.2: baut den Laufzeitkontext
+        fuer GestureExecutionPolicy.authorize() aus den aktuell an der
+        Bridge bekannten Signalen. EHRLICHER ZWISCHENSTAND (AP8.1,
+        Commit 2/11): nur nav2_moving ist bereits ein echtes, live
+        verdrahtetes Signal (siehe _on_nav2_moving() oben, unveraendert
+        seit AP2/AP10). safety_ok/mapping_active/current_interaction_state/
+        pepper_reachable bleiben bewusst None (= "unbekannt"), bis AP8.2
+        (Commit 3/11) echte, mit Zeitstempel/Ablaufzeit gefuehrte
+        Subscriptions ergaenzt -- das bedeutet fail-closed, dass
+        supervised_hardware_test/production in DIESEM Zwischenstand
+        JEDE Hardwaregeste ablehnen (siehe
+        GestureExecutionPolicy.authorize(): safety_ok muss exakt True
+        sein), waehrend offline_mock/offline_preview (die den
+        Laufzeitkontext gar nicht auswerten) bereits vollstaendig
+        funktionsfaehig sind. Das ist die sichere Richtung fuer einen
+        Zwischen-Commit -- niemals umgekehrt."""
+        return RuntimeContext(
+            safety_ok=None,
+            nav2_moving=self._nav2_moving,
+            mapping_active=None,
+            current_interaction_state=None,
+            pepper_reachable=None,
+            lease_revoked=lease_revoked,
+        )
+
     # ---- PlayGesture ----
 
     def _goal_callback_gesture(self, goal_request):
@@ -416,6 +466,25 @@ class PepperBridgeNode(Node):
             goal_handle.abort()
             return result
 
+        # Entwicklungsauftrag 04-B, AP8.1: ERSTE Autorisierungspruefung --
+        # VOR jedem Ressourcenzugriff. Eine Ablehnung hier startet KEINEN
+        # Hintergrund-Thread, erwirbt KEINE Lease und beruehrt weder SSH
+        # noch qicli (die Pruefung steht bewusst vor _acquire_lease()).
+        execution_profile = self.get_parameter("execution_profile").value
+        decision = self.gesture_policy.authorize(
+            gesture, self._current_runtime_context(), execution_profile,
+            requested_speed_scale=goal_handle.request.speed_scale,
+        )
+        if not decision.allowed:
+            self.get_logger().warn(
+                f"PlayGesture '{name}' von der Ausfuehrungsrichtlinie abgelehnt "
+                f"(profile={execution_profile}, reason_code={decision.reason_code}): {decision.reason}"
+            )
+            result.success = False
+            result.error_message = f"{decision.reason_code}: {decision.reason}"
+            goal_handle.abort()
+            return result
+
         try:
             resources = resources_for_gesture(gesture)
         except ValueError as e:
@@ -437,6 +506,27 @@ class PepperBridgeNode(Node):
             goal_handle.abort()
             return result
 
+        # Entwicklungsauftrag 04-B, AP8.1: ZWEITE Pruefung UNMITTELBAR vor
+        # Transportstart -- der Laufzeitkontext kann sich zwischen der
+        # ersten Pruefung und dem Lease-Erwerb geaendert haben (siehe
+        # Klassendoku gesture_execution_policy.py). Eine Ablehnung hier
+        # gibt die gerade erworbene Lease sofort wieder frei, OHNE den
+        # Ausfuehrungs-Thread je zu starten.
+        second_decision = self.gesture_policy.authorize(
+            gesture, self._current_runtime_context(), execution_profile,
+            requested_speed_scale=goal_handle.request.speed_scale,
+        )
+        if not second_decision.allowed:
+            self.get_logger().warn(
+                f"PlayGesture '{name}' unmittelbar vor Transportstart erneut abgelehnt "
+                f"(reason_code={second_decision.reason_code}): {second_decision.reason}"
+            )
+            self._release_lease(lease_id)
+            result.success = False
+            result.error_message = f"{second_decision.reason_code}: {second_decision.reason}"
+            goal_handle.abort()
+            return result
+
         # Entwicklungsauftrag 4, AP4/AP13: schliesst die seit Auftrag 2
         # dokumentierte Luecke -- dieses Topic wurde bisher von KEINEM
         # Node tatsaechlich publiziert. True fuer die volle Dauer der
@@ -451,9 +541,21 @@ class PepperBridgeNode(Node):
 
             def _run():
                 try:
+                    # Entwicklungsauftrag 04-B, AP8.1: Verteidigung in der
+                    # Tiefe -- offline_mock/offline_preview beruehren NIE
+                    # Hardware, unabhaengig vom rohen dry_run-Parameter
+                    # (der davon nichts weiss). execution_profile ist hier
+                    # die autoritative Instanz, dry_run bleibt nur ein
+                    # zusaetzliches ODER (kann Hardwarezugriff nie
+                    # freischalten, das entscheidet allein
+                    # HARDWARE_CAPABLE_PROFILES).
+                    effective_dry_run = (
+                        self.get_parameter("dry_run").value
+                        or execution_profile not in HARDWARE_CAPABLE_PROFILES
+                    )
                     self.catalog.play(
                         self.pepper, name, speed, feedback_cb,
-                        dry_run=self.get_parameter("dry_run").value,
+                        dry_run=effective_dry_run,
                         # Entwicklungsauftrag 2, AP10: jetzt tatsaechlich
                         # live verdrahtet (vorher dokumentierte Luecke aus
                         # Auftrag 1, siehe docs/GESTURE_AUTHORING.md
