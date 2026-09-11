@@ -445,3 +445,38 @@ zur echten Gesichtserkennung bleibt bei "Backend fail-closed getestet".
 Keine unabhängige Prioritätsauflösung zwischen aktivem
 Einzelgespräch und neu geformter Gruppe. Details:
 `docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, AP7.1-Abschnitt.
+
+## AP8-R1: Laufzeitdurchsetzung, sichere Cancellation, Trajektorienfreigabe
+
+Neun bestätigte Laufzeitlücken in der bereits bestehenden
+AP8.1-8.3-Struktur geschlossen (Details:
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`, Abschnitt "AP8 corrective
+runtime review"): `speed_scale` wird jetzt an genau einer Stelle
+aufgelöst (`gesture_execution_policy.py::resolve_speed_scale()`) und
+danach nirgends mehr unabhängig neu berechnet; die Startpose wird bei
+jeder v2-Hardwaregeste unabhängig von `restore_after` gelesen; ein
+Laufzeit-Watchdog prüft Safety/Nav2/Mapping/Interaktion/Erreichbarkeit/
+Lease/Zeitdeckel periodisch während der gesamten Ausführung, nicht nur
+davor; 14 strukturierte Cancellation-Gründe (`gesture_cancellation.py`)
+ersetzen den bisherigen bloßen `threading.Event`; ein nach der
+Cancel-Grace-Zeit noch laufender Hintergrund-Thread führt nie zu einer
+Erfolgsmeldung oder einer sofortigen Lease-Freigabe; das
+Lease-Revocation-Race zwischen Erwerb und Transportstart ist
+geschlossen; der Standard-`TrajectorySafetyValidator` ist ohne echtes
+Kollisions-Backend jetzt strukturell `inconclusive`, nicht `pass`;
+`schema_version 1`-Gesten sind in `production` strukturell gesperrt.
+
+Python-Tests: 1600 bestanden, 3 übersprungen (Ausgangsstand vor AP8-R1:
+1548/3 -- 52 neue/umbenannte Tests, davon 9 als benannte Offline-E2E-
+Szenarien A-H in `test_ap8r1_offline_e2e.py`). BT.CPP `colcon test`
+unverändert 23/0/0/4.
+
+**Ehrlich offen (`hwverificationrequired`)**: kein echtes
+Kollisions-/Vorwärtskinematik-Backend installiert -- `production`
+kann deshalb aktuell **keine** Geste ausführen, bis ein solches Backend
+real verfügbar ist (der Mechanismus selbst ist getestet, siehe
+`test_production_profile_succeeds_once_a_real_collision_proof_backend_is_injected`).
+`t_pose.yaml` bleibt `live_validated` für den historischen v1-Ablauf,
+kann diesen Status aber nicht mehr als Bypass für die neue
+v1-production-Sperre nutzen. Kein Hardwaretest in dieser Session
+durchgeführt, keine Livebewegung, kein Push.

@@ -120,6 +120,31 @@ seinen eigenen Cancel-Event/Interrupt-Kanal durch, sodass eine im
 Hintergrundthread laufende Geste aktiv abgebrochen werden kann, statt
 nur bis zum natürlichen Ende zu laufen.
 
+## Startpose unabhängig von restore_after (Entwicklungsauftrag 04-B, AP8-R1.2)
+
+**Bestätigter Fund (AP8-R1, Abschnitt 3.2):** die Startpose wurde bisher
+nur gelesen, wenn `gesture.restore_after == true`. Bei `restore_after:
+false` (z.B. `neutral_stand.yaml`, `look_at_person.yaml`) kompilierte
+`GestureCatalog._play_v2()` deshalb gegen `NEUTRAL_STAND_POSE`, obwohl
+Pepper real in einer anderen Haltung stehen konnte -- gerade
+`neutral_stand` soll Pepper aus einer möglicherweise NICHT neutralen
+Haltung heraus in die Neutralpose bringen, was ohne echte Startpose
+weder hinsichtlich Geschwindigkeit noch Gelenkbewegung korrekt geprüft
+werden kann.
+
+`_play_v2()` erfasst die Startpose jetzt **immer** vor jeder realen
+v2-Hardwareausführung (unabhängig von `restore_after`), validiert sie
+über denselben `KinematicCompiler`-Pfad (fail-closed bei fehlendem/
+`None`/NaN/inf-Wert für ein benötigtes Gelenk, siehe
+`docs/GESTURE_KINEMATIC_VALIDATION.md`), und übergibt **denselben**
+geprüften Snapshot sowohl an den Compiler als auch (nur wenn
+`restore_after=true`) als `restore_snapshot` an den Transport.
+`restore_after` entscheidet damit ausschließlich, ob die erfasste Pose
+**später** als Restore-Ziel verwendet wird -- nicht mehr, ob sie
+überhaupt gelesen wird. `NEUTRAL_STAND_POSE` bleibt nur noch als
+injizierte Simulationsannahme in Offline-Modi/Tests zulässig, wenn gar
+kein `start_pose` übergeben wird.
+
 ## Status
 
 `QicliTrajectoryTransport`/`KinematicCompiler` sind **dry_run_validated,

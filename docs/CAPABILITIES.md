@@ -136,3 +136,35 @@ Vollständige Architektur/ehrlicher Stand: `docs/IDENTITY_RUNTIME.md`,
 `docs/CODEWORD_INTERRUPTS.md`, `docs/GROUP_CONVERSATION_RUNTIME.md`,
 `docs/BIOMETRIC_ENROLLMENT_AND_DELETION.md`,
 `docs/AP7_1_HARDWARE_TEST_CHECKLIST.md`.
+
+## Gesten-Laufzeitgarantien (Entwicklungsauftrag 04-B, AP8-R1)
+
+Ergänzt die kinematischen Garantien aus AP8.4-8.7 um Garantien für die
+**tatsächliche Ausführung**, nicht nur die kompilierte Solltrajektorie:
+
+- `speed_scale` wird an genau einer Stelle aufgelöst (`0.0` = Katalogdefault,
+  ein außerhalb des zulässigen Bereichs liegender Wert wird abgelehnt,
+  nicht geklemmt) und danach unverändert bis zum Transport durchgereicht.
+- Die reale Startpose wird bei jeder v2-Hardwaregeste gelesen, unabhängig
+  von `restore_after` (das nur noch entscheidet, ob dieselbe Pose später
+  als Restore-Ziel dient).
+- Ein Laufzeit-Watchdog prüft Safety/Nav2/Mapping/Interaktion/
+  Erreichbarkeit/Lease/Zeitdeckel periodisch **während** der gesamten
+  Ausführung, nicht nur davor.
+- Ein Abbruchgrund ist strukturiert (14 mögliche Werte, siehe
+  `docs/GESTURE_CANCELLATION_AND_RESTORE.md`) -- nur ein normaler
+  Nutzerabbruch mit `on_cancel=restore` und frisch bestätigt sicherem
+  Zustand darf überhaupt eine Restore-Trajektorie auslösen.
+- Ohne echtes Kollisions-Backend (kein `trimesh`/`fcl`/`pinocchio` in
+  dieser Umgebung installiert) ist jeder `TrajectorySafetyReport`
+  strukturell `inconclusive`, niemals `pass` -- **`production` verweigert
+  jede Bewegung, solange kein echtes Kollisions-Backend existiert.**
+  `offline_mock`/`offline_preview`/`supervised_hardware_test` dürfen ein
+  `inconclusive` ausdrücklich ausführen/anzeigen.
+- `schema_version 1` (v1-Gesten, z.B. `t_pose.yaml`) ist im Profil
+  `production` strukturell gesperrt -- der v1-Transport besitzt noch
+  nicht dieselben Cancel-/Restore-Sicherheitsgarantien wie v2.
+
+Vollständig: `docs/GESTURE_EXECUTION_POLICY.md`,
+`docs/GESTURE_RUNTIME_CONTEXT.md`,
+`docs/GESTURE_CANCELLATION_AND_RESTORE.md`.

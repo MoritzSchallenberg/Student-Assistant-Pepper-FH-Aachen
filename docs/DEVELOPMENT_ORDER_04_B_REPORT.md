@@ -1642,3 +1642,213 @@ schützt sicherheitskritische Leases (`is_safety_critical()`), das
 begrenzte `cancel()`-Timeout und der unabhängige Interrupt-Kanal
 existieren bereits (`PepperInterruptChannel`), `RESTORE_DURATION_S`
 nutzt bereits EINEN synchronen Aufruf statt Gelenk-für-Gelenk-Schleife.
+
+### Commit 2/11 (`0244ff1`): enforce tested-status policy at Pepper bridge boundary
+
+Neues Modul `gesture_execution_policy.py`: `GestureExecutionPolicy.authorize()`
+als autoritative, ROS-freie Ausführungsrichtlinie (`RuntimeContext`,
+`GestureDecision`, vier Ausführungsprofile `offline_mock`/
+`offline_preview`/`supervised_hardware_test`/`production`,
+`_MINIMUM_TESTED_STATUS_BY_PROFILE` serverseitig fest verdrahtet). Zwei
+Aufrufzeitpunkte in `bridge_node.py::_execute_gesture()`: vor
+Lease-Erwerb und unmittelbar vor Transportstart. 26 neue Tests in
+`test_gesture_execution_policy.py`.
+
+### Commit 3/11 (`71493d8`): propagate fresh safety navigation mapping and interaction context
+
+`FreshValue` (generalisiert aus `FreshBool`) in allen drei
+`safety_topics.py`-Kopien; `INTERACTION_STATE_TOPIC` ergänzt.
+`bridge_node.py` ersetzt den bisherigen nackten `_nav2_moving`-Bool
+(Default `False` -- die FALSCHE fail-closed-Richtung) durch
+`FreshBool(True)`; neue Subscriptions für `/safety_state`,
+`/mapping_active`, `/interaction_state`; `pepper_reachable` aus dem
+bestehenden `_publish_health()`-Erreichbarkeits-Check abgeleitet.
+
+### Commit 4/11 (`574bdba`): make lease revocation and same-owner conflicts effective
+
+`actuator_arbiter.py::acquire()`s Ausschlussbedingung erfordert jetzt
+sowohl übereinstimmenden `owner_id` ALS AUCH übereinstimmenden,
+nicht-leeren `goal_id` (vorher: jeder gleiche `owner_id` wurde
+pauschal ausgeschlossen). Neues `/actuator_arbiter/lease_revoked`-Topic
+(wiederverwendet `ActuatorLease.msg`), publiziert bei Präemption/
+Not-Stopp/expliziter Freigabe. `bridge_node.py` konsumiert es über
+`_on_lease_revoked()` und bindet es an das exakt betroffene laufende
+Ziel via `cancel_event`.
+
+### Commit 5/11 (`705a8fe`): implement cancellation reason and safe restore semantics
+
+`VALID_ON_CANCEL = ("hold", "restore")`, jetzt beim Laden validiert.
+`_play_v2()`s `finally`-Block unterscheidet normale Beendigung (restauriert
+unverändert gemäß `restore_after`) von einem Abbruch (`on_cancel="restore"`
+UND `safety_ok_for_restore_fn()` liefert `True` zum Abbruchzeitpunkt --
+sonst KEIN Restore, unabhängig von `on_cancel`).
+
+### Commit 6/11 (`4dd82c4`): validate scaled start-to-finish trajectories and durations
+
+`_check_velocity()` prüft Geschwindigkeit auf der SKALIERTEN Achse
+(vorher nur unskaliert); deckt strukturell auch den t=0-Sprung-Fall ab.
+NaN/inf-Härtung bei `speed_scale`/Winkeln/`time_from_start_s`. Fail-closed
+bei teilweise fehlgeschlagenem Startpose-Snapshot (kein stilles Ersetzen
+durch `NEUTRAL_STAND_POSE`). `max_duration_s` gegen die effektive Dauer
+geprüft. 12 der 24 realen Gestendateien mussten migriert werden (2
+Kategorien: t=0-Sprung, `max_duration_s` bezog sich auf die unskalierte
+Achse) -- einzeln, ohne Bedeutungsänderung, dokumentiert je Datei.
+
+### Commit 7/11 (`4560261`): add trajectory safety reports and synchronized preview
+
+`trajectory_safety.py`: `TrajectorySafetyValidator`/`JointAndTimingValidator`/
+`DisabledCollisionBackend`/`TrajectorySafetyReport`. Synchronisierte
+Mehrgelenk-Vorschau (`SimQicli.play_synchronized_trajectory()`,
+`gesturectl preview-trajectory`) statt der bisherigen sequenziellen
+Annäherung.
+
+## AP8-R1: Laufzeitdurchsetzung, sichere Cancellation und vollständige Trajektorienfreigabe
+
+Korrekturauftrag nach einer nachträglichen Prüfung der AP8-Commits 1-7:
+mehrere Laufzeitlücken, durch die die bereits implementierten
+Sicherheitsprüfungen teilweise noch nicht für die TATSÄCHLICH
+ausgeführte Bewegung galten. Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `4560261`,
+working tree sauber (`git status --porcelain` 0 Zeilen), Python `1548
+passed, 3 skipped`, BT.CPP `23 tests, 0 errors, 0 failures, 4 skipped`
+-- entspricht exakt dem gemeldeten Stand, keine Abweichung.
+
+### AP8 corrective runtime review
+
+Alle neun im Auftrag benannten Lücken wurden am tatsächlichen HEAD
+erneut geprüft und bestätigt, dann behoben:
+
+**3.1 -- Unterschiedliche effektive Geschwindigkeit zwischen Policy und
+Ausführung.** Bestätigt: `bridge_node.py::_execute_gesture()` löste
+`speed = goal_handle.request.speed_scale or 1.0` UNABHÄNGIG von der
+Policy-Entscheidung auf -- die Policy konnte z.B. mit `0.6` rechnen,
+während `GestureCatalog.play()`/der Compiler tatsächlich `1.0` erhielten.
+**Behoben**: `gesture_execution_policy.py::resolve_speed_scale()` ist
+jetzt die EINZIGE kanonische Auflösung (`0.0`/`None` -> Katalogdefault,
+negativ/NaN/inf/außerhalb des Bereichs -> ablehnen, NICHT klemmen).
+`gesture_catalog.py::validate_speed_scale()` nutzt dieselbe Grenzprüfung
+(ersetzt das bisherige stille Klemmen in `GestureCatalog.play()`).
+`_execute_gesture()` verwendet ab der zweiten Autorisierungsprüfung
+ausschließlich `second_decision.effective_speed_scale` -- für
+`catalog.play()`, den `TrajectorySafetyReport` und den Watchdog. Weicht
+der zweite Wert unerwartet vom ersten ab, wird abgelehnt
+(`speed_scale_inkonsistent`). **Tests**: `test_gesture_execution_policy.py`
+(6 neue: Null/None-Default, negativ/zu hoch/zu niedrig abgelehnt, exakter
+Wert), `test_gesture_catalog_v2.py` (Klemm-Test durch Ablehnungs-Test
+ersetzt), `test_bridge_node_actuator_arbiter.py::
+test_a_direct_action_call_cannot_bypass_speed_scale_rules_with_an_out_of_range_value`,
+`test_ap8r1_offline_e2e.py::test_scenario_a_*`.
+
+**3.2 -- Startpose fälschlich an `restore_after` gekoppelt.** Bestätigt:
+bei `restore_after=false` (`neutral_stand.yaml`, `look_at_person.yaml`)
+wurde GAR KEINE Startpose gelesen, wodurch der Übergang faelschlich gegen
+`NEUTRAL_STAND_POSE` geprüft/kompiliert wurde. **Behoben**:
+`_play_v2()` erfasst die Startpose jetzt IMMER vor jeder realen
+Hardwareausführung; `restore_after` entscheidet nur noch, ob dieselbe
+Pose später als Restore-Ziel dient. `KinematicCompiler.compile()`s
+bereits bestehender fail-closed-Pfad (Commit 6/11) greift unverändert
+für fehlende/`None`/NaN/inf-Werte. **Tests**:
+`test_gesture_catalog_v2.py::test_restore_after_false_still_reads_a_real_snapshot_and_checks_the_transition`,
+`test_ap8r1_offline_e2e.py::test_scenario_e_*` (gegen die ECHTE
+`neutral_stand.yaml`).
+
+**3.3 -- Kein wirksamer Laufzeit-Watchdog.** Bestätigt: `max_duration_s`
+begrenzte nur die kompilierte Solltrajektorie; Safety/Nav2/Mapping/
+Interaktion/Erreichbarkeit wurden nur vor Transportstart geprüft, nie
+während der laufenden Bewegung. **Behoben**: `_watchdog_check()` läuft in
+jeder Iteration der bestehenden Poll-Schleife, prüft Node-Shutdown, harte
+Zeitgrenze (`expected_duration_s + 5.0s` Marge), Lease-Widerruf, und
+(nur für `HARDWARE_CAPABLE_PROFILES`) den vollen `RuntimeContext` über
+denselben `GestureExecutionPolicy.authorize()`-Aufruf. **Tests**: 8 neue
+in `test_bridge_node_actuator_arbiter.py`
+(`test_watchdog_aborts_when_*`/`test_watchdog_aborts_with_*`/
+`test_watchdog_aborts_on_hard_timeout_*`), Szenario B in
+`test_ap8r1_offline_e2e.py`.
+
+**3.4 -- Action kann enden, während der Transportthread noch läuft.**
+Bestätigt: nach Ablauf der Cancel-Grace-Zeit wurde die Action beendet und
+die Lease freigegeben, auch wenn der Hintergrund-Thread weiterlief.
+**Behoben**: `done_event.is_set()` entscheidet explizit zwischen
+bestätigtem und unbestätigtem Ende; unbestätigt -> `success=False,
+error_message="cancel_unconfirmed"`, Lease bleibt gehalten
+(`_quarantined_lease_ids`), ein Daemon-Thread
+(`_quarantine_unconfirmed_execution()`) holt den Cleanup nach dem
+tatsächlichen Ende genau einmal nach. **Tests**:
+`test_no_success_and_no_lease_release_while_transport_thread_is_still_running`,
+`test_second_goal_on_the_same_resource_is_blocked_while_first_is_quarantined`,
+Szenario D.
+
+**3.5 -- Cancellation-Gründe nicht unterscheidbar.** Bestätigt:
+`cancel_event` transportierte nur "abbrechen". **Behoben**: neues Modul
+`gesture_cancellation.py` (`GestureCancelReason`, 14 Werte;
+`CancelSignal` -- idempotent, erster gesetzter Grund gewinnt;
+`restore_allowed()`/`breathing_may_reactivate()` als reine Matrix-
+Funktionen). `gesture_catalog.py::_play_v1()/_play_v2()` nutzen diese
+Matrix statt der bisherigen Ad-hoc-Logik. **Tests**:
+`test_gesture_cancellation.py` (15 neu).
+
+**3.6 -- v1-Produktionspfad bleibt unsicher.** Bestätigt: v1 prüft
+Cancellation nur zwischen Schritten, restauriert bisher unbedingt,
+setzt `on_cancel` nicht gleichwertig zu v2 um. **Behoben**: `_play_v1()`
+nutzt jetzt dieselbe `restore_allowed()`/`breathing_may_reactivate()`-Matrix
+wie v2. Zusätzlich (AP8-R1.9): `bridge_node.py` lehnt `schema_version==1`
+in `production` strukturell ab (`legacy_v1_not_safely_interruptible`) --
+`t_pose.yaml` behält seinen historischen `live_validated`-Status, kann
+ihn aber nicht mehr als Bypass nutzen. **Tests**:
+`test_transport_failure_never_restores_or_reactivates_breathing_v1`,
+`test_v1_gesture_is_rejected_in_production_regardless_of_tested_status`,
+`test_v1_gesture_is_allowed_in_supervised_hardware_test`, Szenario G.
+
+**3.7 -- Collision-Backend wird im Standardpfad nicht verwendet.**
+Bestätigt: `TrajectorySafetyValidator()` nutzte standardmäßig nur
+`JointAndTimingValidator` -- ein Report konnte `verdict=pass` UND
+`collision_checked=false` gleichzeitig melden. **Behoben**:
+Standard-Backends jetzt `JointAndTimingValidator` + 
+`DisabledCollisionBackend` -- ohne echtes Kollisions-Backend ist der
+Report strukturell `inconclusive`. `GestureCatalog._play_v2()` nutzt
+`TrajectorySafetyValidator` jetzt direkt (statt den Compiler roh
+aufzurufen); neuer `require_collision_proof`-Parameter (von
+`bridge_node.py` nur für `production` gesetzt) verweigert auch
+`inconclusive`. Austauschbarer Injektionspunkt
+(`PepperBridgeNode.gesture_safety_validator`) für ein späteres echtes
+Backend. **Tests**: `test_default_validator_is_inconclusive_without_a_real_collision_backend`,
+`test_production_profile_rejects_without_a_real_collision_proof`,
+`test_production_profile_succeeds_once_a_real_collision_proof_backend_is_injected`,
+Szenario F.
+
+**3.8 -- Lease-Revocation-Race.** Bestätigt: zwischen Lease-Erwerb und
+der Registrierung des `cancel_event` (die vorher erst NACH der zweiten
+Policy-Prüfung passierte) bestand ein Zeitfenster, in dem eine
+Revocation unbemerkt verpuffen konnte. **Behoben**: `_active_execution_lock`
+schützt Registrierung/Revocation-Verarbeitung gemeinsam;
+`_register_active_execution()` läuft SOFORT nach Lease-Erwerb und meldet
+eine bereits erfolgte Revocation zurück; ein weiterer
+`_is_lease_revoked()`-Check unmittelbar vor Transportstart schließt das
+verbleibende Fenster. **Tests**: `test_ap8r1_offline_e2e.py::
+test_scenario_h_revocation_immediately_before_transport_start_*` und
+`test_scenario_h_revocation_between_second_check_and_transport_start_*`
+(beide Zeitfenster einzeln nachgewiesen).
+
+**3.9 -- Veralteter Test durch `greet_open`-Downgrade.** Bestätigt:
+`test_gesture_execution_policy_rejects_a_dry_run_validated_gesture_in_production`
+nutzte `greet_open` (seit Commit 6/11 `draft`, nicht mehr
+`dry_run_validated`) und prüfte damit unbemerkt nur noch die
+Draft-Ablehnung. **Behoben**: umbenannt zu
+`test_gesture_execution_policy_rejects_a_draft_gesture_in_production`;
+neuer, separater Test mit einer explizit `dry_run_validated`-Fixture
+(`explicitly_dry_run_validated`) plus Gegenprobe in
+`supervised_hardware_test`.
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete), `python3 -m pytest
+ihk_pepper_tests/test -q` → **1600 bestanden, 3 übersprungen** (vorher
+1548/3 -- 52 neue/umbenannte Tests), `colcon test --packages-select
+ihk_pepper_behavior_tree` → **23 Tests, 0 Fehler, 0 Fehlschläge, 4
+übersprungen** (unverändert). Alle 24 Gestendateien laden/kompilieren
+fehlerfrei; alle 23 v2-Gesten liefern einen `TrajectorySafetyReport`
+(`pass`/`inconclusive`, nie ein unerwarteter Fehler). `git diff
+--name-only | xargs grep -n cmd_vel` -- keine Treffer. Secret-Scan über
+alle geänderten Dateien -- keine Treffer. `navigation_live.launch.py`
+wurde zu keinem Zeitpunkt gestartet. Kein Push, keine Änderung an
+`main`, `git status --short` sauber nach dem Korrekturcommit.

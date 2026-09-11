@@ -261,6 +261,46 @@ def test_dry_run_performs_no_hardware_action():
     assert client.snapshot_taken is None
 
 
+# ---- Entwicklungsauftrag 04-B, AP8-R1.2: Startpose unabhaengig von restore_after ----
+
+def test_restore_after_false_still_reads_a_real_snapshot_and_checks_the_transition():
+    # Bestaetigter Fund 3.2: vorher wurde bei restore_after=false GAR
+    # KEINE Startpose gelesen, wodurch der Uebergang faelschlich gegen
+    # NEUTRAL_STAND_POSE (HeadYaw=0.0) geprueft wurde. FakePepperClient.
+    # snapshot_joints() liefert fuer HeadYaw bewusst 0.1 (== NICHT
+    # neutral, siehe Klassendoku oben) -- der erste Keyframe dieser Geste
+    # (HeadYaw=0.1, bei t=0.0) passt NUR zu dieser echten, nicht-neutralen
+    # Pose, nicht zur Neutralstellung. Waere die Startpose (wie vor diesem
+    # Auftrag) NICHT gelesen worden, haette der Uebergangscheck faelschlich
+    # eine unendliche Geschwindigkeit (Sprung von der ANGENOMMENEN
+    # Neutralpose 0.0 zu HeadYaw=0.1 bei t=0.0) gemeldet und
+    # KinematicCompileError ausgeloest, statt normal zu beenden.
+    kf = [
+        {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.1}},
+        {"time_from_start_s": 1.0, "joints": {"HeadYaw": 0.0}},
+    ]
+    catalog = _catalog_with(_v2_data(keyframes=kf, restore_after=False))
+    client = FakePepperClient()
+    result = catalog.play(client, "test_gesture")
+    assert result.dry_run is False
+    # Snapshot WURDE gelesen, trotz restore_after=false.
+    assert client.snapshot_taken == ["HeadYaw"]
+    # Aber NACH normalem Abschluss KEIN Restore (restore_after=false
+    # entscheidet weiterhin, ob die erfasste Pose spaeter als Restore-Ziel
+    # verwendet wird -- unabhaengig davon, DASS sie erfasst wurde).
+    assert client.restored is None
+
+
+def test_dry_run_still_never_reads_a_snapshot_even_with_restore_after_true():
+    # Gegenprobe: dry_run bleibt STRUKTURELL ohne jeden Snapshot-Zugriff
+    # (kein Hardwarezugriff jeglicher Art), unabhaengig von restore_after.
+    catalog = _catalog_with(_v2_data(restore_after=True))
+    client = FakePepperClient()
+    result = catalog.play(client, "test_gesture", dry_run=True)
+    assert result.dry_run is True
+    assert client.snapshot_taken is None
+
+
 def test_dry_run_v1_performs_no_hardware_action():
     with tempfile.TemporaryDirectory() as d:
         _write_yaml(d, "seq", {
@@ -277,21 +317,27 @@ def test_dry_run_v1_performs_no_hardware_action():
 
 # ---- Cancel / Fehler stellt sicheren Zustand her ----
 
-def test_failure_mid_playback_still_restores_joints_v2():
+def test_transport_failure_never_restores_or_reactivates_breathing_v2():
+    # Entwicklungsauftrag 04-B, AP8-R1.5 (bestaetigter Fund 3.6, Restore-/
+    # Breathing-Matrix Abschnitt 8): "Transportfehler mit unbekanntem
+    # Bewegungszustand" verbietet Restore UND automatische Breathing-
+    # Reaktivierung UNBEDINGT -- ein zweiter Bewegungsbefehl (Restore)
+    # NACH einem bereits fehlgeschlagenen Transport waere selbst ein
+    # unkontrolliertes Sicherheitsrisiko. Ersetzt den fruehen (Auftrag
+    # 04-B, vor AP8-R1) Test, der noch ein bedingungsloses Restore/
+    # Breathing-Reaktivieren nach JEDEM Fehlschlag erwartete.
     catalog = _catalog_with(_v2_data(disable_breathing=["Arms"]))
     client = FakePepperClient(fail_on="play_trajectory")
     with pytest.raises(RuntimeError):
         catalog.play(client, "test_gesture")
-    # restore() sendet seit AP12 EINEN play_trajectory()-Aufruf mit den
-    # Snapshot-Winkeln (statt der alten restore_joints()-Methode) --
-    # genau die zwei betroffenen Gelenke, je Snapshot-Winkel 0.0 (AP8.4:
-    # FakePepperClient.snapshot_joints() muss mit dem ersten Keyframe der
-    # Standardgeste uebereinstimmen).
-    assert client.restored == {"LShoulderPitch": 0.0, "RShoulderPitch": 0.0}
-    assert client.breathing_calls  # Breathing wurde in jedem Fall wieder aktiviert
+    assert client.restored is None
+    assert client.breathing_calls == [(False, "Arms")]  # deaktiviert, NIE wieder aktiviert
 
 
-def test_failure_mid_playback_still_restores_joints_v1():
+def test_transport_failure_never_restores_or_reactivates_breathing_v1():
+    # Siehe test_transport_failure_never_restores_or_reactivates_breathing_v2
+    # -- dieselbe Sicherheitsregel gilt seit AP8-R1 auch fuer den
+    # (bewusst weiterhin sequenziellen) v1-Pfad.
     with tempfile.TemporaryDirectory() as d:
         _write_yaml(d, "seq", {
             "name": "seq",
@@ -303,15 +349,29 @@ def test_failure_mid_playback_still_restores_joints_v1():
         client = FakePepperClient(fail_on="set_angle")
         with pytest.raises(RuntimeError):
             catalog.play(client, "seq")
-        assert client.restored == {"HeadYaw": 0.1}
-        assert (True, "Arms") in client.breathing_calls
+        assert client.restored is None
+        assert client.breathing_calls == [(False, "Arms")]  # deaktiviert, NIE wieder aktiviert
 
 
 # ---- Speed-Scale-Grenzen ----
 
-def test_v2_speed_scale_is_clamped_more_conservatively_than_v1():
+def test_v2_speed_scale_outside_the_allowed_range_is_rejected_not_clamped():
+    # Entwicklungsauftrag 04-B, AP8-R1.1 (bestaetigter Fund 3.1): ein
+    # ausserhalb [MIN_SPEED_SCALE_V2, MAX_SPEED_SCALE_V2] liegender Wert
+    # wird seit diesem Auftrag ABGELEHNT, nicht mehr stillschweigend auf
+    # den Deckel geklemmt -- ersetzt den frueheren Test, der noch ein
+    # stilles Klemmen auf 1.5 erwartete (genau das verbietet der Auftrag
+    # jetzt ausdruecklich: "kein sicherheitsrelevanter Wert wird still
+    # geklemmt").
     catalog = _catalog_with(_v2_data())
     client = FakePepperClient()
-    result = catalog.play(client, "test_gesture", speed_scale=100.0)
-    # bei speed_scale=1.5 (Deckel) wird 1.0s Original-Zeit zu 1.0/1.5s
+    with pytest.raises(GestureValidationError, match="ausserhalb des zulaessigen Bereichs"):
+        catalog.play(client, "test_gesture", speed_scale=100.0)
+    assert client.calls == []
+
+
+def test_v2_speed_scale_within_the_allowed_range_is_used_exactly():
+    catalog = _catalog_with(_v2_data())
+    client = FakePepperClient()
+    result = catalog.play(client, "test_gesture", speed_scale=1.5)
     assert result.plan[-1]["time_from_start_s"] == pytest.approx(1.0 / 1.5)

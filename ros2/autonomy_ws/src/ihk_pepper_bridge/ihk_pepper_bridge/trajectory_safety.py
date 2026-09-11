@@ -199,6 +199,42 @@ class DisabledCollisionBackend(TrajectorySafetyBackend):
         )
 
 
+def _plan_matches_gesture(gesture, plan, speed_scale: Optional[float]) -> Optional[str]:
+    """Entwicklungsauftrag 04-B, AP8-R1.8 ('Vertrauensgrenze bei
+    vorkompilierten Plaenen'): TrajectorySafetyValidator.validate(...,
+    plan=plan) darf einen von AUSSEN uebergebenen, bereits kompilierten
+    TrajectoryPlan NICHT blind als gueltig fuer DIESE Geste behandeln --
+    sonst koennte ein fremder/veraenderter Plan die Pflichtpruefung
+    umgehen. Keine kryptografische Provenienz (dafuer muesste
+    TrajectoryPlan selbst signiert werden, was ausserhalb dieses
+    In-Prozess-Vertrauensraums keinen zusaetzlichen Schutz brachte) --
+    aber eine echte Struktur-/Plausibilitaetspruefung: Gestenname,
+    Gelenkmenge UND (wenn speed_scale bekannt ist) die aus Geste+
+    speed_scale erwartete effektive Dauer muessen zum Plan passen.
+    Gibt bei einer Abweichung eine Fehlermeldung zurueck (sonst None)."""
+    if plan.source_gesture_name != gesture.name:
+        return (
+            f"Plan.source_gesture_name={plan.source_gesture_name!r} passt nicht zur "
+            f"erwarteten Geste {gesture.name!r}."
+        )
+    if gesture.schema_version == 2:
+        expected_joints = set(gesture.affected_joints())
+        if set(plan.joint_names) != expected_joints:
+            return (
+                f"Plan-Gelenkmenge {sorted(plan.joint_names)} weicht von der Geste "
+                f"{gesture.name!r} ({sorted(expected_joints)}) ab."
+            )
+        if gesture.keyframes and speed_scale:
+            raw_last_t = gesture.keyframes[-1]["time_from_start_s"]
+            expected_duration = raw_last_t / speed_scale
+            if plan.max_duration_s is not None and abs(plan.max_duration_s - expected_duration) > 1e-6:
+                return (
+                    f"Plan.max_duration_s={plan.max_duration_s:.6f}s passt nicht zur aus "
+                    f"Geste+speed_scale={speed_scale} erwarteten Dauer {expected_duration:.6f}s."
+                )
+    return None
+
+
 def _merge_reports(gesture_name: str, reports: list) -> TrajectorySafetyReport:
     """Kombiniert mehrere Backend-Reports zu EINEM Gesamtreport. Ein
     einzelnes 'fail' macht das Gesamtergebnis IMMER 'fail'; sonst macht ein
@@ -229,6 +265,17 @@ def _merge_reports(gesture_name: str, reports: list) -> TrajectorySafetyReport:
     )
 
 
+def _default_backends() -> list:
+    """Entwicklungsauftrag 04-B, AP8-R1.8 (bestaetigter Fund 3.7): der
+    STANDARDPFAD nutzte bisher NUR JointAndTimingValidator -- dadurch
+    konnte ein Standardreport gleichzeitig verdict='pass' UND
+    collision_checked=false melden, was wie ein (nicht vorhandener)
+    Kollisionsnachweis wirkt. JointAndTimingValidator + DisabledCollision-
+    Backend ist jetzt der Standard -- ein Report ohne echtes Kollisions-
+    Backend ist ab sofort STRUKTURELL 'inconclusive', niemals 'pass'."""
+    return [JointAndTimingValidator(), DisabledCollisionBackend()]
+
+
 class TrajectorySafetyValidator:
     """Faehrt eine oder mehrere TrajectorySafetyBackend-Instanzen ueber
     dieselbe Geste und fasst das Ergebnis in EINEM TrajectorySafetyReport
@@ -237,7 +284,7 @@ class TrajectorySafetyValidator:
     Konstruktor verweigert die Erzeugung fail-closed."""
 
     def __init__(self, backends: Optional[list] = None, compiler: Optional[KinematicCompiler] = None):
-        self.backends = list(backends) if backends is not None else [JointAndTimingValidator()]
+        self.backends = list(backends) if backends is not None else _default_backends()
         if not any(isinstance(b, JointAndTimingValidator) for b in self.backends):
             raise ValueError(
                 "TrajectorySafetyValidator benoetigt mindestens JointAndTimingValidator "
@@ -248,17 +295,30 @@ class TrajectorySafetyValidator:
 
     def validate(self, gesture, start_pose: Optional[dict] = None,
                  speed_scale: Optional[float] = None, plan=None) -> TrajectorySafetyReport:
-        """plan kann bereits vorkompiliert uebergeben werden (z.B. aus der
-        synchronisierten Vorschau, siehe gesturectl.py::cmd_preview_trajectory)
-        -- sonst kompiliert validate() selbst GENAU EINMAL, damit alle
-        Backends dasselbe Ergebnis sehen (kein mehrfaches, ggf.
-        inkonsistentes Neukompilieren pro Backend)."""
+        """plan kann bereits vorkompiliert uebergeben werden (z.B. aus
+        gesture_catalog.py::_play_v2 -- derselbe Plan, der auch an den
+        Transport geht, KEIN zweites Kompilieren) -- sonst kompiliert
+        validate() selbst GENAU EINMAL, damit alle Backends dasselbe
+        Ergebnis sehen.
+
+        Ein uebergebener plan wird IMMER gegen _plan_matches_gesture()
+        geprueft (Entwicklungsauftrag 04-B, AP8-R1.8, 'Vertrauensgrenze
+        bei vorkompilierten Plaenen') -- ein erkennbar fremder/veraenderter
+        Plan (falscher Gestenname, falsche Gelenkmenge, unplausible aus
+        speed_scale abgeleitete Dauer) wird VERWORFEN und wie ein
+        Kompilierfehler behandelt (verdict='fail'), nicht stillschweigend
+        durchgereicht."""
         compile_error = None
         if plan is None:
             try:
                 plan = self._compiler.compile(gesture, speed_scale=speed_scale, start_pose=start_pose)
             except KinematicCompileError as e:
                 compile_error = str(e)
+        else:
+            mismatch = _plan_matches_gesture(gesture, plan, speed_scale)
+            if mismatch is not None:
+                compile_error = f"Vorkompilierter Plan verworfen (Struktur-/Plausibilitaetspruefung): {mismatch}"
+                plan = None
 
         reports = [backend.check(gesture, plan, start_pose, compile_error) for backend in self.backends]
         return _merge_reports(gesture.name, reports)

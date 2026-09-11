@@ -192,3 +192,16 @@ FollowPerson: ein `monitor_fn`-Abbruch mit Grund `"replan_needed"`
 ein echter Fehlerabbruch behandelt -- die äußere Schleife plant sauber
 neu, statt die gesamte Aktion scheitern zu lassen. Details:
 `docs/FOLLOW_PERSON_RUNTIME.md`, `docs/RETURN_TO_ORIGIN.md`.
+
+## PlayGesture-Abbruch: unbestätigt bleibt unbestätigt (Entwicklungsauftrag 04-B, AP8-R1.6)
+
+`pepper_bridge`s `PlayGesture`-Action folgt seit AP8-R1 strikt der oben
+etablierten Unterscheidung `cancel_requested` / `cancel_accepted_or_sent`
+/ `physical_or_transport_completion_confirmed`. Bestätigt der
+Hintergrund-Thread sein Ende nicht innerhalb der Cancel-Grace-Zeit,
+meldet die Action `success=False, error_message="cancel_unconfirmed"` --
+**nie** Erfolg. Die zugehörige Aktuator-Lease wird dabei absichtlich
+**nicht** freigegeben (blockiert dadurch automatisch jedes zweite Ziel
+auf denselben Ressourcen über die bestehende Arbiter-Konfliktprüfung)
+und erst bereinigt, sobald der Thread nachweislich endet. Details inkl.
+der genauen Quarantäne-Mechanik: `docs/GESTURE_CANCELLATION_AND_RESTORE.md`.

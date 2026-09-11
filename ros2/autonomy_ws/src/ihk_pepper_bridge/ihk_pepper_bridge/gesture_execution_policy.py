@@ -25,8 +25,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import FrozenSet, Optional
 
-from .gesture_catalog import MAX_SPEED_SCALE_V1, MAX_SPEED_SCALE_V2, MIN_SPEED_SCALE_V1, \
-    MIN_SPEED_SCALE_V2, VALID_TESTED_STATUS
+from .gesture_catalog import GestureValidationError, VALID_TESTED_STATUS, validate_speed_scale
 
 # ---- Ausführungsprofile (Auftrag Abschnitt 5) ----
 
@@ -104,21 +103,63 @@ class GestureDecision:
     resources: FrozenSet[str] = field(default_factory=frozenset)
 
 
-def _effective_speed_scale(gesture, requested_speed_scale: Optional[float]) -> float:
-    """Identische Aufloesung wie GestureCatalog.play()/KinematicCompiler.compile():
-    <=0 oder None nutzt gesture.speed_scale_default (Auftrag Abschnitt 6:
-    'nur dann Katalogdefault, wenn im Interface ausdruecklich dokumentiert
-    und getestet' -- das ist hier UND in gesture_catalog.py/
-    kinematic_compiler.py der Fall, siehe test_gesture_execution_policy.py).
-    Anschliessend auf denselben Bereich wie die tatsaechliche Ausfuehrung
-    geklemmt (v1: MIN/MAX_SPEED_SCALE_V1, v2: MIN/MAX_SPEED_SCALE_V2) --
-    KEINE stille Klemmung eines sicherheitsrelevant UNGUELTIGEN Werts
-    (NaN/inf werden VOR dieser Funktion abgefangen, siehe authorize())."""
-    base = requested_speed_scale if requested_speed_scale and requested_speed_scale > 0 \
-        else gesture.speed_scale_default
-    if gesture.schema_version == 1:
-        return max(MIN_SPEED_SCALE_V1, min(MAX_SPEED_SCALE_V1, base))
-    return max(MIN_SPEED_SCALE_V2, min(MAX_SPEED_SCALE_V2, base))
+@dataclass(frozen=True)
+class SpeedScaleResolution:
+    """Ergebnis der EINZIGEN kanonischen Speed-Scale-Aufloesung
+    (Entwicklungsauftrag 04-B, AP8-R1.1, bestaetigter Fund 3.1). Sowohl
+    GestureExecutionPolicy.authorize() ALS AUCH GestureCatalog.play()
+    (ueber validate_speed_scale(), dieselbe Grenzpruefung) muessen zum
+    IDENTISCHEN effective_speed_scale kommen wie diese Funktion -- kein
+    Aufrufer darf den Wert danach nochmal unabhaengig berechnen oder per
+    'or 1.0' veraendern (bestaetigter Fund: bridge_node.py tat genau das
+    bisher im Ausfuehrungspfad, siehe DEVELOPMENT_ORDER_04_B_REPORT.md)."""
+
+    allowed: bool
+    reason_code: str
+    reason: str
+    effective_speed_scale: float
+
+
+def resolve_speed_scale(gesture, requested_speed_scale: Optional[float]) -> SpeedScaleResolution:
+    """Kanonische, einzige Stelle, die requested_speed_scale in einen
+    effektiven Wert aufloest (Auftrag AP8-R1.1, Abschnitt 4):
+
+        requested_speed_scale == 0.0 (oder None)
+            -> gesture.speed_scale_default verwenden
+        requested_speed_scale < 0.0
+            -> ablehnen
+        requested_speed_scale ist NaN oder inf
+            -> ablehnen
+        requested_speed_scale ausserhalb des zulaessigen positiven Bereichs
+            -> ablehnen, NICHT klemmen (validate_speed_scale())
+        requested_speed_scale gueltig
+            -> exakt diesen Wert verwenden
+
+    0.0 ist der EINZIGE Default-Sentinel (der ROS2-Actionfeld-Standardwert
+    fuer ein nicht gesetztes float64-Feld) -- ein negativer Wert ist KEIN
+    weiterer Sentinel, sondern ein sicherheitsrelevanter Fehler."""
+    if requested_speed_scale is not None and (
+            requested_speed_scale != requested_speed_scale  # NaN
+            or requested_speed_scale in (float("inf"), float("-inf"))):
+        return SpeedScaleResolution(
+            False, "speed_scale_ungueltig",
+            f"requested_speed_scale={requested_speed_scale!r} ist NaN/inf.", 0.0,
+        )
+    if requested_speed_scale is not None and requested_speed_scale < 0.0:
+        return SpeedScaleResolution(
+            False, "speed_scale_negativ",
+            f"requested_speed_scale={requested_speed_scale!r} ist negativ.", 0.0,
+        )
+
+    candidate = gesture.speed_scale_default if (requested_speed_scale is None or requested_speed_scale == 0.0) \
+        else requested_speed_scale
+
+    try:
+        validate_speed_scale(gesture.schema_version, candidate)
+    except GestureValidationError as e:
+        return SpeedScaleResolution(False, "speed_scale_ausserhalb_bereich", str(e), 0.0)
+
+    return SpeedScaleResolution(True, "erlaubt", "requested_speed_scale aufgeloest.", candidate)
 
 
 class GestureExecutionPolicy:
@@ -140,19 +181,18 @@ class GestureExecutionPolicy:
                 gesture.tested_status, 1.0, 0.0,
             )
 
-        # NaN/inf im angeforderten speed_scale werden NIE stillschweigend
-        # geklemmt -- ein ungueltiger numerischer Wert ist ein
-        # sicherheitsrelevanter Fehler, keine Kalibrierungsfrage.
-        if requested_speed_scale is not None and (
-                requested_speed_scale != requested_speed_scale  # NaN
-                or requested_speed_scale in (float("inf"), float("-inf"))):
+        # Entwicklungsauftrag 04-B, AP8-R1.1: EINE kanonische Aufloesung
+        # fuer NaN/inf, negative und ausserhalb des zulaessigen Bereichs
+        # liegende Werte -- ersetzt die vorherige, hier inline gefuehrte
+        # NaN/inf-Sonderpruefung UND die separate _effective_speed_scale()-
+        # Klemmung (kein stilles Klemmen mehr, siehe resolve_speed_scale()).
+        speed_resolution = resolve_speed_scale(gesture, requested_speed_scale)
+        if not speed_resolution.allowed:
             return GestureDecision(
-                False, "speed_scale_ungueltig",
-                f"requested_speed_scale={requested_speed_scale!r} ist NaN/inf.",
-                gesture.tested_status, 1.0, 0.0,
+                False, speed_resolution.reason_code, speed_resolution.reason,
+                gesture.tested_status, 0.0, 0.0,
             )
-
-        effective_speed_scale = _effective_speed_scale(gesture, requested_speed_scale)
+        effective_speed_scale = speed_resolution.effective_speed_scale
         expected_duration_s = gesture.duration_s() / effective_speed_scale
         resources = resources_for_gesture(gesture)
 

@@ -181,13 +181,61 @@ def test_inf_speed_scale_is_rejected(tmp_path):
     assert decision.reason_code == "speed_scale_ungueltig"
 
 
-def test_zero_or_negative_speed_scale_uses_catalog_default(tmp_path):
+def test_zero_speed_scale_uses_catalog_default(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.1: 0.0 ist der EINZIGE
+    # Default-Sentinel (ROS2-Actionfeld-Standardwert fuer speed_scale).
     catalog = _catalog(tmp_path, wave=_v2_gesture(
         tested_status="draft", speed_scale_default=0.6))
     decision = GestureExecutionPolicy().authorize(
         catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=0.0)
     assert decision.allowed is True
     assert decision.effective_speed_scale == pytest.approx(0.6)
+
+
+def test_none_speed_scale_uses_catalog_default(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v2_gesture(
+        tested_status="draft", speed_scale_default=0.6))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=None)
+    assert decision.allowed is True
+    assert decision.effective_speed_scale == pytest.approx(0.6)
+
+
+def test_negative_speed_scale_is_rejected_not_defaulted(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.1 (bestaetigter Fund 3.1): NUR 0.0
+    # ist der Default-Sentinel -- ein negativer Wert ist ein
+    # sicherheitsrelevanter Fehler und wird ABGELEHNT, nicht stillschweigend
+    # wie 0.0 behandelt (ersetzt die fruehere, zu grosszuegige
+    # "0.0 oder negativ"-Fixture-Annahme).
+    catalog = _catalog(tmp_path, wave=_v2_gesture(tested_status="draft"))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=-0.5)
+    assert decision.allowed is False
+    assert decision.reason_code == "speed_scale_negativ"
+
+
+def test_speed_scale_above_the_allowed_maximum_is_rejected_not_clamped(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v2_gesture(tested_status="draft"))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=100.0)
+    assert decision.allowed is False
+    assert decision.reason_code == "speed_scale_ausserhalb_bereich"
+
+
+def test_speed_scale_below_the_allowed_minimum_is_rejected_not_clamped(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v2_gesture(tested_status="draft"))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=0.001)
+    assert decision.allowed is False
+    assert decision.reason_code == "speed_scale_ausserhalb_bereich"
+
+
+def test_valid_requested_speed_scale_is_used_exactly_not_the_catalog_default(tmp_path):
+    catalog = _catalog(tmp_path, wave=_v2_gesture(tested_status="draft", speed_scale_default=0.6))
+    decision = GestureExecutionPolicy().authorize(
+        catalog.get("wave"), RuntimeContext(), PROFILE_OFFLINE_MOCK, requested_speed_scale=1.2)
+    assert decision.allowed is True
+    assert decision.effective_speed_scale == pytest.approx(1.2)
 
 
 # ---- Laufzeitkontext (nur hardwarefaehige Profile) ----

@@ -12,6 +12,7 @@ from std_msgs.msg import Bool, UInt8
 
 from ihk_pepper_bridge.bridge_node import PepperBridgeNode
 from ihk_pepper_bridge.gesture_catalog import GestureCatalog
+from ihk_pepper_bridge.gesture_cancellation import CancelSignal, GestureCancelReason
 from ihk_pepper_bridge.gesture_execution_policy import GestureExecutionPolicy, PROFILE_OFFLINE_MOCK
 from ihk_pepper_interfaces.action import PlayGesture, Say
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
@@ -142,6 +143,14 @@ class _FakeNode:
     _on_interaction_state = PepperBridgeNode._on_interaction_state
     _on_lease_revoked = PepperBridgeNode._on_lease_revoked
     _current_runtime_context = PepperBridgeNode._current_runtime_context
+    # Entwicklungsauftrag 04-B, AP8-R1: neue, seit diesem Auftrag
+    # ebenfalls ECHTE (nicht ein zweites Mal nachgebaute) Methoden.
+    _classify_safety_cancel_reason = PepperBridgeNode._classify_safety_cancel_reason
+    _register_active_execution = PepperBridgeNode._register_active_execution
+    _is_lease_revoked = PepperBridgeNode._is_lease_revoked
+    _unregister_active_execution = PepperBridgeNode._unregister_active_execution
+    _watchdog_check = PepperBridgeNode._watchdog_check
+    _quarantine_unconfirmed_execution = PepperBridgeNode._quarantine_unconfirmed_execution
 
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
                  say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK,
@@ -155,6 +164,13 @@ class _FakeNode:
             "pepper_reachable_max_age_s": 12.0,
         }
         self.gesture_policy = GestureExecutionPolicy()
+        # Entwicklungsauftrag 04-B, AP8-R1.8: None (Standard) laesst
+        # GestureCatalog.play() ihre eigene Standard-
+        # TrajectorySafetyValidator()-Instanz bauen -- ohne echtes
+        # Kollisions-Backend also strukturell 'inconclusive'. Ein Test
+        # kann hier explizit einen JointAndTimingValidator-only-Validator
+        # injizieren, um ein 'pass'-Szenario zu simulieren.
+        self.gesture_safety_validator = None
         self.catalog = GestureCatalog(gesture_dir)
         assert self.catalog.reload() == []
         self.pepper = _FakePepperClient(say_fn=say_fn, play_trajectory_sleep_s=play_trajectory_sleep_s)
@@ -175,8 +191,16 @@ class _FakeNode:
         self._mapping_active_fresh = safety_topics.FreshBool(True)
         self._interaction_state_fresh = safety_topics.FreshValue(None)
         self._pepper_reachable_fresh = safety_topics.FreshBool(False)
+        # Entwicklungsauftrag 04-B, AP8-R1.7: derselbe Lock wie im echten
+        # Node -- _on_lease_revoked()/_register_active_execution() etc.
+        # sind ECHTE, ungebundene Methoden (s.o.) und erwarten ihn.
+        self._active_execution_lock = threading.Lock()
         self._active_gesture_cancel_events = {}
         self._revoked_lease_ids = set()
+        self._quarantined_lease_ids = set()
+        self._last_emergency_stop = None
+        self._last_bumper_active = None
+        self._shutting_down = False
         now = time.monotonic()  # _current_runtime_context() vergleicht gegen time.monotonic()
         if nav2_moving is not None:
             self._nav2_moving_fresh.update(nav2_moving, now)
@@ -210,6 +234,7 @@ class _FakePepperClient:
         self._say_fn = say_fn
         self._play_trajectory_sleep_s = play_trajectory_sleep_s
         self.play_trajectory_calls = []
+        self.set_angle_calls = []
 
     def say_text_only(self, text):
         self.say_text_only_calls.append(text)
@@ -234,6 +259,11 @@ class _FakePepperClient:
     def get_angle(self, joint):
         from ihk_pepper_bridge.kinematic_compiler import NEUTRAL_STAND_POSE
         return NEUTRAL_STAND_POSE.get(joint, 0.0)
+
+    def set_angle(self, joint, angle, duration=1.0):
+        # Entwicklungsauftrag 04-B, AP8-R1.9: fuer v1-Gesten-Tests noetig
+        # (GestureCatalog._play_v1() ruft dies pro Schritt auf).
+        self.set_angle_calls.append((joint, angle, duration))
 
     def play_trajectory(self, joint_names, angle_lists, time_lists, is_absolute=True):
         self.play_trajectory_calls.append((joint_names, angle_lists, time_lists))
@@ -398,10 +428,15 @@ def test_gesture_acquire_request_carries_derived_resources(tmp_path):
 
 # ---- Entwicklungsauftrag 04-B, AP8.1: Ausfuehrungsrichtlinie an der Bridge ----
 
-def test_gesture_execution_policy_rejects_a_dry_run_validated_gesture_in_production(tmp_path):
-    # greet_open.yaml ist dry_run_validated, NICHT live_validated (siehe
-    # config/gestures/greet_open.yaml) -- production darf es nicht
-    # ausfuehren, selbst wenn der Arbiter grosszuegig gewaehrt haette.
+def test_gesture_execution_policy_rejects_a_draft_gesture_in_production(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1 (bestaetigter Fund 3.9): greet_open.yaml
+    # wurde in AP8 Commit 6/11 wegen einer Trajektorien-Migration korrekt
+    # von dry_run_validated auf draft zurueckgestuft -- dieser Test
+    # pruefte seitdem (unbemerkt) nur noch die Ablehnung eines DRAFT-
+    # Status, obwohl sein Name/Kommentar weiterhin dry_run_validated
+    # behauptete. Umbenannt + auf 'draft' praezisiert; die dry_run_validated-
+    # Ablehnung wird jetzt in einem SEPARATEN Test mit einer explizit
+    # dry_run_validated-Fixture geprueft (siehe unten).
     from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
     node = _FakeNode(_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION)
     goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open"))
@@ -413,6 +448,58 @@ def test_gesture_execution_policy_rejects_a_dry_run_validated_gesture_in_product
     # geschieht VOR jedem Ressourcenzugriff.
     assert node.acquire_lease_client.calls == []
     assert [m.data for m in node.gesture_in_progress_pub.published] == []
+
+
+def _dry_run_validated_gesture_dir(tmp_path):
+    import yaml
+    data = {
+        "name": "explicitly_dry_run_validated",
+        "schema_version": 2,
+        "tested_status": "dry_run_validated",
+        "tested_date": "2026-09-01",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
+        ],
+    }
+    with open(tmp_path / "explicitly_dry_run_validated.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def test_gesture_execution_policy_rejects_a_dry_run_validated_gesture_in_production(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1, Abschnitt 13 ('Korrigierter
+    # Policy-Test'): eigene, explizit dry_run_validated Fixture statt
+    # einer Kataloggeste, deren Status sich mit der Zeit aendern kann --
+    # 'draft' und 'dry_run_validated' werden damit GETRENNT gegen
+    # production geprueft (siehe test_gesture_execution_policy_rejects_a_draft_gesture_in_production
+    # oben).
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _dry_run_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="explicitly_dry_run_validated"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "tested_status_unzureichend" in result.error_message
+    assert goal_handle.outcome == "aborted"
+    assert node.acquire_lease_client.calls == []
+    assert [m.data for m in node.gesture_in_progress_pub.published] == []
+
+
+def test_gesture_execution_policy_allows_a_dry_run_validated_gesture_in_supervised_hardware_test(tmp_path):
+    # Gegenprobe: dieselbe dry_run_validated-Geste ist in
+    # supervised_hardware_test (Mindestanforderung dry_run_validated)
+    # sehr wohl zulaessig.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _dry_run_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="explicitly_dry_run_validated"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is True
 
 
 def test_gesture_execution_policy_allows_the_same_gesture_in_offline_mock(tmp_path):
@@ -434,6 +521,70 @@ def test_a_direct_action_call_cannot_bypass_the_policy_via_a_higher_speed_scale(
     assert "tested_status_unzureichend" in result.error_message
 
 
+def test_a_direct_action_call_cannot_bypass_speed_scale_rules_with_an_out_of_range_value(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.1/13: ein direkter Action-Aufruf
+    # kann die Speed-Scale-Regeln ebenso wenig umgehen wie tested_status
+    # -- ein Wert ausserhalb des zulaessigen Bereichs wird VOR jedem
+    # Ressourcenzugriff abgelehnt, nicht stillschweigend geklemmt.
+    node = _FakeNode(_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_OFFLINE_MOCK)
+    goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open", speed_scale=100.0))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "speed_scale_ausserhalb_bereich" in result.error_message
+    assert node.acquire_lease_client.calls == []
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R1.9: v1-Gesten in production sperren ----
+
+def _v1_live_validated_gesture_dir(tmp_path):
+    import yaml
+    data = {
+        "name": "t_pose_like",
+        "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "steps": [{"joint": "RShoulderPitch", "angle": -1.0, "duration": 1.0}],
+    }
+    with open(tmp_path / "t_pose_like.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def test_v1_gesture_is_rejected_in_production_regardless_of_tested_status(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.9 (bestaetigter Fund 3.6): solange
+    # der v1-Pfad nicht dieselben Sicherheitsgarantien wie v2 besitzt
+    # (kein echtes Mid-Flight-Cancel, kein Watchdog waehrend eines
+    # einzelnen set_angle()-Aufrufs), wird schema_version==1 in production
+    # STRUKTURELL abgelehnt -- SELBST bei tested_status=live_validated
+    # (t_pose.yaml behaelt seinen historischen Status, dieser darf die
+    # neue Laufzeitsperre aber nicht umgehen).
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _v1_live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="t_pose_like"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == "legacy_v1_not_safely_interruptible"
+    assert goal_handle.outcome == "aborted"
+    # Keine Lease, kein Thread, keine Hardwareaktion.
+    assert node.acquire_lease_client.calls == []
+
+
+def test_v1_gesture_is_allowed_in_supervised_hardware_test(tmp_path):
+    # Gegenprobe: die neue Sperre gilt NUR fuer production -- v1 bleibt in
+    # supervised_hardware_test (mit menschlicher Aufsicht) nutzbar.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _v1_live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="t_pose_like"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is True
+
+
 def _live_validated_gesture_dir(tmp_path):
     # schema_version 2 (wie greet_open.yaml oben) -- nutzt play_trajectory(),
     # nicht set_angle()/restore_joints() (die dieses Fake nicht bedient,
@@ -453,15 +604,39 @@ def _live_validated_gesture_dir(tmp_path):
     return str(tmp_path)
 
 
-def test_production_profile_succeeds_with_a_live_validated_gesture_and_fresh_context(tmp_path):
-    # Entwicklungsauftrag 04-B, AP8.2: mit ECHTEN, frischen Laufzeitwerten
-    # (statt der in Commit 2/11 dokumentierten None-Platzhalter) darf eine
-    # live_validated Geste in production tatsaechlich laufen.
+def test_production_profile_rejects_without_a_real_collision_proof(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.8 (bestaetigter Fund 3.7): OHNE ein
+    # echtes Kollisions-Backend liefert der Standard-TrajectorySafetyValidator
+    # strukturell 'inconclusive' -- production verweigert das, selbst mit
+    # frischen, sicheren Laufzeitwerten und tested_status=live_validated.
+    # Ersetzt den frueheren (vor AP8-R1) Test, der noch annahm, production
+    # koenne ohne jeden Kollisionsnachweis erfolgreich laufen.
     from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
     node = _FakeNode(
         _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
     )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "inconclusive" in result.error_message
+
+
+def test_production_profile_succeeds_once_a_real_collision_proof_backend_is_injected(tmp_path):
+    # Gegenprobe: der Mechanismus selbst funktioniert -- sobald (z.B.
+    # durch ein spaeteres echtes Kollisions-Backend) ein TrajectorySafety-
+    # Validator mit verdict='pass' konfiguriert ist, darf production
+    # tatsaechlich laufen. Injektion ueber node.gesture_safety_validator
+    # (siehe PepperBridgeNode.__init__), damit gesture_catalog.py/
+    # bridge_node.py fuer ein spaeteres echtes Backend nicht geaendert
+    # werden muessen.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    from ihk_pepper_bridge.trajectory_safety import JointAndTimingValidator, TrajectorySafetyValidator
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    node.gesture_safety_validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
     goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
     result = node._execute_gesture(goal_handle)
     assert result.success is True
@@ -533,11 +708,17 @@ def test_lease_revocation_during_a_running_gesture_aborts_it_and_is_not_success(
     # Erfolg gemeldet werden, selbst wenn catalog.play() ohne Exception
     # zurueckkehrt.
     from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    from ihk_pepper_bridge.trajectory_safety import JointAndTimingValidator, TrajectorySafetyValidator
     node = _FakeNode(
         _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
         safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
         play_trajectory_sleep_s=0.5,
     )
+    # Entwicklungsauftrag 04-B, AP8-R1.8: dieser Test prueft Lease-
+    # Widerruf, nicht das Kollisions-Backend -- ein JointAndTimingValidator-
+    # only-Validator wird injiziert, damit die Geste ueberhaupt startet
+    # (production wuerde ein 'inconclusive' sonst schon vorher ablehnen).
+    node.gesture_safety_validator = TrajectorySafetyValidator(backends=[JointAndTimingValidator()])
     goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
 
     def _revoke_soon():
@@ -556,7 +737,10 @@ def test_lease_revocation_during_a_running_gesture_aborts_it_and_is_not_success(
     threading.Thread(target=_revoke_soon, daemon=True).start()
     result = node._execute_gesture(goal_handle)
     assert result.success is False
-    assert result.error_message == "lease_widerrufen"
+    # Entwicklungsauftrag 04-B, AP8-R1.4: error_message traegt jetzt den
+    # strukturierten GestureCancelReason-Code (statt eines freien
+    # deutschen Strings).
+    assert result.error_message == GestureCancelReason.LEASE_REVOKED
     assert goal_handle.outcome == "aborted"
     # Nach Abschluss der Geste ist die Lease-Registrierung wieder sauber.
     assert node._active_gesture_cancel_events == {}
@@ -576,9 +760,12 @@ def test_lease_revocation_for_a_different_owner_has_no_effect(tmp_path):
 
 
 def test_lease_revocation_is_idempotent_for_repeated_notifications(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R1.4: _active_gesture_cancel_events
+    # enthaelt im echten Betrieb IMMER ein CancelSignal (nicht mehr ein
+    # blosses threading.Event, siehe _execute_gesture()).
     node = _FakeNode(_gesture_dir(tmp_path))
-    event = threading.Event()
-    node._active_gesture_cancel_events["lease-x"] = event
+    signal = CancelSignal()
+    node._active_gesture_cancel_events["lease-x"] = signal
     from ihk_pepper_interfaces.msg import ActuatorLease as ActuatorLeaseMsg
     msg = ActuatorLeaseMsg(
         lease_id="lease-x", owner_id="pepper_bridge", goal_id="", preempted=True,
@@ -586,7 +773,8 @@ def test_lease_revocation_is_idempotent_for_repeated_notifications(tmp_path):
     )
     node._on_lease_revoked(msg)
     node._on_lease_revoked(msg)
-    assert event.is_set() is True  # kein Fehler durch den zweiten Aufruf
+    assert signal.is_set() is True  # kein Fehler durch den zweiten Aufruf
+    assert signal.reason == GestureCancelReason.LEASE_REVOKED
 
 
 def test_an_old_revocation_does_not_affect_a_later_unrelated_goal(tmp_path):
@@ -632,3 +820,311 @@ def test_gesture_becoming_unsafe_between_first_and_second_check_is_rejected(tmp_
     release_requests = [r for r in node.release_lease_client.calls
                         if isinstance(r, ReleaseActuatorLease.Request)]
     assert len(release_requests) == 1
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R1.3: Laufzeit-Watchdog waehrend der Geste ----
+
+def _wait_until_registered(node, timeout=2.0):
+    """Wartet, bis _execute_gesture() die Lease tatsaechlich registriert
+    hat (siehe _register_active_execution()), und liefert deren lease_id."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if node._active_gesture_cancel_events:
+            return next(iter(node._active_gesture_cancel_events))
+        time.sleep(0.01)
+    raise TimeoutError("Gestenausfuehrung hat nie ein aktives CancelSignal registriert.")
+
+
+def _head_gesture_dir(tmp_path):
+    """Kopfgeste (HeadYaw) fuer den Mapping-Watchdog-Test -- live_wave
+    (RShoulderPitch) zaehlt NICHT als Kopfgeste (gesture.affects_head())."""
+    import yaml
+    data = {
+        "name": "live_head_move",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"HeadYaw": 0.2}},
+        ],
+    }
+    with open(tmp_path / "live_head_move.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def _interaction_restricted_gesture_dir(tmp_path):
+    import yaml
+    data = {
+        "name": "live_conversation_only",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "allowed_interaction_states": ["CONVERSATION_READY"],
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
+        ],
+    }
+    with open(tmp_path / "live_conversation_only.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def test_watchdog_aborts_when_safety_becomes_invalid_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _go_unsafe_soon():
+        _wait_until_registered(node)
+        node._safety_ok_fresh.update(False, time.monotonic())
+
+    threading.Thread(target=_go_unsafe_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.SAFETY_INVALID
+    assert goal_handle.outcome == "aborted"
+
+
+def test_watchdog_aborts_with_emergency_stop_reason_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    from ihk_pepper_interfaces.msg import SafetyState
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _emergency_stop_soon():
+        _wait_until_registered(node)
+        node._on_safety_state_for_gestures(SafetyState(emergency_stop=True, bumper_active=False))
+
+    threading.Thread(target=_emergency_stop_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.EMERGENCY_STOP
+
+
+def test_watchdog_aborts_with_bumper_reason_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    from ihk_pepper_interfaces.msg import SafetyState
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _bumper_soon():
+        _wait_until_registered(node)
+        node._on_safety_state_for_gestures(SafetyState(emergency_stop=False, bumper_active=True))
+
+    threading.Thread(target=_bumper_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.BUMPER_ACTIVE
+
+
+def test_watchdog_aborts_when_nav2_starts_moving_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _start_moving_soon():
+        _wait_until_registered(node)
+        node._nav2_moving_fresh.update(True, time.monotonic())
+
+    threading.Thread(target=_start_moving_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.NAVIGATION_STARTED
+
+
+def test_watchdog_aborts_when_mapping_starts_during_a_head_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _head_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_head_move"))
+
+    def _start_mapping_soon():
+        _wait_until_registered(node)
+        node._mapping_active_fresh.update(True, time.monotonic())
+
+    threading.Thread(target=_start_mapping_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.MAPPING_STARTED
+
+
+def test_watchdog_aborts_when_interaction_state_becomes_invalid_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _interaction_restricted_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    node._interaction_state_fresh.update("CONVERSATION_READY", time.monotonic())
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_conversation_only"))
+
+    def _change_state_soon():
+        _wait_until_registered(node)
+        node._interaction_state_fresh.update("IDLE", time.monotonic())
+
+    threading.Thread(target=_change_state_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.INTERACTION_INVALID
+
+
+def test_watchdog_aborts_when_pepper_becomes_unreachable_during_gesture(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _go_unreachable_soon():
+        _wait_until_registered(node)
+        node._pepper_reachable_fresh.update(False, time.monotonic())
+
+    threading.Thread(target=_go_unreachable_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.PEPPER_UNREACHABLE
+
+
+def test_watchdog_aborts_on_hard_timeout_exceeding_expected_duration(tmp_path, monkeypatch):
+    # Entwicklungsauftrag 04-B, AP8-R1.3 (bestaetigter Fund 3.3):
+    # max_duration_s begrenzte bisher nur die KOMPILIERTE Solltrajektorie
+    # -- eine tatsaechlich haengende Ausfuehrung (hier durch
+    # play_trajectory_sleep_s simuliert) muss trotzdem hart abgebrochen
+    # werden. GESTURE_WATCHDOG_TIMEOUT_MARGIN_S wird fuer diesen Test auf
+    # einen kleinen Wert reduziert, damit der harte Deadline nicht die
+    # vollen (produktiven) 5s Marge abwarten muss.
+    from ihk_pepper_bridge import bridge_node as bridge_node_module
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    monkeypatch.setattr(bridge_node_module, "GESTURE_WATCHDOG_TIMEOUT_MARGIN_S", 0.05)
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        # Laenger als expected_duration_s (0.3s) + Marge (0.05s) -- der
+        # Watchdog muss VOR dem natuerlichen Ende abbrechen -- aber
+        # trotzdem kurz genug, um innerhalb der Standard-Grace-Zeit
+        # (2.0s) noch bestaetigt zurueckzukehren (sonst ueberschreibt
+        # 'cancel_unconfirmed' den TIMEOUT-Grund im Ergebnis, siehe
+        # test_no_success_and_no_lease_release_while_transport_thread_is_still_running
+        # fuer genau diesen Fall).
+        play_trajectory_sleep_s=0.5,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    started = time.time()
+    result = node._execute_gesture(goal_handle)
+    elapsed = time.time() - started
+    assert result.success is False
+    assert result.error_message == GestureCancelReason.TIMEOUT
+    # Wurde deutlich vor dem natuerlichen Ende (0.5s + Grace) erkannt --
+    # der Watchdog reagiert an der naechsten Poll-Grenze nach
+    # Ueberschreiten von expected_duration_s+Marge (~0.35s).
+    assert elapsed < 1.0
+
+
+def test_no_success_and_no_lease_release_while_transport_thread_is_still_running(tmp_path, monkeypatch):
+    # Entwicklungsauftrag 04-B, AP8-R1.6 (bestaetigter Fund 3.4): der
+    # Hintergrund-Thread ignoriert die Cancel-Grace-Zeit (play_trajectory
+    # kehrt erst NACH der Grace-Zeit zurueck) -- die Action darf NIE
+    # Erfolg melden und die Lease NICHT sofort freigeben.
+    from ihk_pepper_bridge import bridge_node as bridge_node_module
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    monkeypatch.setattr(bridge_node_module, "GESTURE_CANCEL_GRACE_S", 0.1)
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=1.0,  # laenger als die verkuerzte Grace-Zeit
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _cancel_soon():
+        _wait_until_registered(node)
+        goal_handle.is_cancel_requested = True
+
+    threading.Thread(target=_cancel_soon, daemon=True).start()
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert result.error_message == "cancel_unconfirmed"
+    assert goal_handle.outcome == "aborted"
+    # Lease bleibt quarantaeniert -- NICHT sofort freigegeben.
+    release_requests = [r for r in node.release_lease_client.calls
+                        if isinstance(r, ReleaseActuatorLease.Request)]
+    assert len(release_requests) == 0
+    lease_id = next(iter(node._active_gesture_cancel_events))
+    assert lease_id in node._quarantined_lease_ids
+    # Nach dem tatsaechlichen (verspaeteten) Ende des Hintergrund-Threads
+    # wird die Lease genau einmal bereinigt.
+    for _ in range(200):
+        if not node._active_gesture_cancel_events:
+            break
+        time.sleep(0.01)
+    assert node._active_gesture_cancel_events == {}
+    assert lease_id not in node._quarantined_lease_ids
+    release_requests = [r for r in node.release_lease_client.calls
+                        if isinstance(r, ReleaseActuatorLease.Request)]
+    assert len(release_requests) == 1
+
+
+def test_second_goal_on_the_same_resource_is_blocked_while_first_is_quarantined(tmp_path, monkeypatch):
+    from ihk_pepper_bridge import bridge_node as bridge_node_module
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    monkeypatch.setattr(bridge_node_module, "GESTURE_CANCEL_GRACE_S", 0.1)
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        play_trajectory_sleep_s=1.0,
+    )
+    # Nur EINE Lease-ID wird vom Fake-Arbiter je vergeben ("lease-1") --
+    # ein zweiter Erwerbsversuch auf dieselbe Ressource wird deshalb hier
+    # ueber granted=False simuliert, SOBALD die erste Ausfuehrung noch
+    # eine (quarantaenierte) Lease haelt.
+    goal_handle_1 = _FakeGoalHandle(_gesture_request(name="live_wave"))
+
+    def _cancel_first_soon():
+        _wait_until_registered(node)
+        goal_handle_1.is_cancel_requested = True
+
+    threading.Thread(target=_cancel_first_soon, daemon=True).start()
+    result_1 = node._execute_gesture(goal_handle_1)
+    assert result_1.error_message == "cancel_unconfirmed"
+
+    # Waehrend die erste Lease noch quarantaeniert ist (Hintergrund-Thread
+    # laeuft noch), simuliert der Fake-Arbiter-Client einen Konflikt fuer
+    # ein zweites Ziel auf derselben Ressource.
+    assert node._quarantined_lease_ids  # noch nicht bereinigt
+    node.acquire_lease_client.granted = False
+    node.acquire_lease_client.reason = "Ressourcenkonflikt mit: ['pepper_bridge']"
+    goal_handle_2 = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result_2 = node._execute_gesture(goal_handle_2)
+    assert result_2.success is False
+    assert "Ressourcenkonflikt" in result_2.error_message

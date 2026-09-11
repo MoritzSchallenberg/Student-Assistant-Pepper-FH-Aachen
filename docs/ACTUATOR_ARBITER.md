@@ -155,6 +155,28 @@ die Grenze ist organisatorisch: nur die im Projekt selbst verwendeten
 Owner-Präfixe (`pepper_bridge`, `person_approach`, `motion_guard`,
 `supervisor`, `actuator_arbiter`) werden als vertrauenswürdig behandelt.
 
+## Widerruf erreicht das exakt betroffene Ziel (Entwicklungsauftrag 04-B, AP8.3/AP8-R1.7)
+
+`actuator_arbiter_node.py` publiziert bei jeder Präemption/jedem
+Not-Stopp/jeder expliziten Freigabe eine gezielte
+`/actuator_arbiter/lease_revoked`-Nachricht (`lease_id`, `owner_id`,
+`preempted_reason`). `pepper_bridge` bindet diese Nachricht seit AP8.3
+über `_on_lease_revoked()` an genau das laufende Ziel (via
+`CancelSignal`, siehe `docs/GESTURE_CANCELLATION_AND_RESTORE.md`).
+
+AP8-R1 hat einen realen Race-Fund geschlossen: die Registrierung dieses
+Bindungspfads passierte vorher erst NACH der zweiten
+Autorisierungsprüfung an der Bridge, sodass eine Revocation im Fenster
+zwischen Lease-Erwerb und Registrierung unbemerkt verpuffen konnte. Die
+Registrierung erfolgt jetzt sofort nach Lease-Erwerb, lock-geschützt
+zusammen mit der Revocation-Verarbeitung, plus eine erneute Prüfung
+unmittelbar vor Transportstart — Details siehe
+`docs/GESTURE_CANCELLATION_AND_RESTORE.md`.
+
+Wichtig: eine `lease_revoked`-Bestätigung ist **nur** eine Aussage über
+den Arbiter-internen Zustand, **kein** Beweis eines physischen
+Hardwarestopps (siehe `docs/ACTION_CANCELLATION.md`).
+
 ## Getestet
 
 66 Unit-Tests über drei Dateien (`test_actuator_arbiter.py`,
