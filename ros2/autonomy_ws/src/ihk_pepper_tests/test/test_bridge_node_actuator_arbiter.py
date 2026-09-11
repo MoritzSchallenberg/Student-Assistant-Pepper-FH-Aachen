@@ -8,6 +8,8 @@ rclpy.init() noetig.
 import threading
 import time
 
+from std_msgs.msg import Bool, UInt8
+
 from ihk_pepper_bridge.bridge_node import PepperBridgeNode
 from ihk_pepper_bridge.gesture_catalog import GestureCatalog
 from ihk_pepper_bridge.gesture_execution_policy import GestureExecutionPolicy, PROFILE_OFFLINE_MOCK
@@ -135,11 +137,21 @@ class _FakeNode:
     _execute_say = PepperBridgeNode._execute_say
     _execute_gesture = PepperBridgeNode._execute_gesture
     _on_nav2_moving = PepperBridgeNode._on_nav2_moving
+    _on_safety_state_for_gestures = PepperBridgeNode._on_safety_state_for_gestures
+    _on_mapping_active = PepperBridgeNode._on_mapping_active
+    _on_interaction_state = PepperBridgeNode._on_interaction_state
     _current_runtime_context = PepperBridgeNode._current_runtime_context
 
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
-                 say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK):
-        self._params = {"dry_run": dry_run, "execution_profile": execution_profile}
+                 say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK,
+                 safety_ok=None, pepper_reachable=None, nav2_moving=None, mapping_active=None):
+        from ihk_pepper_bridge import safety_topics
+        self._params = {
+            "dry_run": dry_run, "execution_profile": execution_profile,
+            "safety_state_max_age_s": 2.0, "nav2_moving_max_age_s": 2.0,
+            "mapping_active_max_age_s": 2.0, "interaction_state_max_age_s": 2.0,
+            "pepper_reachable_max_age_s": 12.0,
+        }
         self.gesture_policy = GestureExecutionPolicy()
         self.catalog = GestureCatalog(gesture_dir)
         assert self.catalog.reload() == []
@@ -151,7 +163,25 @@ class _FakeNode:
         )
         self.release_lease_client = _FakeArbiterClient(available=arbiter_available)
         self._say_active = threading.Event()
+        # Entwicklungsauftrag 04-B, AP8.2: dieselben Fresh*-Instanzen wie
+        # der echte Node -- per Default UNBEFUELLT (is_fresh()==False),
+        # damit ein Test, der einen konkreten Wert braucht, ihn explizit
+        # setzt statt sich auf einen stillen Zufallsstand zu verlassen.
         self._nav2_moving = False
+        self._nav2_moving_fresh = safety_topics.FreshBool(True)
+        self._safety_ok_fresh = safety_topics.FreshBool(False)
+        self._mapping_active_fresh = safety_topics.FreshBool(True)
+        self._interaction_state_fresh = safety_topics.FreshValue(None)
+        self._pepper_reachable_fresh = safety_topics.FreshBool(False)
+        now = time.monotonic()  # _current_runtime_context() vergleicht gegen time.monotonic()
+        if nav2_moving is not None:
+            self._nav2_moving_fresh.update(nav2_moving, now)
+        if safety_ok is not None:
+            self._safety_ok_fresh.update(safety_ok, now)
+        if mapping_active is not None:
+            self._mapping_active_fresh.update(mapping_active, now)
+        if pepper_reachable is not None:
+            self._pepper_reachable_fresh.update(pepper_reachable, now)
         self.speaking_pub = _FakePublisher()
         self.gesture_in_progress_pub = _FakePublisher()
 
@@ -394,3 +424,126 @@ def test_a_direct_action_call_cannot_bypass_the_policy_via_a_higher_speed_scale(
     result = node._execute_gesture(goal_handle)
     assert result.success is False
     assert "tested_status_unzureichend" in result.error_message
+
+
+def _live_validated_gesture_dir(tmp_path):
+    # schema_version 2 (wie greet_open.yaml oben) -- nutzt play_trajectory(),
+    # nicht set_angle()/restore_joints() (die dieses Fake nicht bedient,
+    # siehe _FakePepperClient).
+    import yaml
+    data = {
+        "name": "live_wave",
+        "schema_version": 2,
+        "tested_status": "live_validated",
+        "keyframes": [
+            {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
+            {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
+        ],
+    }
+    with open(tmp_path / "live_wave.yaml", "w") as f:
+        yaml.safe_dump(data, f)
+    return str(tmp_path)
+
+
+def test_production_profile_succeeds_with_a_live_validated_gesture_and_fresh_context(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8.2: mit ECHTEN, frischen Laufzeitwerten
+    # (statt der in Commit 2/11 dokumentierten None-Platzhalter) darf eine
+    # live_validated Geste in production tatsaechlich laufen.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is True
+
+
+def test_production_profile_rejects_when_safety_state_is_stale(tmp_path):
+    # Ohne update() (siehe _FakeNode-Default) bleibt _safety_ok_fresh
+    # "nie empfangen" -- entspricht einem veralteten/fehlenden SafetyState.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "safety_state_ungueltig_oder_unbekannt" in result.error_message
+
+
+def test_a_genuinely_aged_out_safety_state_is_treated_as_stale(tmp_path):
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+    # SafetyState kam vor 10s an (max_age_s=2.0 im Fake-Default) -- gilt
+    # als veraltet, obwohl der letzte WERT selbst "ok" war.
+    node._safety_ok_fresh.update(True, time.monotonic() - 10.0)
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "safety_state_ungueltig_oder_unbekannt" in result.error_message
+
+
+def test_on_safety_state_handler_treats_emergency_stop_as_not_ok(tmp_path):
+    from ihk_pepper_interfaces.msg import SafetyState
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._on_safety_state_for_gestures(SafetyState(emergency_stop=True, bumper_active=False))
+    ctx = node._current_runtime_context()
+    assert ctx.safety_ok is False
+
+
+def test_on_safety_state_handler_treats_bumper_active_as_not_ok(tmp_path):
+    from ihk_pepper_interfaces.msg import SafetyState
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._on_safety_state_for_gestures(SafetyState(emergency_stop=False, bumper_active=True))
+    ctx = node._current_runtime_context()
+    assert ctx.safety_ok is False
+
+
+def test_on_mapping_active_handler_updates_the_runtime_context(tmp_path):
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._on_mapping_active(Bool(data=True))
+    assert node._current_runtime_context().mapping_active is True
+    node._on_mapping_active(Bool(data=False))
+    assert node._current_runtime_context().mapping_active is False
+
+
+def test_on_interaction_state_handler_decodes_the_enum_name(tmp_path):
+    from ihk_pepper_interaction.interaction_state import InteractionState
+    node = _FakeNode(_gesture_dir(tmp_path))
+    node._on_interaction_state(UInt8(data=int(InteractionState.CONVERSATION_READY)))
+    assert node._current_runtime_context().current_interaction_state == "CONVERSATION_READY"
+
+
+def test_gesture_becoming_unsafe_between_first_and_second_check_is_rejected(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8.2: der Laufzeitkontext kann sich
+    # zwischen der ersten Pruefung (vor Lease-Erwerb) und der zweiten
+    # (unmittelbar vor Transportstart) aendern -- hier wird SafetyState
+    # WAEHREND der Lease-Anforderung (simuliert durch einen praeparierten
+    # Arbiter-Client) ungueltig.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_PRODUCTION
+    node = _FakeNode(
+        _live_validated_gesture_dir(tmp_path), dry_run=False, execution_profile=PROFILE_PRODUCTION,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+    )
+
+    original_call_async = node.acquire_lease_client.call_async
+
+    def _call_async_and_then_go_unsafe(request):
+        result = original_call_async(request)
+        node._safety_ok_fresh.update(False, time.monotonic())
+        return result
+
+    node.acquire_lease_client.call_async = _call_async_and_then_go_unsafe
+    goal_handle = _FakeGoalHandle(_gesture_request(name="live_wave"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "safety_state_ungueltig_oder_unbekannt" in result.error_message
+    # Die soeben erworbene Lease wurde wieder freigegeben, nicht gehalten.
+    release_requests = [r for r in node.release_lease_client.calls
+                        if isinstance(r, ReleaseActuatorLease.Request)]
+    assert len(release_requests) == 1

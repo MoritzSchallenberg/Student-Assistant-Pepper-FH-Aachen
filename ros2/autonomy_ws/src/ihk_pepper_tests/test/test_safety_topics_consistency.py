@@ -36,6 +36,18 @@ def test_freshbool_class_present_in_every_copy():
         assert hasattr(module, "FreshBool"), f"{name}.safety_topics hat kein FreshBool"
 
 
+def test_freshvalue_class_present_in_every_copy():
+    """Entwicklungsauftrag 04-B, AP8.2: FreshValue ergaenzt FreshBool fuer
+    nicht-boolsche Laufzeitwerte (z.B. current_interaction_state)."""
+    for name, module in ALL_COPIES.items():
+        assert hasattr(module, "FreshValue"), f"{name}.safety_topics hat kein FreshValue"
+
+
+def test_interaction_state_topic_matches_supervisor_publisher():
+    for name, module in ALL_COPIES.items():
+        assert module.INTERACTION_STATE_TOPIC == "/interaction_state", name
+
+
 def test_gesture_in_progress_topic_matches_bridge_namespace():
     """Regressionstest fuer den in AP2 gefundenen Fehler: das absolute
     Thema muss tatsaechlich innerhalb des Bridge-Namespace liegen."""

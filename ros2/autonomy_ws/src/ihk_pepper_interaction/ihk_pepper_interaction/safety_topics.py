@@ -68,6 +68,12 @@ CHARGING_CABLE_CONNECTED_TOPIC = "/charging_cable_connected"
 NAV2_MOVING_TOPIC = "/nav2_moving"
 MAPPING_ACTIVE_TOPIC = "/mapping_active"
 SAFETY_STATE_TOPIC = "/safety_state"
+# Entwicklungsauftrag 04-B, AP8.2: UInt8 (interaction_state.py::
+# InteractionState-Enumwert), vom Supervisor veroeffentlicht -- bereits
+# seit Arbeitspaket 6 bestehendes Topic, hier erstmals als benannte
+# Konstante gefuehrt (vorher an mehreren Abonnentenstellen als rohes
+# String-Literal "/interaction_state" wiederholt).
+INTERACTION_STATE_TOPIC = "/interaction_state"
 CMD_VEL_TOPIC = "/cmd_vel"
 # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13/BASE-Lease-Integration:
 # vom actuator_arbiter_node veroeffentlicht (Node-Name "actuator_arbiter",
@@ -104,6 +110,40 @@ class FreshBool:
         uebergebenen sicheren Ausweichwert (typischerweise False fuer
         '..._valid'-Flags, True fuer Gefahrensignale wie
         bumper_active/hardware_fault)."""
+        if self.is_fresh(now, max_age_s):
+            return self.value
+        return fail_closed_value
+
+
+class FreshValue:
+    """Wie FreshBool, aber fuer einen BELIEBIGEN Wert statt nur bool
+    (Entwicklungsauftrag 04-B, AP8.2) -- z.B. den aktuellen
+    InteractionState-Namen (String) oder einen anderen nicht-boolschen
+    Laufzeitzustand. Bewusst dieselbe Aktualitaetslogik wie FreshBool
+    (byte-identisch in ALLEN drei Kopien dieser Datei, siehe
+    test_safety_topics_consistency.py), keine zweite, leicht
+    abweichende Implementierung."""
+
+    __slots__ = ("value", "received_at")
+
+    def __init__(self, initial_value):
+        self.value = initial_value
+        self.received_at = None  # None = noch nie empfangen
+
+    def update(self, value, now: float) -> None:
+        self.value = value
+        self.received_at = now
+
+    def is_fresh(self, now: float, max_age_s: float) -> bool:
+        if self.received_at is None:
+            return False
+        return (now - self.received_at) <= max_age_s
+
+    def effective(self, now: float, max_age_s: float, fail_closed_value=None):
+        """Liefert den aktuellen Wert, WENN er frisch ist -- sonst den
+        uebergebenen Ausweichwert (typischerweise None = 'unbekannt',
+        damit ein Aufrufer das fail-closed wie einen ungueltigen Wert
+        behandeln kann, siehe gesture_execution_policy.py::RuntimeContext)."""
         if self.is_fresh(now, max_age_s):
             return self.value
         return fail_closed_value

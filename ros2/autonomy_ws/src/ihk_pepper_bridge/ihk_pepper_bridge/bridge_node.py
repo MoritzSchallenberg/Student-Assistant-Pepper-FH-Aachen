@@ -17,15 +17,16 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
-from std_msgs.msg import String, Bool, Float32
+from std_msgs.msg import String, Bool, Float32, UInt8
 from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
 
 from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
-from ihk_pepper_interfaces.msg import SystemHealth
+from ihk_pepper_interfaces.msg import SafetyState, SystemHealth
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
 from ihk_pepper_interaction.actuator_arbiter import HEAD, PRIORITY_ATTRACT, PRIORITY_DIALOGUE
+from ihk_pepper_interaction.interaction_state import InteractionState
 from ihk_pepper_interaction.resource_derivation import resources_for_gesture, resources_for_speech
 
 from .pepper_client import PepperInterruptChannel, ThreadSafePepperClient
@@ -154,15 +155,60 @@ class PepperBridgeNode(Node):
         # zuhoeren (sonst transkribiert er sich selbst).
         self.speaking_pub = self.create_publisher(Bool, "speaking", 10)
 
-        # Entwicklungsauftrag 2, AP10: waehrend Nav2 aktiv faehrt (siehe
-        # ihk_pepper_navigation/person_approach_node.py) duerfen keine
-        # Arm-/Kopfgesten laufen -- gesture_catalog.py::play() konnte das
-        # bereits seit Auftrag 1 pruefen (nav2_moving-Parameter), wurde
-        # aber nie tatsaechlich live verdrahtet. Sicherer Default: False
-        # bis das Topic je empfangen wurde -- KEIN Blockieren durch
-        # Abwesenheit des Signals, aber auch keine falsche Freigabe.
-        self._nav2_moving = False
+        # Entwicklungsauftrag 04-B, AP8.2: Freshness-Parameter fuer JEDEN
+        # sicherheitsrelevanten Laufzeitzustand einzeln (Auftrag Abschnitt
+        # 6) -- dieselbe FreshBool/FreshValue-Hilfslogik wie an jeder
+        # anderen Stelle im Projekt (safety_topics.py, ABSICHTLICH
+        # identische Kopie in drei Paketen, siehe dessen Moduldoku).
+        self.declare_parameter("safety_state_max_age_s", 2.0)
+        self.declare_parameter("nav2_moving_max_age_s", 2.0)
+        self.declare_parameter("mapping_active_max_age_s", 2.0)
+        self.declare_parameter("interaction_state_max_age_s", 2.0)
+        # health_publish_interval_s ist bereits oben deklariert -- die
+        # Reichweite-Pruefung selbst laeuft periodisch dort mit
+        # (_publish_health(), siehe unten), pepper_reachable_max_age_s
+        # muss daher GROESSER als dieses Intervall sein, sonst waere der
+        # Wert strukturell nie "frisch".
+        self.declare_parameter("pepper_reachable_max_age_s", 12.0)
+
+        # Entwicklungsauftrag 2, AP10 / AP8.2 (bestaetigter, korrigierter
+        # Fund, siehe DEVELOPMENT_ORDER_04_B_REPORT.md AP8 Commit 1/11):
+        # der bisherige nackte Bool-Default war "False" (= "bewegt sich
+        # NICHT"), bis das Topic je empfangen wurde -- das ist GENAU die
+        # FALSCHE fail-closed-Richtung (Auftrag Abschnitt 6: "nav2_moving
+        # fehlt/veraltet -> ALS BEWEGUNG BEHANDELN"). FreshBool(True)
+        # macht daraus den sicheren Ausweichwert: ohne (frische) Nachricht
+        # gilt Pepper als "bewegt sich", stationaere Gesten bleiben
+        # gesperrt.
+        self._nav2_moving_fresh = safety_topics.FreshBool(True)
+        self._nav2_moving = True  # Rueckwaertskompatibel fuer _on_nav2_moving()-Leser unten
         self.create_subscription(Bool, "/nav2_moving", self._on_nav2_moving, 10)
+
+        # SafetyState fehlt/veraltet -> jede Hardwaregeste sperren
+        # (Auftrag Abschnitt 6) -- Ausweichwert False ("nicht ok").
+        self._safety_ok_fresh = safety_topics.FreshBool(False)
+        self.create_subscription(
+            SafetyState, safety_topics.SAFETY_STATE_TOPIC, self._on_safety_state_for_gestures, 10)
+
+        # mapping_active fehlt/veraltet -> Kopfgesten sperren -- Ausweichwert
+        # True ("Mapping koennte aktiv sein").
+        self._mapping_active_fresh = safety_topics.FreshBool(True)
+        self.create_subscription(
+            Bool, safety_topics.MAPPING_ACTIVE_TOPIC, self._on_mapping_active, 10)
+
+        # current_interaction_state fehlt/veraltet -> Gesten mit
+        # Zustands-Allowlist sperren -- Ausweichwert None ("unbekannt",
+        # RuntimeContext behandelt das bereits wie einen unzulaessigen
+        # Zustand, siehe gesture_execution_policy.py).
+        self._interaction_state_fresh = safety_topics.FreshValue(None)
+        self.create_subscription(
+            UInt8, safety_topics.INTERACTION_STATE_TOPIC, self._on_interaction_state, 10)
+
+        # Pepper nicht erreichbar -> Hardwaregeste sperren -- wiederverwendet
+        # DENSELBEN periodischen Erreichbarkeits-Check wie _publish_health()
+        # (siehe dort), statt einen zweiten, blockierenden Netzwerk-Check
+        # im Gesten-Ausfuehrungspfad selbst einzufuegen.
+        self._pepper_reachable_fresh = safety_topics.FreshBool(False)
 
         self.say_action_server = ActionServer(
             self, Say, "say",
@@ -401,31 +447,51 @@ class PepperBridgeNode(Node):
         return self._say_active.is_set()
 
     def _on_nav2_moving(self, msg: Bool):
+        now = time.monotonic()
         self._nav2_moving = msg.data
+        self._nav2_moving_fresh.update(msg.data, now)
+
+    def _on_safety_state_for_gestures(self, msg: SafetyState):
+        """Entwicklungsauftrag 04-B, AP8.2: dieselbe safety_ok-Definition
+        wie actuator_arbiter_node.py::_safety_ok() (Emergency-Stopp/Bumper
+        blockieren, alles andere gilt als "ok fuer eine neue Aktuation")
+        -- KEINE zweite, abweichende Definition dessen, was 'sicher'
+        bedeutet."""
+        now = time.monotonic()
+        safety_ok = not msg.emergency_stop and not msg.bumper_active
+        self._safety_ok_fresh.update(safety_ok, now)
+
+    def _on_mapping_active(self, msg: Bool):
+        self._mapping_active_fresh.update(msg.data, time.monotonic())
+
+    def _on_interaction_state(self, msg: UInt8):
+        try:
+            name = InteractionState(msg.data).name
+        except ValueError:
+            name = None  # unbekannter Enum-Wert -- gilt wie "nicht empfangen"
+        self._interaction_state_fresh.update(name, time.monotonic())
 
     def _current_runtime_context(self, lease_revoked: bool = False) -> RuntimeContext:
         """Entwicklungsauftrag 04-B, AP8.1/AP8.2: baut den Laufzeitkontext
         fuer GestureExecutionPolicy.authorize() aus den aktuell an der
-        Bridge bekannten Signalen. EHRLICHER ZWISCHENSTAND (AP8.1,
-        Commit 2/11): nur nav2_moving ist bereits ein echtes, live
-        verdrahtetes Signal (siehe _on_nav2_moving() oben, unveraendert
-        seit AP2/AP10). safety_ok/mapping_active/current_interaction_state/
-        pepper_reachable bleiben bewusst None (= "unbekannt"), bis AP8.2
-        (Commit 3/11) echte, mit Zeitstempel/Ablaufzeit gefuehrte
-        Subscriptions ergaenzt -- das bedeutet fail-closed, dass
-        supervised_hardware_test/production in DIESEM Zwischenstand
-        JEDE Hardwaregeste ablehnen (siehe
-        GestureExecutionPolicy.authorize(): safety_ok muss exakt True
-        sein), waehrend offline_mock/offline_preview (die den
-        Laufzeitkontext gar nicht auswerten) bereits vollstaendig
-        funktionsfaehig sind. Das ist die sichere Richtung fuer einen
-        Zwischen-Commit -- niemals umgekehrt."""
+        Bridge bekannten, EINZELN mit eigenem Zeitstempel gefuehrten
+        Signalen (Auftrag Abschnitt 6: "Fuehre mindestens folgende
+        Zustaende mit monotonic timestamp und Ablaufzeit"). Wird SOWOHL
+        vor der Autorisierung ALS AUCH unmittelbar vor Transportstart
+        neu aufgerufen (siehe _execute_gesture()) -- niemals
+        zwischengespeichert."""
+        now = time.monotonic()
         return RuntimeContext(
-            safety_ok=None,
-            nav2_moving=self._nav2_moving,
-            mapping_active=None,
-            current_interaction_state=None,
-            pepper_reachable=None,
+            safety_ok=self._safety_ok_fresh.effective(
+                now, self.get_parameter("safety_state_max_age_s").value, fail_closed_value=False),
+            nav2_moving=self._nav2_moving_fresh.effective(
+                now, self.get_parameter("nav2_moving_max_age_s").value, fail_closed_value=True),
+            mapping_active=self._mapping_active_fresh.effective(
+                now, self.get_parameter("mapping_active_max_age_s").value, fail_closed_value=True),
+            current_interaction_state=self._interaction_state_fresh.effective(
+                now, self.get_parameter("interaction_state_max_age_s").value, fail_closed_value=None),
+            pepper_reachable=self._pepper_reachable_fresh.effective(
+                now, self.get_parameter("pepper_reachable_max_age_s").value, fail_closed_value=False),
             lease_revoked=lease_revoked,
         )
 
@@ -732,6 +798,12 @@ class PepperBridgeNode(Node):
         msg = SystemHealth()
         msg.header.stamp = self.get_clock().now().to_msg()
         reachable = self.pepper.is_reachable(timeout_s=1.0)
+        # Entwicklungsauftrag 04-B, AP8.2: wiederverwendet genau diesen
+        # bereits periodisch laufenden Erreichbarkeits-Check fuer
+        # RuntimeContext.pepper_reachable -- kein zweiter, blockierender
+        # Netzwerk-Check im Gesten-Ausfuehrungspfad selbst (siehe
+        # _current_runtime_context()).
+        self._pepper_reachable_fresh.update(reachable, time.monotonic())
         msg.pepper_bridge_ok = reachable
         msg.audio_pipeline_ok = False  # von ihk_pepper_audio ueberschrieben, hier nur Platzhalter
         msg.anythingllm_ok = False  # von ihk_pepper_dialog ueberschrieben
