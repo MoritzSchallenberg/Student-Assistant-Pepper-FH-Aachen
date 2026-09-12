@@ -157,3 +157,23 @@ Fälle in `test_kinematic_compiler.py`/`test_motion_transport.py` (siehe
 `docs/DEVELOPMENT_ORDER_03_REPORT.md`, AP12), erweitert um die
 Cancel-/`interrupt_channel`-Tests aus AP5B (siehe
 `docs/DEVELOPMENT_ORDER_04_B_REPORT.md`).
+
+## Rein lesende Erfassung und Offline-Evidenz (Entwicklungsauftrag 04-B, AP8.7)
+
+Zwei ergänzende, vollständig offline arbeitende Werkzeuge nutzen
+`KinematicCompiler` und `TrajectorySafetyValidator` WIEDER, ohne eine
+zweite Kinematik-/Safety-Logik einzuführen:
+
+- `gesturectl capture-sequence` (siehe
+  `docs/GESTURE_CAPTURE_WORKFLOW.md`): rein lesende Mehrpunkt-Aufnahme
+  über `joint_state_source.py::PepperJointStateSource` (ausschließlich
+  `get_angle()`, strukturell kein Zugriff auf eine Bewegungsmethode) ->
+  eine sichere v2-Kandidatendatei, die vor dem Schreiben über
+  `KinematicCompiler.compile()` testkompiliert wird.
+- `gesturectl verify-offline`/`validate-all` (siehe
+  `docs/GESTURE_OFFLINE_EVIDENCE.md`): derselbe kanonische Pfad wie zur
+  Laufzeit (`GestureCatalog` -> Speed-Scale-Auflösung ->
+  `KinematicCompiler` -> `TrajectorySafetyValidator` ->
+  `resources_for_gesture`) erzeugt einen reproduzierbaren JSON-Report
+  mit Datei-/Plan-/Startpose-Fingerprint, Compiler-/Repositorystand und
+  eindeutiger `pass`/`fail`/`inconclusive`-Semantik.

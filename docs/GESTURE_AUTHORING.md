@@ -236,5 +236,30 @@ freigegeben, das den beabsichtigten Zustand tatsächlich trifft).
 7. `ros2 run ihk_pepper_bridge gesturectl audit` ausführen (Exitcode 0 =
    keine Fehler) und `python3 scripts/generate_gesture_inventory.py`, um
    `docs/GESTURE_CATALOG_INVENTORY.md` zu aktualisieren.
-8. Vor `tested_status: live_validated`: einzeln, langsam, unter direkter
+8. `ros2 run ihk_pepper_bridge gesturectl verify-offline <name> --report
+   /tmp/<name>.json` -- vollständig offline reproduzierbarer
+   Evidenzreport (Fingerprints, Compiler-/Repositorystand,
+   Kollisionsstatus). Mit dem aktuellen `DisabledCollisionBackend` ist
+   `overall_verdict: inconclusive` der erwartete, ehrliche Stand --
+   siehe `docs/GESTURE_OFFLINE_EVIDENCE.md`.
+9. Vor `tested_status: live_validated`: einzeln, langsam, unter direkter
    Aufsicht am echten Pepper testen (nicht Teil dieses Auftrags).
+
+## Neue Gesten OHNE manuelle Winkeleingabe erfassen
+
+Statt Winkelwerte von Hand zu schätzen, kann eine erste Kandidatin rein
+lesend am echten Pepper erfasst werden:
+
+```bash
+ros2 run ihk_pepper_bridge gesturectl capture-sequence \
+  --joints HeadYaw,HeadPitch --duration-s 3 --sample-rate-hz 2 \
+  --output /tmp/my_capture.yaml
+```
+
+Erzeugt IMMER eine sichere, nicht freigegebene Kandidatin
+(`tested_status: draft`, `selectable_by_llm: false`, `on_cancel: hold`,
+nur `IDLE` erlaubt) -- niemals eine Bewegung, niemals eine
+Statusänderung, niemals eine automatische Aufnahme in den
+Produktionskatalog. Siehe `docs/GESTURE_CAPTURE_WORKFLOW.md` für die
+vollständige Beschreibung (Read-only-Garantie, Zeitachsen-Semantik,
+Kandidatenformat, Startposebindung).

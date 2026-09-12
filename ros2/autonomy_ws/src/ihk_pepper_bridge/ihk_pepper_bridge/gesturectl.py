@@ -7,22 +7,42 @@ Katalog-/Compiler-/Transport-API auf (gesture_catalog.py,
 kinematic_compiler.py, motion_transport.py, pepper_client.py).
 
 Unterbefehle: list, validate, show, dry-run, preview, capture-pose,
-compare, live-test, audit. Siehe docs/GESTURE_LIVE_TEST_CHECKLIST.md
-fuer den live-test-Ablauf.
+capture-sequence, compare, live-test, audit, validate-all,
+verify-offline. Siehe docs/GESTURE_LIVE_TEST_CHECKLIST.md fuer den
+live-test-Ablauf, docs/GESTURE_CAPTURE_WORKFLOW.md fuer capture-sequence,
+docs/GESTURE_OFFLINE_EVIDENCE.md fuer verify-offline/validate-all.
 
 Nutzung (nach colcon build):
     ros2 run ihk_pepper_bridge gesturectl list
     ros2 run ihk_pepper_bridge gesturectl show wave_right
     ros2 run ihk_pepper_bridge gesturectl dry-run wave_right
     ros2 run ihk_pepper_bridge gesturectl audit
+    ros2 run ihk_pepper_bridge gesturectl validate-all
+    ros2 run ihk_pepper_bridge gesturectl verify-offline wave_right --report /tmp/wave_right.json
 """
 import argparse
 import glob
 import os
 import sys
 
-from .gesture_catalog import GestureCatalog, GestureValidationError
+from .gesture_capture import (
+    CAPTURE_MAX_DURATION_MARGIN_S,
+    CAPTURE_SPEED_SCALE_DEFAULT,
+    GestureCaptureError,
+    atomic_create_exclusive,
+    build_candidate_gesture_data,
+    capture_sequence,
+    derive_name_from_output_path,
+    parse_and_validate_joint_list,
+    validate_safe_gesture_name,
+)
+from .gesture_catalog import Gesture, GestureCatalog, GestureValidationError
 from .gesture_catalog_audit import audit_catalog, render_audit_report
+from .gesture_offline_evidence import (
+    verdict_to_exitcode,
+    verify_gesture_offline,
+    write_report_atomically,
+)
 from .kinematic_compiler import KinematicCompileError, KinematicCompiler
 from .motion_transport import DryRunMotionTransport
 from .trajectory_safety import TrajectorySafetyValidator
@@ -325,19 +345,282 @@ def cmd_preview_trajectory(args):
 
 def cmd_capture_pose(args):
     """REINER Lesezugriff -- ruft NIE set_breathing/set_angle/
-    play_trajectory auf, loest also NIE eine Bewegung aus und loest NIE
-    die Steifigkeit. Nur get_angle() je Gelenk."""
-    from .pepper_client import ThreadSafePepperClient
+    play_trajectory/restore_joints/set_stiffness/stop_motion auf, loest
+    also NIE eine Bewegung oder Steifigkeitsaenderung aus. Nutzt seit
+    Entwicklungsauftrag 04-B, AP8.7 (Commit 12/14, Abschnitt 14)
+    dieselbe gehaertete Gelenkvalidierung und dieselbe read-only
+    PepperJointStateSource-Abstraktion wie 'capture-sequence' -- EIN
+    Pruefpfad statt zweier."""
     from .joint_limits import ALLOWED_GESTURE_JOINTS
+    from .joint_state_source import PepperJointStateSource
+    from .pepper_client import ThreadSafePepperClient
+
+    if args.joints:
+        try:
+            joints = parse_and_validate_joint_list(args.joints)
+        except GestureCaptureError as e:
+            print(f"FEHLER: {e}", file=sys.stderr)
+            return 1
+    else:
+        joints = sorted(ALLOWED_GESTURE_JOINTS)
 
     client = ThreadSafePepperClient()
     if not client.is_reachable():
         print("Pepper nicht erreichbar (Port 22 antwortet nicht).", file=sys.stderr)
         return 1
-    joints = args.joints.split(",") if args.joints else sorted(ALLOWED_GESTURE_JOINTS)
+
+    source = PepperJointStateSource(client.get_angle)
+    reading = source.read(joints)
+
+    invalid = []
     for joint in joints:
-        angle = client.get_angle(joint)
-        print(f"{joint}: {angle}")
+        value = reading.values.get(joint)
+        print(f"{joint}: {value}")
+        if value is None:
+            invalid.append(joint)
+    if reading.acquisition_mode == "sequential_per_joint":
+        # Entwicklungsauftrag 04-B, AP8.7, Abschnitt 4.3: eine
+        # sequenzielle Mehrgelenkmessung darf NIE als zeitgleich
+        # dargestellt werden.
+        print(
+            f"# Hinweis: sequenziell gelesen (kein Batch, {reading.acquisition_span_s:.3f}s "
+            "Messspanne) -- KEINE zeitgleiche Momentaufnahme.",
+            file=sys.stderr,
+        )
+    if invalid:
+        print(f"FEHLER: unvollstaendiger Snapshot -- Gelenke ohne Wert: {invalid}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_capture_sequence(args):
+    """Entwicklungsauftrag 04-B, AP8.7, Commit 12/14: rein lesende
+    Mehrpunkt-Aufnahme -- niemals Bewegung, niemals Steifigkeitsaenderung,
+    keine ROS-Action, kein Aktuator-Lease, keine automatische Ausfuehrung.
+    ALLE Argumente werden geprueft, BEVOR ueberhaupt ein Pepper-Client
+    erzeugt wird -- ein ungueltiger Aufruf oeffnet keine Verbindung und
+    hinterlaesst keine temporaere Datei."""
+    try:
+        joints = parse_and_validate_joint_list(args.joints)
+    except GestureCaptureError as e:
+        print(f"FEHLER: {e}", file=sys.stderr)
+        return 1
+
+    if not _is_finite_cli(args.duration_s) or args.duration_s <= 0:
+        print(f"FEHLER: --duration-s muss endlich und positiv sein (erhalten: {args.duration_s!r}).", file=sys.stderr)
+        return 1
+    if not _is_finite_cli(args.sample_rate_hz) or args.sample_rate_hz <= 0:
+        print(f"FEHLER: --sample-rate-hz muss endlich und positiv sein (erhalten: {args.sample_rate_hz!r}).", file=sys.stderr)
+        return 1
+    from .gesture_capture import MAX_CAPTURE_SAMPLE_COUNT
+    if args.duration_s * args.sample_rate_hz > MAX_CAPTURE_SAMPLE_COUNT:
+        print(
+            f"FEHLER: duration-s * sample-rate-hz ({args.duration_s * args.sample_rate_hz:.1f}) "
+            f"ueberschreitet die Obergrenze von {MAX_CAPTURE_SAMPLE_COUNT} Samples.",
+            file=sys.stderr,
+        )
+        return 1
+    if not args.output.endswith(".yaml"):
+        print("FEHLER: --output muss auf '.yaml' enden.", file=sys.stderr)
+        return 1
+    if os.path.exists(args.output):
+        print(f"FEHLER: Zieldatei '{args.output}' existiert bereits -- wird NICHT ueberschrieben.", file=sys.stderr)
+        return 1
+    output_dir = os.path.dirname(os.path.abspath(args.output)) or "."
+    if os.path.realpath(output_dir) == os.path.realpath(_default_gesture_dir()):
+        print(
+            "FEHLER: --output darf nicht im aktiven Produktionskatalog liegen "
+            f"({_default_gesture_dir()}).",
+            file=sys.stderr,
+        )
+        return 1
+    try:
+        name = args.name if args.name else derive_name_from_output_path(args.output)
+        validate_safe_gesture_name(name)
+    except GestureCaptureError as e:
+        print(f"FEHLER: {e}", file=sys.stderr)
+        return 1
+
+    from .joint_state_source import PepperJointStateSource
+    from .pepper_client import ThreadSafePepperClient
+
+    client = ThreadSafePepperClient()
+    if not client.is_reachable():
+        print("Pepper nicht erreichbar (Port 22 antwortet nicht) -- keine Aufnahme, keine Datei.", file=sys.stderr)
+        return 1
+    source = PepperJointStateSource(client.get_angle)
+
+    try:
+        result = capture_sequence(source, joints, args.duration_s, args.sample_rate_hz)
+    except GestureCaptureError as e:
+        print(f"FEHLER waehrend der Aufnahme: {e} -- keine Datei geschrieben.", file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print("Aufnahme abgebrochen (Ctrl+C) -- keine Datei geschrieben.", file=sys.stderr)
+        return 1
+
+    data = build_candidate_gesture_data(name, result)
+
+    # Erst nach vollstaendiger Aufnahme UND erfolgreichem Testladen/
+    # Testkompilieren schreiben (Abschnitt 7.4).
+    try:
+        gesture = Gesture(dict(data), f"{name}.yaml")
+        KinematicCompiler().compile(
+            gesture, speed_scale=gesture.speed_scale_default, start_pose=result.start_pose)
+    except (GestureValidationError, KinematicCompileError) as e:
+        print(f"FEHLER: erfasste Kandidatin besteht das Testladen nicht: {e} -- keine Datei geschrieben.", file=sys.stderr)
+        return 1
+
+    import yaml
+    content = yaml.safe_dump(data, sort_keys=False, allow_unicode=True)
+    try:
+        atomic_create_exclusive(args.output, content)
+    except GestureCaptureError as e:
+        print(f"FEHLER: {e}", file=sys.stderr)
+        return 1
+
+    print(
+        f"Kandidatin geschrieben: {args.output} (name={name}, tested_status=draft, "
+        f"selectable_by_llm=false, sample_count={result.sample_count}, "
+        f"acquisition_mode={result.acquisition_mode})."
+    )
+    print(
+        "Hinweis: KEINE Statusaenderung, KEINE automatische Aufnahme in den Produktionskatalog/"
+        "Gesture-Memory-Index. Vor Nutzung: 'gesturectl verify-offline' bzw. 'gesturectl dry-run'."
+    )
+    return 0
+
+
+def _is_finite_cli(value) -> bool:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return False
+    return f == f and f not in (float("inf"), float("-inf"))
+
+
+def cmd_verify_offline(args):
+    """Entwicklungsauftrag 04-B, AP8.7, Commit 12/14: vollstaendig
+    OFFLINE reproduzierbarer Evidenzreport fuer GENAU eine Geste. Kein
+    Pepper-Client, kein Netzwerk, kein SSH/qicli, keine ROS-Action,
+    schreibt NUR den ausdruecklich angeforderten JSON-Report -- niemals
+    tested_status/tested_date/test_note/die YAML-Datei/den Gesture-
+    Memory-Index."""
+    catalog, errors = _load_catalog(args.gesture_dir)
+    for e in errors:
+        print(f"FEHLER beim Laden: {e}", file=sys.stderr)
+    try:
+        gesture = catalog.get(args.name)
+    except KeyError as e:
+        print(str(e), file=sys.stderr)
+        return 1
+
+    explicit_start_pose = None
+    if args.start_pose:
+        import yaml
+        try:
+            with open(args.start_pose) as f:
+                explicit_start_pose = yaml.safe_load(f)
+        except OSError as e:
+            print(f"FEHLER: --start-pose konnte nicht gelesen werden: {e}", file=sys.stderr)
+            return 1
+        if not isinstance(explicit_start_pose, dict):
+            print("FEHLER: --start-pose muss ein Gelenk->Winkel-Mapping (YAML/JSON-Dict) sein.", file=sys.stderr)
+            return 1
+
+    captured_start_pose = None
+    if explicit_start_pose is None:
+        captured_start_pose = (gesture.metadata or {}).get("capture", {}).get("start_pose")
+        if captured_start_pose is not None and not isinstance(captured_start_pose, dict):
+            captured_start_pose = None  # unerwartetes Format -- fail-closed auf NEUTRAL_STAND_POSE zurueckfallen.
+
+    report = verify_gesture_offline(
+        gesture, gesture.source_path, speed_scale=args.speed_scale,
+        explicit_start_pose=explicit_start_pose, captured_start_pose=captured_start_pose,
+    )
+
+    print(f"Geste '{gesture.name}': overall_verdict={report['overall_verdict']}")
+    if report["errors"]:
+        print(f"  Fehler: {report['errors']}", file=sys.stderr)
+    if report["warnings"]:
+        print(f"  Warnungen: {report['warnings']}")
+    if report["requires_manual_review"]:
+        print(f"  Manuelle Pruefung noetig: {report['requires_manual_review']}")
+
+    try:
+        write_report_atomically(args.report, report)
+    except ValueError as e:
+        print(f"FEHLER: Report konnte nicht geschrieben werden: {e}", file=sys.stderr)
+        return 1
+    print(f"Report geschrieben: {args.report}")
+
+    return verdict_to_exitcode(report["overall_verdict"])
+
+
+def cmd_validate_all(args):
+    """Entwicklungsauftrag 04-B, AP8.7, Commit 12/14: prueft JEDE Geste
+    im Katalog mit demselben Offline-Kern wie 'verify-offline'.
+    Vollstaendig offline, kein Pepper-Client, kein Netzwerk, keine
+    Dateischreiboperation (ausser einer ausdruecklich mit --report
+    angeforderten Zusammenfassung)."""
+    catalog, errors = _load_catalog(args.gesture_dir)
+    for e in errors:
+        print(f"FEHLER beim Laden: {e}", file=sys.stderr)
+
+    rows = []
+    reports_by_name = {}
+    for name in catalog.names():  # bereits alphabetisch sortiert (GestureCatalog.names())
+        gesture = catalog.get(name)
+        captured_start_pose = (gesture.metadata or {}).get("capture", {}).get("start_pose")
+        if captured_start_pose is not None and not isinstance(captured_start_pose, dict):
+            captured_start_pose = None
+        report = verify_gesture_offline(
+            gesture, gesture.source_path, captured_start_pose=captured_start_pose)
+        reports_by_name[name] = report
+        rows.append((
+            name, f"v{report['gesture']['schema_version']}", report["overall_verdict"],
+            report["inputs"]["start_pose_source"], report["inputs"]["effective_speed_scale"],
+            report["trajectory"]["effective_duration_s"], report["checks"]["joint_and_timing"],
+            report["checks"]["collision_backend"], len(report["warnings"]),
+        ))
+
+    header = (
+        f"{'Name':24s} {'Schema':7s} {'Status':13s} {'Startposequelle':20s} "
+        f"{'SpeedScale':10s} {'Dauer':8s} {'Joint/Timing':13s} {'Kollision':18s} {'Warn':4s}"
+    )
+    print(header)
+    for name, schema, verdict, sp_source, speed_scale, duration, jt, coll, warn_count in rows:
+        print(
+            f"{name:24s} {schema:7s} {verdict:13s} {sp_source:20s} "
+            f"{str(speed_scale):10s} {str(duration):8s} {jt:13s} {coll:18s} {warn_count:4d}"
+        )
+
+    fail_count = sum(1 for r in rows if r[2] == "fail")
+    inconclusive_count = sum(1 for r in rows if r[2] == "inconclusive")
+    pass_count = sum(1 for r in rows if r[2] == "pass")
+    print(
+        f"\nZusammenfassung: {len(rows)} geprueft, {pass_count} pass, "
+        f"{inconclusive_count} inconclusive, {fail_count} fail "
+        f"({len(errors)} Ladefehler uebersprungen)."
+    )
+
+    if getattr(args, "report", None):
+        summary = {
+            "report_schema_version": 1,
+            "load_errors": list(errors),
+            "results": {name: reports_by_name[name] for name in sorted(reports_by_name)},
+        }
+        try:
+            write_report_atomically(args.report, summary)
+        except ValueError as e:
+            print(f"FEHLER: Zusammenfassungsreport konnte nicht geschrieben werden: {e}", file=sys.stderr)
+            return 1
+        print(f"Zusammenfassungsreport geschrieben: {args.report}")
+
+    if errors or fail_count > 0:
+        return 1
+    if inconclusive_count > 0:
+        return 2
     return 0
 
 
@@ -550,6 +833,34 @@ def build_parser():
     p = sub.add_parser("capture-pose", help="aktuelle Gelenkwinkel lesen (REIN lesend)")
     p.add_argument("--joints", default=None, help="kommagetrennt, sonst alle freigegebenen Gelenke")
     p.set_defaults(func=cmd_capture_pose)
+
+    p = sub.add_parser(
+        "capture-sequence",
+        help="rein lesende Mehrpunkt-Aufnahme -> sichere v2-Kandidatendatei (KEINE Bewegung)",
+    )
+    p.add_argument("--joints", required=True, help="kommagetrennt, z.B. HeadYaw,HeadPitch")
+    p.add_argument("--duration-s", type=float, required=True)
+    p.add_argument("--sample-rate-hz", type=float, required=True)
+    p.add_argument("--output", required=True, help="Zieldatei, muss auf .yaml enden, darf noch nicht existieren")
+    p.add_argument("--name", default=None, help="sonst deterministisch aus --output abgeleitet")
+    p.set_defaults(func=cmd_capture_sequence)
+
+    p = sub.add_parser(
+        "verify-offline",
+        help="vollstaendig offline reproduzierbarer Evidenzreport fuer EINE Geste (JSON)",
+    )
+    p.add_argument("name")
+    p.add_argument("--report", required=True, help="Zieldatei fuer den JSON-Report (wird nicht ueberschrieben)")
+    p.add_argument("--speed-scale", type=float, default=None)
+    p.add_argument("--start-pose", default=None, help="YAML/JSON-Datei mit einem Gelenk->Winkel-Mapping")
+    p.set_defaults(func=cmd_verify_offline)
+
+    p = sub.add_parser(
+        "validate-all",
+        help="prueft JEDE Kataloggeste offline (derselbe Kern wie verify-offline)",
+    )
+    p.add_argument("--report", default=None, help="optionaler JSON-Zusammenfassungsreport (wird nicht ueberschrieben)")
+    p.set_defaults(func=cmd_validate_all)
 
     p = sub.add_parser("compare", help="Endpose einer Geste vs. andere Geste ODER Live-Snapshot")
     p.add_argument("name")

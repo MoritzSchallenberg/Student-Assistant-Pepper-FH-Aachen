@@ -2213,3 +2213,172 @@ Alle Metadaten sind validiert, alle 24 Dateien migriert, `gesturectl
 audit` und das generierte Inventar sind einsatzbereit. **12/14 (`add
 capture-sequence and offline evidence tooling`) kann auf dieser
 Grundlage beginnen.**
+
+## AP8.7 (12/14): rein lesende Bewegungsaufnahme, vollständige Offline-Validierung und reproduzierbare Gestenevidenz
+
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `149a410`,
+working tree sauber, Python `1668 bestanden, 3 übersprungen`, BT.CPP
+`23/0/0/4`, Katalog `24 Gesten` (`17 draft / 6 dry_run_validated / 1
+live_validated`), `gesturectl audit` Exitcode 0 (0 Fehler, 1 Warnung) --
+entspricht exakt dem gemeldeten Stand.
+
+### Neue Unterbefehle
+
+`gesturectl capture-sequence`, `gesturectl verify-offline`,
+`gesturectl validate-all` (Abschnitt 4.1 -- alle drei fehlten vorher
+tatsächlich, wie geprüft).
+
+### Read-only-Quellenabstraktion (`joint_state_source.py`)
+
+`JointStateReading` (`values, acquisition_started_monotonic_s,
+acquisition_finished_monotonic_s, source_backend, acquisition_mode`) +
+`PepperJointStateSource`, die **ausschließlich** die gebundene
+`get_angle`-Funktion des Pepper-Clients hält (nicht den Client selbst)
+-- ein struktureller Beweis, dass `set_angle`/`play_trajectory`/
+`restore_joints`/`set_breathing`/`set_stiffness`/`stop_motion` von
+diesem Objekt aus nicht erreichbar sind (`test_read_never_reaches_a_
+movement_method`, tatsächlich ausgeführt, nicht nur Quelltext
+durchsucht). Bestätigter Fund 4.3: `apps/web/pepper/qicli.py::
+get_angles()` liest bereits heute **sequenziell** (`{j: self.get_angle(j)
+for j in joints}`, EIN SSH-Kommando je Gelenk) -- `acquisition_mode =
+"sequential_per_joint"` dokumentiert das ehrlich, keine Batchmessung
+wird vorgetäuscht.
+
+### Gelenkargument-Härtung (`gesture_capture.py::parse_and_validate_joint_list`)
+
+Gemeinsam für `capture-pose` (gehärtet) und `capture-sequence`: trennt
+an Kommas, trimmt, lehnt leere Elemente, unbekannte Gelenke (exakte
+Mengenzugehörigkeit zu `ALLOWED_GESTURE_JOINTS` -- keine Chain-Namen wie
+`Body`/`Head`/`Arms`, keine freien qicli-Fragmente) und Duplikate ab,
+liefert eine alphabetisch sortierte (deterministische) Liste. Da
+`ALLOWED_GESTURE_JOINTS` ausschließlich einfache alphanumerische
+Bezeichner enthält, schließt diese Prüfung eine Befehlsinjektion über
+`--joints` strukturell aus, BEVOR ein Name je in eine SSH-/qicli-
+Zeichenkette eingesetzt werden könnte (bestätigter Fund 4.2 -- der
+vorherige Pfad zerlegte `--joints` ungeprüft und reichte es direkt an
+`ThreadSafePepperClient.get_angle()` durch, das seinerseits den
+Gelenknamen per f-String in ein SSH-`exec_command()` einsetzt).
+
+### `capture_sequence()` -- Kernschleife
+
+Echte `time.monotonic()`-Zeitstempel (kein ideales Soll), erster
+gültiger Messpunkt = `time_from_start_s: 0.0`, streng monotone
+Folgezeiten (ein Rundungsfehler, der Zeitgleichheit erzeugen würde,
+bricht fail-closed ab), `requested_sample_rate_hz`/
+`achieved_sample_rate_hz` getrennt dokumentiert, `maximum_sample_span_s`
+zeigt den Zeitversatz innerhalb eines Mehrgelenk-Samples. Fail-closed
+bei: fehlendem Gelenk, `None`, NaN, inf, nicht-numerischem Wert, Wert
+außerhalb der Gelenkgrenze (mit Sicherheitsmarge), Verbindungsabbruch,
+`KeyboardInterrupt` -- niemals Glättung/Interpolation/Klemmung/erfundene
+Samples. `MAX_CAPTURE_SAMPLE_COUNT = 1000` begrenzt die resultierende
+Samplezahl.
+
+### Kandidatendateiformat + sicheres Schreiben
+
+`build_candidate_gesture_data()`: `schema_version: 2`,
+`tested_status: draft`, `selectable_by_llm: false`, nur `IDLE` erlaubt,
+`on_cancel: hold`, `speed_scale_default: 0.4` (dokumentierte
+Obergrenze, keine neue Hardwarefreigabe), `max_duration_s`
+deterministisch aus der erfassten (unskalierten) Zeitachse UND
+`speed_scale_default` abgeleitet (identische Semantik wie
+`kinematic_compiler.py`: effektive Dauer = raw/speed_scale, NICHT die
+unskalierte Achse selbst -- der an mehreren echten Kataloggesten bereits
+korrigierte AP8.4-Fehler). Vollständige Capture-Metadaten inkl.
+`start_pose` (echte Winkelwerte, für `verify-offline`) +
+`start_pose_fingerprint` (Integritätsprüfung), `hardware_validation:
+hwverificationrequired`. `atomic_create_exclusive()` (POSIX `os.link()`,
+nicht `os.rename()`) schreibt NUR nach erfolgreichem Testladen
+(`GestureCatalog`/`Gesture`) UND Testkompilieren (`KinematicCompiler`,
+mit der erfassten Startpose) -- eine bestehende Zieldatei wird
+niemals ersetzt, auch nicht bei einem Race.
+
+### `gesture_offline_evidence.py` -- Evidenzreport
+
+`verify_gesture_offline()` nutzt den kanonischen Pfad (`GestureCatalog`
+-> Speed-Scale-Auflösung -> `KinematicCompiler` ->
+`TrajectorySafetyValidator` -> `resources_for_gesture`) -- KEINE zweite
+Sicherheitslogik. Report-Schema (Abschnitt 10.3) vollständig
+implementiert: `source_sha256` (echter Dateihash), `plan_fingerprint`
+(aus demselben, genau einmal kompilierten Plan), `start_pose_
+fingerprint`, `compiler_version`, `repository_commit`/
+`working_tree_dirty` (ehrlich `"unavailable"` + Warnung ohne
+Git-Kontext, NIE erfunden), `affected_resources` (kanonisch über
+`resources_for_gesture`), sortierte JSON-Schlüssel, `allow_nan=False`
+(keine NaN-/Infinity-Werte), nur der Dateiname (kein absoluter
+Entwicklerpfad). Startposequelle: explizit -> Capture-Metadaten ->
+`NEUTRAL_STAND_POSE` (klar gekennzeichnet), mit vollständiger
+Gelenkprüfung, kein Teil-Fallback.
+
+Verdict-Regeln exakt wie im Auftrag: Compiler-/Joint-/Timingfehler oder
+ein Backend-`fail` -> `fail`; Joint/Timing bestanden, aber
+`collision_checked=false` -> `inconclusive`; erst ein echtes
+Kollisions-Backend erlaubt `pass`. `t_pose` (v1) -> `inconclusive` mit
+`requires_manual_review=["legacy_v1_not_safely_interruptible"]`, KEINE
+vorgetäuschte v2-Kompilierung.
+
+### Verifizierte Ergebnisse (echte Läufe, keine erfundenen Werte)
+
+```text
+$ ros2 run ihk_pepper_bridge gesturectl verify-offline wave_right --report /tmp/wave_right_report.json
+Geste 'wave_right': overall_verdict=inconclusive
+  Manuelle Pruefung noetig: ['Kollisionsfreiheit wurde NICHT geprueft...']
+$ echo $?
+2
+
+$ ros2 run ihk_pepper_bridge gesturectl verify-offline t_pose --report /tmp/t_pose_report.json
+Geste 't_pose': overall_verdict=inconclusive   # requires_manual_review=[legacy_v1_not_safely_interruptible]
+$ echo $?
+2
+
+$ ros2 run ihk_pepper_bridge gesturectl validate-all
+Zusammenfassung: 24 geprueft, 0 pass, 24 inconclusive, 0 fail (0 Ladefehler uebersprungen).
+$ echo $?
+2
+```
+
+Collision-Backend im Standardpfad: `DisabledCollisionBackend` (bewusst
+KEIN echter Kollisionsnachweis). Ein Test-Double
+(`_TestDoubleFakeCollisionProofBackend`, AUSDRÜCKLICH als Test-Double
+dokumentiert) beweist isoliert, dass `verify_gesture_offline()` bei
+`collision_checked=True` korrekt `pass` liefert -- niemals im
+Standardpfad verwendet oder als echtes Backend dokumentiert.
+`inconclusive` erhöht in keinem Fall `tested_status`.
+
+### Härtung von `capture-pose`
+
+Nutzt jetzt dieselbe `parse_and_validate_joint_list()` und dieselbe
+`PepperJointStateSource`-Abstraktion wie `capture-sequence`. Meldet
+einen unvollständigen Snapshot (fehlender Wert) jetzt als Fehler statt
+stillschweigend `None` auszugeben, und weist explizit auf eine
+sequenzielle (nicht zeitgleiche) Messung hin.
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete), `python3 -m pytest
+ihk_pepper_tests/test -q` → **1751 bestanden, 3 übersprungen** (vorher
+1668/3 -- 83 neue Tests), `colcon test --packages-select
+ihk_pepper_behavior_tree` → **23/0/0/4** (unverändert). Alle 24
+Gestendateien laden weiterhin fehlerfrei, alle 23 v2-Gesten
+kompilieren. `gesturectl audit` weiterhin Exitcode 0 (0 Fehler, 1
+Warnung), `python3 scripts/generate_gesture_inventory.py --check`
+weiterhin aktuell (keine Gestendaten verändert). Kein SSH-/qicli-Aufruf,
+kein `/cmd_vel`, kein Start von `navigation_live.launch.py`, keine
+Hardwarebewegung in irgendeinem automatischen Test --
+`capture-sequence`s echter Lese-Pfad wurde ausschließlich mit
+Test-Doubles geprüft (`test_joint_state_source.py`,
+`test_gesture_capture.py`, `test_gesturectl.py`), niemals gegen
+Hardware.
+
+### Weiterhin offene `hwverificationrequired`-Punkte
+
+Kein echtes Kollisions-Backend, `t_pose` bleibt v1-Sonderfall,
+`capture-sequence`s Lese-Pfad nicht hardwareverifiziert, `gesturectl
+live-test` weiterhin nicht gegen echte Hardware ausgeführt.
+
+### Freigabe für 13/14
+
+Alle drei neuen Unterbefehle sind implementiert, getestet und
+dokumentiert; keine Statusänderung, keine Bewegung, keine zweite
+Sicherheitslogik. **13/14 (`verify dialogue gesture lifecycle with
+offline E2E tests`) kann auf dieser Grundlage beginnen.**
