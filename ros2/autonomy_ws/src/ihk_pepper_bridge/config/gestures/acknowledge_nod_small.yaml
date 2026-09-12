@@ -1,15 +1,11 @@
 schema_version: 2
 name: acknowledge_nod_small
 description: >
-  Ergaenzungsauftrag 04-A: kurzes, kleines Bestaetigungsnicken --
-  ausgeloest UNMITTELBAR nachdem run_dialogue_action_server.py eine
-  Frage entgegengenommen hat (DialogueState.ACKNOWLEDGING), NICHT von
-  LLM 2 gewaehlt (siehe system_only/selectable_by_llm unten). Bewusst
-  kleiner als nod_once.yaml (Amplitude 0.15 statt 0.3) -- ein
-  Bestaetigungssignal, kein zustimmendes Nicken wie agree_nod.yaml.
-metadata:
-  system_only: true
-  selectable_by_llm: false
+  Kurzes, kleines Bestaetigungsnicken direkt nach Entgegennahme einer
+  Frage -- ein reines Systemsignal, keine LLM-auswaehlbare Geste.
+system_only: true
+selectable_by_llm: false
+semantic_tags: []
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.8
@@ -22,6 +18,11 @@ test_note: >
   -- konservativ innerhalb der dokumentierten HeadPitch-Grenzen aus
   joint_limits.py. Vor jedem dry-run: `gesturectl preview
   acknowledge_nod_small` (RViz).
+  Ausgeloest UNMITTELBAR nachdem run_dialogue_action_server.py eine
+  Frage entgegengenommen hat (DialogueState.ACKNOWLEDGING), NICHT von
+  LLM 2 gewaehlt -- deshalb system_only=true/selectable_by_llm=false.
+  Bewusst kleiner als nod_once.yaml (Amplitude 0.15 statt 0.3) -- ein
+  Bestaetigungssignal, kein zustimmendes Nicken wie agree_nod.yaml.
 max_duration_s: 1.2
 on_cancel: restore
 keyframes:

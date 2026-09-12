@@ -19,11 +19,13 @@ def gesture_dir():
     with tempfile.TemporaryDirectory() as d:
         _write_yaml(d, "seq", {
             "name": "seq",
+            "description": "Testgeste 'seq' (v1, sequenziell).",
             "steps": [{"joint": "HeadYaw", "angle": 0.1, "duration": 1.0}],
         })
         _write_yaml(d, "small_v2", {
             "schema_version": 2,
             "name": "small_v2",
+            "description": "Testgeste 'small_v2' (v2, ein Keyframe).",
             "keyframes": [{"time_from_start_s": 0.5, "joints": {"HeadPitch": 0.1}}],
         })
         yield d
@@ -212,3 +214,54 @@ def test_gesturectl_module_never_references_cmd_vel():
     import inspect
     source = inspect.getsource(gesturectl)
     assert "cmd_vel" not in source
+
+
+# ---- audit (Entwicklungsauftrag 04-B, AP8, Commit 11/14) ----
+
+def test_audit_succeeds_for_a_clean_catalog_with_exitcode_zero(gesture_dir, capsys):
+    rc = _run(gesture_dir, "audit")
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Zusammenfassung" in out
+    assert "Fehler: 0" in out
+
+
+def test_audit_never_touches_pepper_client_or_transport(gesture_dir, monkeypatch, capsys):
+    # rein lesend -- ein Aufruf, der versucht, den Pepper-Client zu
+    # instanziieren, muss den Audit scheitern lassen (Beweis, dass er
+    # nie tatsaechlich aufgerufen wird).
+    def _forbidden(*a, **kw):
+        raise AssertionError("gesturectl audit darf NIE einen Pepper-Client instanziieren.")
+
+    monkeypatch.setattr("ihk_pepper_bridge.pepper_client.ThreadSafePepperClient", _forbidden)
+    monkeypatch.setattr(
+        "ihk_pepper_bridge.gesturectl.QicliTrajectoryTransport", _forbidden, raising=False)
+    rc = _run(gesture_dir, "audit")
+    assert rc == 0
+
+
+def test_audit_reports_a_nonzero_exitcode_for_a_missing_mandatory_system_only_gesture(tmp_path, capsys):
+    _write_yaml(str(tmp_path), "look_at_person", {
+        "name": "look_at_person",
+        "schema_version": 2,
+        "description": "Testbeschreibung.",
+        "system_only": False,  # FALSCH -- muss laut Auftrag system_only=true sein
+        "selectable_by_llm": False,
+        "keyframes": [{"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}}],
+        "max_duration_s": 2.0,
+    })
+    rc = _run(str(tmp_path), "audit")
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "verbindlich eine Systemgeste" in out
+
+
+def test_audit_reports_a_nonzero_exitcode_when_a_file_is_skipped_by_the_loader(tmp_path, capsys):
+    # Dateiname passt NICHT zum Gestennamen -- GestureCatalog.reload()
+    # lehnt die Datei ab (Ladefehler), der Audit darf das NICHT als
+    # Erfolg verbergen.
+    _write_yaml(str(tmp_path), "wrong_filename", {"name": "actual_name", "steps": []})
+    rc = _run(str(tmp_path), "audit")
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Ladefehler" in out

@@ -91,8 +91,13 @@ test_note: "Live getestet: <kurze Beschreibung, wer/was beobachtet wurde>"
 
 ## Ehrlicher Stand dieser Session
 
-In dieser Session ist kein Pepper angeschlossen -- `gesturectl live-test`
-konnte nicht ausgeführt werden. Alle 20 Kataloggesten bleiben bei
-`draft`/`dry_run_validated` (siehe `docs/GESTURE_AUTHORING.md` für die
-vollständige Tabelle). Diese Checkliste ist vorbereitet, aber nicht in
-dieser Session durchlaufen worden.
+In keiner Session bis einschließlich Entwicklungsauftrag 04-B, AP8
+(Commit 11/14) war ein Pepper angeschlossen -- `gesturectl live-test`
+wurde nicht gegen echte Hardware ausgeführt. Der Katalog umfasst
+mittlerweile 24 Gesten (`t_pose` `live_validated` -- historischer
+v1-Sonderfall, v1 bleibt strukturell aus `production` gesperrt; 6
+weitere `dry_run_validated`; der Rest `draft`) -- die aktuelle,
+automatisch erzeugte Übersicht steht in
+`docs/GESTURE_CATALOG_INVENTORY.md` (Reproduktionsbefehl:
+`python3 scripts/generate_gesture_inventory.py`). Diese Checkliste ist
+vorbereitet, aber weiterhin in keiner Session durchlaufen worden.

@@ -140,12 +140,23 @@ def test_not_selectable_by_llm_excluded_from_llm_style_query():
     assert passes_hard_filters(entry, request) is False
 
 
-def test_not_selectable_by_llm_included_for_internal_query_without_search_text():
-    """Ohne Suchtext (z.B. gesturectl list-artige Introspektion) wird
-    selectable_by_llm=False nicht zusaetzlich blockiert -- nur
-    system_only blockt unabhaengig vom Suchtext."""
+def test_not_selectable_by_llm_is_blocked_even_without_search_text():
+    # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 11.3 (bestaetigter
+    # Fund): der Filter griff bisher NUR bei einer nicht-leeren Anfrage --
+    # eine leere Anfrage liess selectable_by_llm=False durchrutschen,
+    # UNABHAENGIG von system_only. Jetzt gilt der Ausschluss immer, ausser
+    # ein interner Aufrufer setzt include_system_only explizit.
     entry = _entry("thinking_loop_subtle", selectable_by_llm=False, system_only=False)
     request = GestureSearchRequest(query="")
+    assert passes_hard_filters(entry, request) is False
+
+
+def test_not_selectable_by_llm_is_included_when_include_system_only_is_set():
+    # Der explizite Introspektions-Weg (gesturectl) bleibt unveraendert
+    # moeglich -- include_system_only=True hebt BEIDE Ausschluesse auf
+    # (system_only UND selectable_by_llm=False).
+    entry = _entry("thinking_loop_subtle", selectable_by_llm=False, system_only=False)
+    request = GestureSearchRequest(query="", include_system_only=True)
     assert passes_hard_filters(entry, request) is True
 
 

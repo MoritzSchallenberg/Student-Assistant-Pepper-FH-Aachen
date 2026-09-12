@@ -1,13 +1,13 @@
 schema_version: 2
 name: neutral_stand
 description: >
-  Entwicklungsauftrag 3, AP13: neutrale Referenzhaltung fuer Kopf, Arme
-  und Huefte -- entspricht exakt der NEUTRAL_STAND_POSE-Konstante in
-  kinematic_compiler.py (dieselben Werte, hier als eigenstaendige,
-  abspielbare Geste). Dient als sicherer "Reset"-Zielzustand, z.B. nach
-  einer Praesentation oder einem Gespraech, BEVOR Pepper in einen
-  anderen Modus wechselt. Keine Live-Referenz noetig -- alle Winkel sind
-  konservativ nahe der neutralen Mittelstellung jedes Gelenks.
+  Interne, neutrale Referenz-/Reset-Haltung fuer Kopf, Arme und Huefte
+  -- entspricht der NEUTRAL_STAND_POSE-Konstante in kinematic_compiler.py.
+  Systemgeste ohne nachgewiesenen nutzergerichteten Einsatzpfad, deshalb
+  nicht vom LLM auswaehlbar.
+system_only: true
+selectable_by_llm: false
+semantic_tags: []
 requires_stationary: true
 allowed_interaction_states: []
 speed_scale_default: 0.5
@@ -25,6 +25,10 @@ test_note: >
   wurde entsprechend auf den real ausgefuehrten Wert (+Marge) korrigiert
   -- keine Aenderung an Keyframes/Winkeln/Bewegung, der bereits
   durchgefuehrte dry-run bleibt inhaltlich gueltig.
+  AP8 (11/14): kein Aufruf dieser Geste ueber einen Behavior-Tree-Knoten
+  oder eine sonstige nutzergerichtete Stelle im Repository gefunden --
+  deshalb system_only=true/selectable_by_llm=false, bis ein belastbarer
+  Einsatzpfad nachgewiesen wird.
 max_duration_s: 3.1
 on_cancel: hold
 keyframes:

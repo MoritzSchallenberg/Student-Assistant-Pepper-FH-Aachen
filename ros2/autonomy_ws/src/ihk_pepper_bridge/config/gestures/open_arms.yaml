@@ -1,10 +1,11 @@
 schema_version: 2
 name: open_arms
 description: >
-  Arme einladend zur Seite oeffnen, etwas zurueckhaltender als die volle
-  T-Pose. ShoulderRoll-Zielwinkel (0.9 statt der live getesteten 1.3 aus
-  t_pose.yaml) bewusst konservativer als der bewiesene t_pose-Wert
-  gewaehlt, ShoulderPitch=0.0 identisch zu t_pose.yaml uebernommen.
+  Arme einladend zur Seite oeffnen -- etwas zurueckhaltender als die
+  volle T-Pose.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [welcoming, open_gesture, invitation]
 requires_stationary: true
 allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 0.6
@@ -13,8 +14,8 @@ tested_status: dry_run_validated
 tested_date: "2026-09-03"
 test_note: >
   ShoulderPitch von der live getesteten t_pose-Sequenz uebernommen,
-  ShoulderRoll bewusst unterhalb des dort getesteten Werts. Der
-  v2-Transport selbst ist NICHT live geprueft.
+  ShoulderRoll bewusst unterhalb des dort getesteten Werts (0.9 statt
+  1.3). Der v2-Transport selbst ist NICHT live geprueft.
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

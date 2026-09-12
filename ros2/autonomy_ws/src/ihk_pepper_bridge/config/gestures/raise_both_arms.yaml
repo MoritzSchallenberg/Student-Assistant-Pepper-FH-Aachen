@@ -1,10 +1,10 @@
 schema_version: 2
 name: raise_both_arms
 description: >
-  Beide Arme langsam anheben. ShoulderPitch-Zielwinkel (-1.0) identisch
-  zum bereits live getesteten wave_right/wave_left-Vorbereitungswinkel
-  (siehe docs/STATUS.md), hier symmetrisch auf beide Arme angewandt --
-  eine Uebertragung eines bewiesenen Einzelwerts, nicht neu erfunden.
+  Beide Arme langsam anheben -- eine begeisterte, feiernde Geste.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [celebration, arms_raised, enthusiasm]
 requires_stationary: true
 allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 0.6
@@ -12,9 +12,12 @@ restore_after: true
 tested_status: dry_run_validated
 tested_date: "2026-09-03"
 test_note: >
-  ShoulderPitch-Zielwinkel von der live getesteten wave_*-Sequenz
-  uebernommen. Die bilaterale Gleichzeitigkeit und der v2-Transport
-  selbst sind NICHT live geprueft (kein Pepper-Zugriff diese Session).
+  ShoulderPitch-Zielwinkel (-1.0) identisch zum bereits live getesteten
+  wave_right/wave_left-Vorbereitungswinkel (siehe docs/STATUS.md), hier
+  symmetrisch auf beide Arme angewandt -- eine Uebertragung eines
+  bewiesenen Einzelwerts, nicht neu erfunden. Die bilaterale
+  Gleichzeitigkeit und der v2-Transport selbst sind NICHT live geprueft
+  (kein Pepper-Zugriff diese Session).
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

@@ -1,11 +1,10 @@
 schema_version: 2
 name: disagree_head
 description: >
-  Entwicklungsauftrag 3, AP13: leichtes Kopfschuetteln (Verneinung/
-  Unsicherheit). HeadYaw oszilliert zwischen -0.3 und 0.3 rad -- deutlich
-  konservativer als die dokumentierte HeadYaw-Grenze (+-2.0857) und mit
-  aehnlicher Geschwindigkeit/Beschleunigung wie die bereits live
-  getestete wave_right-Oszillation.
+  Leichtes Kopfschuetteln -- signalisiert Verneinung oder Unsicherheit.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [disagreement, negation, uncertainty]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.8
@@ -15,7 +14,9 @@ tested_date: null
 test_note: >
   Keine Live-Referenz fuer Kopfgesten vorhanden -- konservative
   Amplitude/Geschwindigkeit (1.5 rad/s Spitzenwert, unter der
-  wave_right-Referenz von 2.5 rad/s).
+  wave_right-Referenz von 2.5 rad/s). HeadYaw oszilliert zwischen -0.3
+  und 0.3 rad -- deutlich konservativer als die dokumentierte
+  HeadYaw-Grenze (+-2.0857).
 max_duration_s: 2.0
 on_cancel: restore
 keyframes:

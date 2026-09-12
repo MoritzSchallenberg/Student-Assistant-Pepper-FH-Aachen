@@ -501,6 +501,7 @@ def _dry_run_validated_gesture_dir(tmp_path):
         "schema_version": 2,
         "tested_status": "dry_run_validated",
         "tested_date": "2026-09-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
@@ -587,6 +588,7 @@ def _v1_live_validated_gesture_dir(tmp_path):
         "name": "t_pose_like",
         "tested_status": "live_validated",
         "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "steps": [{"joint": "RShoulderPitch", "angle": -1.0, "duration": 1.0}],
         # Entwicklungsauftrag 04-B, AP8-R2, Abschnitt 3.7: max_duration_s
         # muss fuer hardwarefaehige Profile gesetzt/endlich/positiv sein.
@@ -642,6 +644,8 @@ def _live_validated_gesture_dir(tmp_path):
         "name": "live_wave",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"RShoulderPitch": 0.3}},
@@ -903,6 +907,8 @@ def _head_gesture_dir(tmp_path):
         "name": "live_head_move",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0}},
             {"time_from_start_s": 0.3, "joints": {"HeadYaw": 0.2}},
@@ -920,6 +926,8 @@ def _interaction_restricted_gesture_dir(tmp_path):
         "name": "live_conversation_only",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "allowed_interaction_states": ["CONVERSATION_READY"],
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
@@ -1085,6 +1093,8 @@ def _short_max_duration_gesture_dir(tmp_path):
         "name": "live_short_deadline",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
             {"time_from_start_s": 0.1, "joints": {"RShoulderPitch": 0.1}},
@@ -1403,6 +1413,8 @@ def test_unbound_ros_cancel_sets_preempted_not_normal_user_cancel(tmp_path):
         "name": "live_wave_restore",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "on_cancel": "restore",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},
@@ -1515,6 +1527,8 @@ def test_codeword_interrupt_preempts_a_running_gesture_and_never_restores(tmp_pa
         "name": "live_wave_restore",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "on_cancel": "restore",
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},

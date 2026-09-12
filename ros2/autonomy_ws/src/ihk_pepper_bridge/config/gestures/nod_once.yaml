@@ -1,10 +1,11 @@
 schema_version: 2
 name: nod_once
 description: >
-  Einmaliges Kopfnicken (Kopf leicht senken und wieder heben).
-  requires_stationary=true -- Kopfgesten sind waehrend Mapping/Navigation
-  grundsaetzlich gesperrt (siehe docs/ARCHITECTURE_REALSense_BT.md,
-  GestureCatalog.play(mapping_active=...)).
+  Einmaliges Kopfnicken (Kopf leicht senken und wieder heben) -- ein
+  allgemeines Bestaetigungssignal.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [acknowledgment, nodding, agreement]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY, ATTRACT]
 speed_scale_default: 0.8
@@ -15,6 +16,9 @@ test_note: >
   Keine Live-Referenz fuer Kopfgesten in dieser Session vorhanden --
   konservative Winkel innerhalb der dokumentierten (NICHT live
   verifizierten) HeadPitch-Grenzen aus joint_limits.py.
+  requires_stationary=true -- Kopfgesten sind waehrend Mapping/Navigation
+  grundsaetzlich gesperrt (siehe docs/ARCHITECTURE_REALSense_BT.md,
+  GestureCatalog.play(mapping_active=...)).
 max_duration_s: 1.5
 on_cancel: restore
 keyframes:

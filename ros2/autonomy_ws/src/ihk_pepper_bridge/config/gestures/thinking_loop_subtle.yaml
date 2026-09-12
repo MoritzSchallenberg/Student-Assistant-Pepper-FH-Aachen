@@ -1,25 +1,12 @@
 schema_version: 2
 name: thinking_loop_subtle
 description: >
-  Ergaenzungsauftrag 04-A: EIN Zyklus der subtilen "Nachdenk"-Zwischen-
-  bewegung fuer DialogueState.WAITING_FOR_RESPONSE (LLM-Pipeline braucht
-  laenger als thinking_loop_delay_s). Diese Datei ist bewusst NUR EIN
-  Zyklus (~1.3s) -- "gedeckelte Wiederholungen/Dauer" (Auftrag-Vorgabe)
-  wird NICHT in dieser YAML kodiert, sondern vom Aufrufer erzwungen
-  (run_dialogue_action_server.py::_run_thinking_loop(), max_repetitions/
-  max_total_duration-Parameter): der Aufrufer ruft diese Geste
-  wiederholt auf und prueft NACH JEDEM Zyklus (nicht mitten in der
-  Bewegung), ob die Pipeline inzwischen fertig ist oder abgebrochen
-  wurde -- "unterbrechbar" heisst hier: an Zyklusgrenzen, nicht
-  mitten in der laufenden Trajektorie (PlayGesture unterstuetzt aktuell
-  keine echte Unterbrechung waehrend einer laufenden Trajektorie, siehe
-  bridge_node.py::_execute_gesture() -- das hier bewusst NICHT
-  faelschlich als "sofort unterbrechbar" behauptet wird).
-  Amplitude bewusst kleiner als acknowledge_nod_small.yaml (0.10 statt
-  0.15) -- "subtil", kein sichtbares Nicken.
-metadata:
-  system_only: true
-  selectable_by_llm: false
+  Ein Zyklus einer subtilen "Nachdenk"-Zwischenbewegung fuer eine
+  laengere LLM-Antwortzeit -- ein reines Systemsignal, keine
+  LLM-auswaehlbare Geste.
+system_only: true
+selectable_by_llm: false
+semantic_tags: []
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.7
@@ -28,9 +15,21 @@ tested_status: draft
 tested_date: null
 test_note: >
   Keine Live-Referenz vorhanden. Amplitude konservativ unterhalb von
-  acknowledge_nod_small.yaml gewaehlt, innerhalb der dokumentierten
-  HeadPitch-Grenzen aus joint_limits.py. Vor jedem dry-run:
-  `gesturectl preview thinking_loop_subtle` (RViz).
+  acknowledge_nod_small.yaml gewaehlt (0.10 statt 0.15 -- "subtil", kein
+  sichtbares Nicken), innerhalb der dokumentierten HeadPitch-Grenzen aus
+  joint_limits.py. Vor jedem dry-run: `gesturectl preview
+  thinking_loop_subtle` (RViz).
+  Diese Datei ist bewusst NUR EIN Zyklus (~1.3s) fuer
+  DialogueState.WAITING_FOR_RESPONSE -- "gedeckelte Wiederholungen/
+  Dauer" wird NICHT in dieser YAML kodiert, sondern vom Aufrufer
+  erzwungen (run_dialogue_action_server.py::_run_thinking_loop(),
+  max_repetitions/max_total_duration-Parameter): der Aufrufer ruft
+  diese Geste wiederholt auf und prueft NACH JEDEM Zyklus (nicht mitten
+  in der Bewegung), ob die Pipeline inzwischen fertig ist oder
+  abgebrochen wurde -- "unterbrechbar" heisst hier: an Zyklusgrenzen,
+  nicht mitten in der laufenden Trajektorie (PlayGesture unterstuetzt
+  aktuell keine echte Unterbrechung waehrend einer laufenden
+  Trajektorie, siehe bridge_node.py::_execute_gesture()).
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

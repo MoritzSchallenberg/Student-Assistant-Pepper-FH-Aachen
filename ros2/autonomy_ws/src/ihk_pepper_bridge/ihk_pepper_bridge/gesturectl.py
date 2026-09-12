@@ -7,19 +7,22 @@ Katalog-/Compiler-/Transport-API auf (gesture_catalog.py,
 kinematic_compiler.py, motion_transport.py, pepper_client.py).
 
 Unterbefehle: list, validate, show, dry-run, preview, capture-pose,
-compare, live-test. Siehe docs/GESTURE_LIVE_TEST_CHECKLIST.md fuer den
-live-test-Ablauf.
+compare, live-test, audit. Siehe docs/GESTURE_LIVE_TEST_CHECKLIST.md
+fuer den live-test-Ablauf.
 
 Nutzung (nach colcon build):
     ros2 run ihk_pepper_bridge gesturectl list
     ros2 run ihk_pepper_bridge gesturectl show wave_right
     ros2 run ihk_pepper_bridge gesturectl dry-run wave_right
+    ros2 run ihk_pepper_bridge gesturectl audit
 """
 import argparse
+import glob
 import os
 import sys
 
 from .gesture_catalog import GestureCatalog, GestureValidationError
+from .gesture_catalog_audit import audit_catalog, render_audit_report
 from .kinematic_compiler import KinematicCompileError, KinematicCompiler
 from .motion_transport import DryRunMotionTransport
 from .trajectory_safety import TrajectorySafetyValidator
@@ -76,6 +79,20 @@ def cmd_list(args):
         print(f"{name:24s} v{g.schema_version}  {g.tested_status:18s}  "
               f"{g.duration_s():.2f}s  Gelenke: {', '.join(g.affected_joints())}")
     return 1 if errors else 0
+
+
+def cmd_audit(args):
+    """Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 9: deterministische
+    Katalogpruefung. Rein lesend -- instanziiert NIE einen Pepper-Client,
+    ruft NIE SSH/qicli/eine ROS-Action auf, veraendert NIE eine YAML-Datei.
+    Exitcode 0 nur, wenn KEIN Ladefehler und KEIN [ERROR]-Eintrag
+    vorliegt -- ein uebersprungener Loader-Eintrag darf den Audit NIE
+    faelschlich als Erfolg erscheinen lassen."""
+    catalog, errors = _load_catalog(args.gesture_dir)
+    total_files = len(glob.glob(os.path.join(args.gesture_dir, "*.yaml")))
+    result = audit_catalog(catalog, load_errors=errors, total_yaml_files_found=total_files)
+    print(render_audit_report(result), end="")
+    return 1 if result.error_count > 0 else 0
 
 
 def cmd_validate(args):
@@ -497,6 +514,12 @@ def build_parser():
 
     p = sub.add_parser("list", help="alle Kataloggesten auflisten")
     p.set_defaults(func=cmd_list)
+
+    p = sub.add_parser(
+        "audit",
+        help="deterministische Katalogpruefung (Metadaten/Spiegelpaare/Systemgesten), rein lesend",
+    )
+    p.set_defaults(func=cmd_audit)
 
     p = sub.add_parser("validate", help="eine Geste laden+kompilieren, ohne sie abzuspielen")
     p.add_argument("name")

@@ -1,15 +1,11 @@
 schema_version: 2
 name: thinking_symbolic
 description: >
-  Entwicklungsauftrag 3, AP13: symbolisches "Nachdenken" -- Kopf neigt
-  sich leicht zur Seite/nach oben, rechter Arm hebt sich Richtung Brust
-  (NICHT Richtung Gesicht/Kinn). Bewegungsregel "keine Haende in den
-  Gesichtsbereich" wird STRIKT eingehalten: RShoulderPitch bleibt bei
-  0.7 (positiver Wert = Arm bleibt TIEF, siehe wave_right.yaml/
-  open_arms.yaml, wo negative Werte den Arm anheben) -- die Hand
-  bleibt dadurch auf Brusthoehe, kommt dem Kopf nicht nahe. Bewusst
-  konservativer als eine "Hand-am-Kinn"-Geste, die dieser Auftrag
-  explizit ausschliesst.
+  Symbolisches Nachdenken -- Kopf neigt sich leicht zur Seite, rechter
+  Arm hebt sich Richtung Brust (NICHT Richtung Gesicht/Kinn).
+system_only: false
+selectable_by_llm: true
+semantic_tags: [thinking, pondering, symbolic_gesture]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.5
@@ -21,7 +17,11 @@ test_note: >
   draft belassen, RShoulderPitch/RElbowRoll so gewaehlt, dass die Hand
   rechnerisch weit unterhalb der Kopfhoehe bleibt (keine echte
   Vorwaertskinematik in dieser Session verfuegbar, daher zusaetzlich
-  konservativ).
+  konservativ). Bewegungsregel "keine Haende in den Gesichtsbereich"
+  wird STRIKT eingehalten: RShoulderPitch bleibt bei 0.7 (positiver Wert
+  = Arm bleibt TIEF, siehe wave_right.yaml/open_arms.yaml, wo negative
+  Werte den Arm anheben) -- die Hand bleibt dadurch auf Brusthoehe,
+  kommt dem Kopf nicht nahe.
   AP8.4-Migration (Entwicklungsauftrag 04-B, bestaetigter Fund 3.4): der
   urspruengliche erste Keyframe (t=0.0, HeadYaw=0.15, HeadPitch=-0.1)
   wich von der angenommenen NEUTRAL_STAND_POSE-Startpose (beide 0.0) ab,

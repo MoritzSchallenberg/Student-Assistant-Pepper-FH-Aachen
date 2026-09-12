@@ -32,6 +32,20 @@ def _catalog(tmp_path, **gestures):
     return GestureCatalog(str(tmp_path))
 
 
+def _add_evidence_if_required(data: dict) -> dict:
+    """Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 5.2: tested_status
+    in (dry_run_validated, live_validated) verlangt jetzt zusaetzlich ein
+    gesetztes tested_date UND eine nicht-leere test_note -- sonst wird
+    die Datei beim Laden abgelehnt. Testfixtures, die einen dieser
+    Status setzen, brauchen deshalb eine synthetische, aber vorhandene
+    Evidenz (setdefault -- ein Test, der tested_date/test_note bewusst
+    SELBST prueft, kann sie weiterhin ueberschreiben)."""
+    if data.get("tested_status") in ("dry_run_validated", "live_validated"):
+        data.setdefault("tested_date", "2026-01-01")
+        data.setdefault("test_note", "Test-Fixture: synthetische Evidenz fuer Policy-Tests.")
+    return data
+
+
 def _v1_gesture(tested_status="draft", **overrides):
     data = {
         "steps": [{"joint": "RShoulderPitch", "angle": 0.5, "duration": 1.0}],
@@ -44,7 +58,7 @@ def _v1_gesture(tested_status="draft", **overrides):
         "max_duration_s": 10.0,
     }
     data.update(overrides)
-    return data
+    return _add_evidence_if_required(data)
 
 
 def _v2_gesture(tested_status="draft", **overrides):
@@ -58,7 +72,7 @@ def _v2_gesture(tested_status="draft", **overrides):
         "max_duration_s": 10.0,
     }
     data.update(overrides)
-    return data
+    return _add_evidence_if_required(data)
 
 
 _FRESH_HARDWARE_OK = RuntimeContext(
@@ -187,25 +201,27 @@ def test_missing_max_duration_s_does_not_block_offline_profiles(tmp_path):
     assert decision.allowed is True
 
 
-def test_nan_max_duration_s_blocks_hardware_profiles(tmp_path):
-    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="live_validated", max_duration_s=float("nan")))
-    decision = GestureExecutionPolicy().authorize(
-        catalog.get("wave"), _FRESH_HARDWARE_OK, PROFILE_PRODUCTION)
-    assert decision.allowed is False
-    assert decision.reason_code == "max_duration_s_fehlt_oder_ungueltig"
+def test_nan_max_duration_s_is_rejected_at_load_time(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 5.1: max_duration_s
+    # muss endlich und positiv sein -- NaN wird jetzt bereits beim LADEN
+    # der Geste (Gesture.__init__) als Schemafehler abgelehnt, nicht erst
+    # von GestureExecutionPolicy.authorize(). Ein staerkeres, frueheres
+    # Gate als vorher (die Geste erreicht den Katalog gar nicht erst).
+    from ihk_pepper_bridge.gesture_catalog import Gesture, GestureValidationError
+    data = _v1_gesture(tested_status="live_validated", max_duration_s=float("nan"))
+    data["name"] = "wave"
+    with pytest.raises(GestureValidationError, match="max_duration_s"):
+        Gesture(data, "wave.yaml")
 
 
-def test_zero_max_duration_s_blocks_hardware_profiles(tmp_path):
-    # 0.0 wird bereits von der bestehenden, fuer JEDES Profil geltenden
-    # max_duration_s-Ueberschreitungspruefung abgefangen (expected_duration_s
-    # > 0.0 ist fuer jede reale Geste wahr) -- ein anderer, ebenfalls
-    # korrekter reason_code als bei fehlendem/NaN max_duration_s, aber
-    # dieselbe Ablehnung.
-    catalog = _catalog(tmp_path, wave=_v1_gesture(tested_status="live_validated", max_duration_s=0.0))
-    decision = GestureExecutionPolicy().authorize(
-        catalog.get("wave"), _FRESH_HARDWARE_OK, PROFILE_PRODUCTION)
-    assert decision.allowed is False
-    assert decision.reason_code == "max_duration_ueberschritten"
+def test_zero_max_duration_s_is_rejected_at_load_time(tmp_path):
+    # Wie oben, fuer 0.0 (nicht positiv) -- ebenfalls jetzt ein
+    # Schemafehler beim Laden, nicht erst eine Policy-Ablehnung.
+    from ihk_pepper_bridge.gesture_catalog import Gesture, GestureValidationError
+    data = _v1_gesture(tested_status="live_validated", max_duration_s=0.0)
+    data["name"] = "wave"
+    with pytest.raises(GestureValidationError, match="max_duration_s"):
+        Gesture(data, "wave.yaml")
 
 
 # ---- NaN/inf speed_scale ----

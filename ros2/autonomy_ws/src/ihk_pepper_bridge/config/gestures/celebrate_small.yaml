@@ -1,12 +1,12 @@
 schema_version: 2
 name: celebrate_small
 description: >
-  Entwicklungsauftrag 3, AP13: kleine, symbolische Freude-Geste (beide
-  Arme leicht anheben und oeffnen, dann sanft absinken lassen). BEWUSST
-  keine ruckartigen Richtungswechsel (Bewegungsregel: "keine ruckartigen
-  Richtungswechsel") -- nur EINE Bewegung nach oben, danach ein sanftes
-  Teil-Absinken, keine Oszillation. KEINE Umarmungs-Andeutung (Arme
-  bleiben seitlich geoeffnet, nicht nach vorne/zueinander gefuehrt).
+  Kleine, symbolische Freude-Geste -- beide Arme heben sich leicht und
+  oeffnen sich, dann sinken sie sanft wieder ab. Keine Umarmungs-
+  Andeutung, keine Oszillation.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [celebration, joy, excitement]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.6
@@ -16,7 +16,9 @@ tested_date: null
 test_note: >
   Neue, symmetrische Bewegung ohne Live-Referenz -- Winkel deutlich
   konservativer als open_arms.yaml (ShoulderRoll 0.4 statt 0.9), nur
-  eine Bewegungsrichtung ohne Oszillation.
+  eine Bewegungsrichtung ohne Oszillation. BEWUSST keine ruckartigen
+  Richtungswechsel (Bewegungsregel) -- nur eine Bewegung nach oben,
+  danach ein sanftes Teil-Absinken.
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

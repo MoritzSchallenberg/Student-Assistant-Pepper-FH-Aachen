@@ -2055,3 +2055,161 @@ tatsächlichen Bewegungsstart, das tatsächliche Bewegungsende, Cancel-
 Gründe und Restore/Breathing. Die Katalogkuratierung (11/14) kann auf
 dieser Grundlage sicher beginnen -- keine der neun Lücken betrifft die
 YAML-Metadaten-Struktur selbst, die 11/14 erweitern soll.
+
+## AP8 (11/14): validierte Gestenmetadaten, semantische Katalogkuratierung und automatisch erzeugtes Inventar
+
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `b2539b6`,
+working tree sauber, Python `1645 bestanden, 3 übersprungen`, BT.CPP
+`23 bestanden, 0 fehlgeschlagen, 0 deaktiviert, 4 übersprungen` --
+entspricht exakt dem gemeldeten Stand. Katalogbestand vor Änderung
+bestätigt: **24 Dateien**, `live_validated: 1` (`t_pose`),
+`dry_run_validated: 6` (`goodbye_wave, neutral_stand, open_arms,
+raise_both_arms, wave_left, wave_right`), `draft: 17` -- exakt die im
+Auftrag genannte Liste, `greet_open` korrekt als `draft` bestätigt
+(die im Auftrag erwähnte veraltete Dokumentation, die es noch als
+`dry_run_validated` führte, existierte nicht mehr in dieser Form).
+
+### Kanonisches Metadatenschema
+
+`gesture_catalog.py::Gesture` bekam drei neue erstklassige Attribute
+(`system_only`, `selectable_by_llm`, `semantic_tags`) plus verschärfte
+Typ-/Kohärenzprüfung für bereits bestehende Felder:
+
+- `_resolve_legacy_bool_field()`/`_resolve_semantic_tags()`: kanonisch
+  Top-Level, mit Rückwärtskompat-Fallback auf das alte `metadata`-Dict
+  -- ein Widerspruch zwischen beiden wird abgelehnt, kein stiller
+  Vorrang. Fehlen BEIDE, ist der sichere Default `False`/`[]` (eine
+  alte/unvollständige Datei wird NIE automatisch LLM-auswählbar).
+- `_require_bool_field()`: `requires_stationary`/`system_only`/
+  `selectable_by_llm` müssen echte YAML-Booleans sein -- ein String wie
+  `"false"` wurde bisher über `bool(...)` still zu `True` konvertiert
+  (bestätigter Fund 4.2), das ist jetzt ein Schemafehler.
+- Kohärenzregeln: `system_only=true` UND `selectable_by_llm=true`
+  gleichzeitig -> Ablehnung. `selectable_by_llm=true` verlangt
+  nicht-leere `description` UND ≥1 `semantic_tag`. `tested_status` in
+  (`dry_run_validated`, `live_validated`) verlangt gesetztes
+  `tested_date` UND eine nicht-leere `test_note`.
+- `allowed_interaction_states` wird jetzt gegen die echten
+  `InteractionState`-Namen geprüft (dieselbe Quelle wie
+  `bridge_node.py::_on_interaction_state()`). `max_duration_s` wird,
+  wenn gesetzt, auf endlich+positiv geprüft (NaN/inf/≤0 -> Ablehnung
+  bereits beim Laden, nicht erst in `gesture_execution_policy.py`).
+  `tested_date` akzeptiert sowohl einen ISO-String als auch das von
+  PyYAML bereits geparste `datetime.date`-Objekt.
+
+### Migration aller 24 Dateien
+
+Alle 24 Gestendateien wurden auf die kanonischen Top-Level-Felder
+migriert (die beiden bisherigen `metadata`-Fallback-Nutzer,
+`acknowledge_nod_small`/`thinking_loop_subtle`, ebenso). **Keine
+Trajektorie wurde verändert** -- nachgewiesen durch einen Fingerprint-
+Vergleich (`compute_plan_fingerprint()`, dieselbe Funktion wie
+AP8-R2s Plan-Bindung) aller 24 Gesten vor/nach der Migration (Vorher-
+Stand aus `git show HEAD:...` extrahiert, NICHT der Arbeitsbaum
+verändert): **0 Abweichungen**.
+
+**Verbindliche Systemgesten** (`system_only=true`, `selectable_by_llm=
+false`): `acknowledge_nod_small`, `thinking_loop_subtle`,
+`look_at_person` (Auftrag-Vorgabe) sowie zusätzlich `neutral_stand` und
+`t_pose` -- für beide wurde per Repository-weiter Suche bestätigt, dass
+KEIN Behavior-Tree-Knoten oder sonstiger nutzergerichteter Aufrufpfad
+sie referenziert (`grep -rn "neutral_stand\|t_pose"` über alle
+`*.py`/`*.xml`-Dateien, außer Katalog-/Kinematik-/Test-internen
+Treffern). **5 Systemgesten, 19 LLM-auswählbare Gesten, 0 in keiner
+Kategorie.**
+
+**Inhaltliche Korrekturen**: `look_at_person`s Beschreibung wurde
+präzisiert (behauptet explizit KEINE TF-basierte Zielausrichtung/
+Personenposition), `point_to_self`/`point_to_tablet` beschreiben
+ausdrücklich symbolische Bewegung ohne echtes Zeigen (Pepper hat nur
+1 Hand-Motor), `self_hug_symbolic` betont explizit "keine Emotion
+erkannt". Lange Implementierungs-/Migrationshistorien wurden aus
+`description` in `test_note` verschoben (die meisten standen dort
+bereits).
+
+### `gesturectl audit` + `gesture_catalog_audit.py`
+
+Neues Modul `gesture_catalog_audit.py` (rein lesend, kein Pepper-
+Client, kein Netzwerk, keine ROS-Action, keine Schreibaktion) mit
+`audit_catalog()`/`render_audit_report()`/`render_inventory_markdown()`
+-- letztere zwei werden sowohl von `gesturectl audit` als auch vom
+Inventar-Generator genutzt (identischer Renderer, Auftrag Abschnitt
+10). Geprüft: Ladefehler/übersprungene Dateien, leere/doppelte
+Beschreibungen, verbindliche Systemgesten, Legacy-`metadata`-Fallback-
+Nutzung (Warnung), v1-Einträge (Warnung), verdächtige Shell-/
+Hardwarebefehls-Muster in Freitextfeldern, und Spiegelpaare.
+Exitcode `0` nur bei `error_count == 0` (Ladefehler zählen mit --
+ein übersprungener Loader-Eintrag kann den Audit nicht fälschlich
+als Erfolg erscheinen lassen). Kein absoluter Entwicklerpfad in der
+deterministischen Ausgabe (`Quelldatei` zeigt nur den Dateinamen).
+
+**Spiegelpaarprüfung** (`check_mirror_pair()`): prüft `wave_left`/
+`wave_right` und `explain_left`/`explain_right` auf identische
+Zeitachsen, passende (gespiegelte) Gelenkmengen und die korrekte
+Vorzeichen-/Wertbeziehung -- Pitch-Gelenke (`ShoulderPitch`) müssen
+identisch sein, Roll-/Yaw-Gelenke (`ShoulderRoll`, `ElbowRoll`,
+`ElbowYaw`) müssen vorzeichengespiegelt sein (bestätigt gegen die
+strukturell asymmetrischen Gelenkgrenzen in `joint_limits.py`:
+`LShoulderRoll` ist nur positiv, `RShoulderRoll` nur negativ gültig).
+Beide echten Paare bestehen die Prüfung fehlerfrei.
+
+### Gesture Memory (`ihk_pepper_gesture_memory`)
+
+`gesture_index_db.py`: der frühere `_gesture_metadata_flag()`-Fallback
+entfällt (die drei Felder sind jetzt echte, immer gesetzte
+`Gesture`-Attribute) -- `semantic_tags` fließt neu in den Suchtext ein
+(`test_note`/Keyframes bewusst nicht). Neue Spalte `semantic_tags` im
+SQLite-Schema; eine Migration (`_migrate_schema()`, `ALTER TABLE ...
+ADD COLUMN`) fängt eine bereits bestehende `gesture_index.db` aus einer
+früheren Session ab (sonst `sqlite3.OperationalError` beim ersten
+Reindex nach diesem Commit -- durch einen dedizierten Test
+nachgewiesen).
+
+`gesture_search.py::passes_hard_filters()` (bestätigter Fund 11.3): der
+`selectable_by_llm=false`-Ausschluss griff bisher NUR bei einer
+nicht-leeren Suchanfrage -- eine leere Anfrage ließ eine solche Geste
+unabhängig von `system_only` durchrutschen. Gilt jetzt IMMER, außer
+`include_system_only=true` (interne Introspektion).
+
+### Automatisch erzeugtes Inventar
+
+`scripts/generate_gesture_inventory.py` (Repo-Wurzel, nicht Teil eines
+ROS2-Pakets) erzeugt `docs/GESTURE_CATALOG_INVENTORY.md` aus demselben
+`audit_catalog()`/`render_inventory_markdown()`-Code wie `gesturectl
+audit` -- keine zweite, von Hand nachgeführte Liste. Deterministisch
+(keine Uhrzeit, keine absoluten Pfade, alphabetisch sortiert, keine
+fest codierte Anzahl). `--check` prüft Drift ohne zu schreiben; ein
+zusätzlicher pytest-Test (`test_gesture_inventory_drift.py`) sichert
+das in der normalen Regression ab. `docs/GESTURE_AUTHORING.md`s alte,
+von Hand gepflegte "20 Katalog-Einträge"-Tabelle wurde durch einen Link
+auf das generierte Inventar plus Reproduktionsbefehl ersetzt.
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete), `python3 -m pytest
+ihk_pepper_tests/test -q` → **1668 bestanden, 3 übersprungen** (vorher
+1645/3 -- 23 neue/erweiterte Tests), `colcon test --packages-select
+ihk_pepper_behavior_tree` → **23/0/0/4** (unverändert). Alle 24
+Gestendateien laden weiterhin fehlerfrei, alle 23 v2-Gesten kompilieren
+mit vollem Snapshot. `python3 scripts/generate_gesture_inventory.py
+--check` → aktuell (Exitcode 0). `ros2 run ihk_pepper_bridge gesturectl
+audit` → Exitcode 0, 0 Fehler, 1 Warnung (der bekannte v1-Hinweis für
+`t_pose`). Keine Trajektorie verändert (Fingerprint-Vergleich, s.o.).
+Keine Hardwareprüfung, kein SSH-/qicli-Aufruf, kein `/cmd_vel`, kein
+Start von `navigation_live.launch.py`. `git status --short` sauber nach
+dem Commit.
+
+### Weiterhin offene `hwverificationrequired`-Punkte
+
+Unverändert gegenüber AP8-R2: kein echtes Kollisions-Backend, `t_pose`
+bleibt historischer v1-Sonderfall (production strukturell gesperrt),
+`gesturectl live-test` wurde in dieser Session nicht gegen echte
+Hardware ausgeführt.
+
+### Freigabe für 12/14
+
+Alle Metadaten sind validiert, alle 24 Dateien migriert, `gesturectl
+audit` und das generierte Inventar sind einsatzbereit. **12/14 (`add
+capture-sequence and offline evidence tooling`) kann auf dieser
+Grundlage beginnen.**

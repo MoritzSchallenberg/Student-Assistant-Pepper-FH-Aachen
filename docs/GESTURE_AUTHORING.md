@@ -60,6 +60,62 @@ Zeit-/Winkel-Liste in einem einzigen synchronen Aufruf).
 - `tested_status` muss einer von `draft`/`dry_run_validated`/
   `live_validated` sein.
 
+## Kanonische Auswahl-/Sicherheitsmetadaten (Entwicklungsauftrag 04-B, AP8, Commit 11/14)
+
+Diese Felder sind seit Commit 11/14 **erstklassige, validierte
+Top-Level-Attribute** von `Gesture` (vorher teils nur über das freie
+`metadata`-Dict lesbar):
+
+```yaml
+system_only: false          # true = nur interne/Systemablaeufe, NIE vom LLM waehlbar
+selectable_by_llm: true     # false = strukturell nie an LLM 2 als Option gegeben
+semantic_tags: [greeting, welcoming, open_arms]   # Liste von Strings, fuer die semantische Suche
+```
+
+**Sichere Defaults (Abschnitt 4.2)**: fehlen beide Felder vollständig
+(weder Top-Level noch im alten `metadata`-Dict), gilt `system_only:
+false` UND `selectable_by_llm: false` -- eine alte/unvollständige Datei
+wird also NIE automatisch LLM-auswählbar, nur weil ein Feld fehlt.
+
+**Kohärenzregeln** (beim Laden hart geprüft, `GestureValidationError`
+bei Verstoß, KEINE stille Korrektur):
+
+- `system_only: true` UND `selectable_by_llm: true` gleichzeitig ist ein
+  Schemafehler.
+- `selectable_by_llm: true` verlangt eine nicht-leere `description` UND
+  mindestens einen `semantic_tag`.
+- `tested_status: dry_run_validated`/`live_validated` verlangt ein
+  gesetztes `tested_date` UND eine nicht-leere `test_note` mit
+  nachvollziehbarer Evidenz.
+- `requires_stationary`/`system_only`/`selectable_by_llm` müssen echte
+  YAML-Booleans sein -- ein String wie `"false"` wird NICHT über die
+  allgemeine Python-Wahrheitswertkonvertierung akzeptiert.
+- `allowed_interaction_states`-Einträge müssen echte
+  `InteractionState`-Namen sein (`interaction_state.py`).
+- `max_duration_s` muss, wenn gesetzt, endlich und positiv sein.
+
+**Drei getrennte Dimensionen, keine ersetzt die andere**: `tested_status`
+beschreibt den Bewegungsnachweis, `system_only` den vorgesehenen
+Aufrufer, `selectable_by_llm` ausschließlich die semantische
+LLM-Auswahl. Keines dieser Felder umgeht ein anderes Sicherheitsgate
+(Kollisionsnachweis, Lease/Quarantäne, Watchdog etc. bleiben davon
+unberührt).
+
+**Rückwärtskompatibilität**: ein älterer/externer Eintrag darf diese
+drei Felder weiterhin nur im alten `metadata`-Dict tragen -- das wird
+gelesen, aber nur solange kein widersprechender Top-Level-Wert
+existiert (sonst Ablehnung). `gesturectl audit` weist einen solchen
+Legacy-Fallback sichtbar als Warnung aus. Die 24 mitgelieferten Dateien
+sind vollständig auf die kanonischen Top-Level-Felder migriert.
+
+**Verbindliche Systemgesten** (Auftrag-Vorgabe, von `gesturectl audit`
+hart geprüft): `acknowledge_nod_small`, `thinking_loop_subtle`,
+`look_at_person` müssen `system_only: true` bleiben. Zusätzlich sind
+`neutral_stand` und `t_pose` (kein nachgewiesener nutzergerichteter
+Aufrufpfad im Repository gefunden) ebenfalls `system_only`. Die
+vollständige, aktuelle Liste steht im generierten Inventar (siehe
+unten).
+
 ## Sperren beim Abspielen (`GestureCatalog.play()`)
 
 - `current_interaction_state` gesetzt und außerhalb von
@@ -119,29 +175,32 @@ Gelenke -- nicht mehr Gelenk für Gelenk über
 `qicli.py::restore_joints()` (dort weiterhin sequenziell, aber nur noch
 von v1-Gesten genutzt).
 
-## Die 20 Katalog-Einträge
+## Der Katalog-Bestand
 
-| Name | Status | Herkunft der Winkelwerte |
-|---|---|---|
-| `wave_right` | dry_run_validated | identisch zur live getesteten v1-Sequenz, nur als v2-Keyframes |
-| `wave_left` | dry_run_validated | dito |
-| `raise_both_arms` | dry_run_validated | ShoulderPitch-Wert von der live getesteten wave-Sequenz übernommen |
-| `open_arms` | dry_run_validated | ShoulderPitch von t_pose übernommen, ShoulderRoll konservativer als t_pose |
-| `self_hug_symbolic` | **draft** | keine Live-Referenz vorhanden, bewusst konservative Winkel |
-| `nod_once` | **draft** | keine Live-Referenz für Kopfgesten vorhanden |
-| `look_at_person` | **draft** | reine Neutralstellung (0,0) -- PLATZHALTER, berechnet noch keine echte Blickrichtung |
-| `neutral_stand` | dry_run_validated | identisch zur `NEUTRAL_STAND_POSE`-Konstante in `kinematic_compiler.py` |
-| `greet_open` | dry_run_validated | konservativer Bruchteil von `open_arms` |
-| `goodbye_wave` | dry_run_validated | identisch zur live getesteten `wave_right`-Sequenz, nur kürzer |
-| `explain_small` | **draft** | neue kleine Bewegung, konservativer als `open_arms` |
-| `explain_left` | **draft** | zwischen `greet_open`/`open_arms` interpoliert |
-| `explain_right` | **draft** | Spiegelung von `explain_left` |
-| `point_to_tablet` | **draft** | Kopf+Arm-Kombination, keine verifizierte Tablet-Ausschlusszone -- siehe Kommentar in der YAML |
-| `agree_nod` | **draft** | Doppel-Nicken, Amplitude von `nod_once` übernommen |
-| `disagree_head` | **draft** | HeadYaw-Oszillation, Geschwindigkeit unter der `wave_right`-Referenz |
-| `celebrate_small` | **draft** | neue symmetrische Bewegung, keine Oszillation (kein Ruck) |
-| `present_information` | **draft** | von `explain_right` abgeleitet, längere Haltezeit |
-| `thinking_symbolic` | **draft** | Kopf+Arm, Hand bewusst auf Brusthöhe gehalten (siehe Movement-Regel "keine Hände im Gesichtsbereich") |
+Die vollständige, aktuelle Liste aller Kataloggesten (Name, Schema-
+Version, `tested_status`, `system_only`/`selectable_by_llm`,
+`semantic_tags`, `max_duration_s`) steht **nicht mehr hier von Hand
+gepflegt** -- Entwicklungsauftrag 04-B, AP8, Commit 11/14 hat diese
+Tabelle durch ein automatisch aus dem echten Katalog erzeugtes Inventar
+ersetzt (eine von Hand gepflegte zweite Liste driftet sonst zuverlässig
+vom tatsächlichen Katalogstand auseinander -- siehe die frühere, hier
+vorher stehende "20 Katalog-Einträge"-Tabelle, die zuletzt u.a.
+`greet_open` noch fälschlich als `dry_run_validated` auswies, obwohl es
+seit einer Trajektorien-Migration `draft` ist):
+
+**[docs/GESTURE_CATALOG_INVENTORY.md](GESTURE_CATALOG_INVENTORY.md)**
+
+Reproduktionsbefehl (nach `colcon build`, mit gesourctem Workspace):
+
+```bash
+python3 scripts/generate_gesture_inventory.py
+```
+
+Ein Drift-Test (`test_gesture_inventory_drift.py`) prüft bei jeder
+Regression, dass die eingecheckte Datei einer frischen Generierung aus
+dem aktuellen Katalog entspricht -- `gesturectl audit` prüft zusätzlich
+Metadatenkonsistenz, Systemgesten-/LLM-Regeln und Spiegelpaare (siehe
+`gesture_catalog_audit.py`).
 
 `self_hug_symbolic` ist kontaktlos/symbolisch -- Pepper darf keine
 Person berühren, keine echte Umarmung ausführen (Auftrag, explizit
@@ -168,8 +227,14 @@ freigegeben, das den beabsichtigten Zustand tatsächlich trifft).
    `tested_status: draft`, kleine/konservative Auslenkung.
 4. `allowed_interaction_states`, `requires_stationary`, `max_duration_s`,
    `on_cancel` setzen.
-5. `colcon build --packages-select ihk_pepper_bridge` +
+5. `system_only`/`selectable_by_llm`/`semantic_tags` explizit setzen
+   (siehe Abschnitt oben) -- eine LLM-auswählbare Geste braucht eine
+   nicht-leere `description` und mindestens einen Tag.
+6. `colcon build --packages-select ihk_pepper_bridge` +
    `python3 -m pytest .../test_gesture_catalog_v2.py` -- Validierung
    greift beim Laden.
-6. Vor `tested_status: live_validated`: einzeln, langsam, unter direkter
+7. `ros2 run ihk_pepper_bridge gesturectl audit` ausführen (Exitcode 0 =
+   keine Fehler) und `python3 scripts/generate_gesture_inventory.py`, um
+   `docs/GESTURE_CATALOG_INVENTORY.md` zu aktualisieren.
+8. Vor `tested_status: live_validated`: einzeln, langsam, unter direkter
    Aufsicht am echten Pepper testen (nicht Teil dieses Auftrags).

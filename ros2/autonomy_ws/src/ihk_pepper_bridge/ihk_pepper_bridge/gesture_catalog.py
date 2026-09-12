@@ -34,12 +34,15 @@ docs/GESTURE_AUTHORING.md.
 Bewusst NICHT Teil dieses Auftrags: automatisches Trainieren neuer
 Bewegungen. Nur das Format + der Player werden hier bereitgestellt.
 """
+import datetime
 import glob
 import logging
 import os
 from dataclasses import dataclass, field
 
 import yaml
+
+from ihk_pepper_interaction.interaction_state import InteractionState
 
 from .gesture_cancellation import GestureCancelReason, breathing_may_reactivate, restore_allowed
 from .joint_limits import ALLOWED_GESTURE_JOINTS, JointLimitError, validate_angle, validate_angle_with_margin
@@ -78,6 +81,133 @@ VALID_TESTED_STATUS = ("draft", "dry_run_validated", "live_validated")
 # on_cancel="restore".
 VALID_ON_CANCEL = ("hold", "restore")
 _HEAD_JOINTS = frozenset({"HeadYaw", "HeadPitch"})
+
+# Entwicklungsauftrag 04-B, AP8 (11/14): dieselbe Zustandsmaschine wie
+# bridge_node.py::_on_interaction_state() verwendet (kein zweites,
+# potenziell abweichendes Namensschema fuer erlaubte Zustaende).
+VALID_INTERACTION_STATE_NAMES = frozenset(InteractionState.__members__)
+
+# Status-Werte, die eine tatsaechliche Pruef-Evidenz verlangen (Abschnitt
+# 5.2: "tested_status=dry_run_validated oder live_validated -> tested_date
+# vorhanden, test_note mit nachvollziehbarer Evidenz vorhanden"). 'draft'
+# braucht bewusst keine Evidenz -- es behauptet ja keine.
+_TESTED_STATUS_REQUIRING_EVIDENCE = frozenset({"dry_run_validated", "live_validated"})
+
+
+def _require_bool_field(data: dict, field_name: str, gesture_name: str, default: bool) -> bool:
+    """Abschnitt 4.2/5.1 (bestaetigter Fund): 'requires_stationary:
+    "false"' (ein YAML-String) wurde bisher durch bool(...) still zu
+    True konvertiert -- allgemeine Python-Wahrheitswertkonvertierung
+    akzeptiert JEDEN nicht-leeren String. Jetzt: nur ein ECHTES
+    YAML-Boolean wird akzeptiert, alles andere ist ein Schemafehler."""
+    if field_name not in data:
+        return default
+    value = data[field_name]
+    if not isinstance(value, bool):
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': Feld '{field_name}' muss ein echtes YAML-Boolean sein "
+            f"(erhalten: {value!r}, Typ {type(value).__name__})"
+        )
+    return value
+
+
+def _resolve_legacy_bool_field(data: dict, metadata: dict, field_name: str,
+                               gesture_name: str, default: bool) -> bool:
+    """Abschnitt 5.3 (Rueckwaertskompatibilitaet): system_only/
+    selectable_by_llm sind jetzt kanonische Top-Level-Felder. Ein
+    aelterer/externer Eintrag darf sie weiterhin nur in metadata (das
+    bereits bestehende freie dict) tragen -- das wird gelesen, aber NUR
+    solange kein widersprechender Top-Level-Wert existiert. Sind BEIDE
+    vorhanden und ungleich, wird die Datei abgelehnt statt stillschweigend
+    einen der beiden Werte zu bevorzugen. Fehlen BEIDE, gilt `default`
+    (Abschnitt 4.2: fehlendes selectable_by_llm darf NIE automatisch
+    True bedeuten -- der Aufrufer uebergibt dafuer default=False)."""
+    top_present = field_name in data
+    legacy_present = field_name in metadata
+    top_value = data.get(field_name)
+    legacy_value = metadata.get(field_name)
+    if top_present and not isinstance(top_value, bool):
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': Feld '{field_name}' muss ein echtes YAML-Boolean sein "
+            f"(erhalten: {top_value!r}, Typ {type(top_value).__name__})"
+        )
+    if legacy_present and not isinstance(legacy_value, bool):
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': Legacy-Feld 'metadata.{field_name}' muss ein echtes "
+            f"YAML-Boolean sein (erhalten: {legacy_value!r}, Typ {type(legacy_value).__name__})"
+        )
+    if top_present and legacy_present and top_value != legacy_value:
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': widerspruechliche Werte fuer '{field_name}' "
+            f"(Top-Level={top_value}, metadata.{field_name}={legacy_value})"
+        )
+    if top_present:
+        return top_value
+    if legacy_present:
+        return legacy_value
+    return default
+
+
+def _resolve_semantic_tags(data: dict, metadata: dict, gesture_name: str) -> list:
+    """Liest semantic_tags kanonisch von Top-Level, faellt (wie die
+    Boolean-Felder) auf metadata.semantic_tags zurueck. Trimmt,
+    verwirft leere Eintraege und lehnt Duplikate NACH Normalisierung
+    (Kleinschreibung) als Schemafehler ab (Abschnitt 5.1)."""
+    raw = data.get("semantic_tags")
+    if raw is None:
+        raw = metadata.get("semantic_tags")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise GestureValidationError(
+            f"Geste '{gesture_name}': 'semantic_tags' muss eine Liste von Strings sein "
+            f"(erhalten: {raw!r})"
+        )
+    tags = []
+    seen_normalized = set()
+    for tag in raw:
+        if not isinstance(tag, str):
+            raise GestureValidationError(
+                f"Geste '{gesture_name}': semantic_tags-Eintrag ist kein String ({tag!r})"
+            )
+        trimmed = tag.strip()
+        if not trimmed:
+            raise GestureValidationError(
+                f"Geste '{gesture_name}': semantic_tags enthaelt einen leeren Eintrag"
+            )
+        normalized = trimmed.lower()
+        if normalized in seen_normalized:
+            raise GestureValidationError(
+                f"Geste '{gesture_name}': doppelter semantic_tag (nach Normalisierung) '{trimmed}'"
+            )
+        seen_normalized.add(normalized)
+        tags.append(trimmed)
+    return tags
+
+
+def _validate_tested_date(tested_date, gesture_name: str):
+    """PyYAML parst ein unquotiertes ISO-Datum (z.B. 2026-09-04) bereits
+    selbst zu einem datetime.date-Objekt -- dieser Fall ist also
+    trivialerweise gueltig. Ein String wird zusaetzlich explizit auf
+    ISO-8601 geprueft (fromisoformat()), jeder andere Typ ist ein
+    Schemafehler."""
+    if tested_date is None:
+        return
+    if isinstance(tested_date, datetime.date):
+        return
+    if isinstance(tested_date, str):
+        try:
+            datetime.date.fromisoformat(tested_date)
+        except ValueError as e:
+            raise GestureValidationError(
+                f"Geste '{gesture_name}': tested_date '{tested_date}' ist kein gueltiges "
+                "ISO-8601-Datum"
+            ) from e
+        return
+    raise GestureValidationError(
+        f"Geste '{gesture_name}': tested_date hat einen ungueltigen Typ "
+        f"({type(tested_date).__name__}, erwartet: ISO-Datumsstring oder YAML-Datum)"
+    )
 
 
 class GestureValidationError(ValueError):
@@ -191,12 +321,30 @@ class Gesture:
 
         # Metadaten, die der Auftrag fuer jede Geste verlangt (Abschnitt 7).
         self.allowed_interaction_states = list(data.get("allowed_interaction_states", []))  # leer = ueberall
-        self.requires_stationary = bool(data.get("requires_stationary", False))
+        # Entwicklungsauftrag 04-B, AP8 (11/14), bestaetigter Fund 4.2:
+        # bool(data.get(...)) akzeptierte bisher JEDEN nicht-leeren String
+        # (auch "false") als True -- jetzt ein strikter Typ-Check.
+        self.requires_stationary = _require_bool_field(data, "requires_stationary", self.name, False)
         self.tested_status = data.get("tested_status", "draft")
         self.tested_date = data.get("tested_date")
         self.test_note = data.get("test_note", "")
         self.max_duration_s = data.get("max_duration_s")
         self.on_cancel = data.get("on_cancel", "hold")  # "hold" | "restore"
+
+        # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 5: erstklassige
+        # Auswahl-/Sicherheitsfelder. system_only/selectable_by_llm/
+        # semantic_tags waren bisher nur ueber das freie metadata-Dict
+        # erreichbar (GestureIndexStore las sie per Fallback) -- jetzt
+        # kanonische Top-Level-Attribute, mit sicherem Rueckwaertskompat-
+        # Pfad ueber _resolve_legacy_bool_field()/_resolve_semantic_tags().
+        # Abschnitt 4.2: fehlt selectable_by_llm VOLLSTAENDIG (weder
+        # Top-Level noch Legacy), ist der sichere Default False -- eine
+        # alte/unvollstaendige Datei wird NICHT automatisch LLM-auswaehlbar.
+        self.system_only = _resolve_legacy_bool_field(
+            data, self.metadata, "system_only", self.name, default=False)
+        self.selectable_by_llm = _resolve_legacy_bool_field(
+            data, self.metadata, "selectable_by_llm", self.name, default=False)
+        self.semantic_tags = _resolve_semantic_tags(data, self.metadata, self.name)
 
         if self.tested_status not in VALID_TESTED_STATUS:
             raise GestureValidationError(
@@ -212,6 +360,63 @@ class Gesture:
                 f"Geste '{self.name}': unbekannter on_cancel '{self.on_cancel}' "
                 f"(erlaubt: {VALID_ON_CANCEL})"
             )
+        for state_name in self.allowed_interaction_states:
+            if state_name not in VALID_INTERACTION_STATE_NAMES:
+                raise GestureValidationError(
+                    f"Geste '{self.name}': unbekannter Interaction State '{state_name}' "
+                    f"(erlaubt: {sorted(VALID_INTERACTION_STATE_NAMES)})"
+                )
+        if self.max_duration_s is not None:
+            try:
+                max_duration_value = float(self.max_duration_s)
+            except (TypeError, ValueError) as e:
+                raise GestureValidationError(
+                    f"Geste '{self.name}': max_duration_s ist keine Zahl ({self.max_duration_s!r})"
+                ) from e
+            if (max_duration_value != max_duration_value
+                    or max_duration_value in (float("inf"), float("-inf"))
+                    or max_duration_value <= 0):
+                raise GestureValidationError(
+                    f"Geste '{self.name}': max_duration_s muss endlich und positiv sein "
+                    f"(erhalten: {self.max_duration_s!r})"
+                )
+            self.max_duration_s = max_duration_value
+        _validate_tested_date(self.tested_date, self.name)
+        if not isinstance(self.test_note, str):
+            raise GestureValidationError(
+                f"Geste '{self.name}': test_note muss ein String sein (erhalten: {self.test_note!r})"
+            )
+
+        # Abschnitt 5.2, Kohaerenzregeln -- system_only/selectable_by_llm/
+        # tested_status bleiben getrennte Dimensionen, aber ein WIDERSPRUCH
+        # zwischen ihnen wird abgelehnt statt stillschweigend aufgeloest.
+        if self.system_only and self.selectable_by_llm:
+            raise GestureValidationError(
+                f"Geste '{self.name}': system_only=true widerspricht selectable_by_llm=true "
+                "(eine Systemgeste darf nie gleichzeitig LLM-auswaehlbar sein)"
+            )
+        if self.selectable_by_llm:
+            if not self.description.strip():
+                raise GestureValidationError(
+                    f"Geste '{self.name}': selectable_by_llm=true verlangt eine nicht-leere "
+                    "description (sonst hat die semantische Suche keinen Text)"
+                )
+            if not self.semantic_tags:
+                raise GestureValidationError(
+                    f"Geste '{self.name}': selectable_by_llm=true verlangt mindestens einen "
+                    "semantic_tag"
+                )
+        if self.tested_status in _TESTED_STATUS_REQUIRING_EVIDENCE:
+            if not self.tested_date:
+                raise GestureValidationError(
+                    f"Geste '{self.name}': tested_status='{self.tested_status}' verlangt ein "
+                    "gesetztes tested_date"
+                )
+            if not self.test_note.strip():
+                raise GestureValidationError(
+                    f"Geste '{self.name}': tested_status='{self.tested_status}' verlangt eine "
+                    "test_note mit nachvollziehbarer Evidenz"
+                )
 
         if self.schema_version == 1:
             self.steps = data.get("steps", [])

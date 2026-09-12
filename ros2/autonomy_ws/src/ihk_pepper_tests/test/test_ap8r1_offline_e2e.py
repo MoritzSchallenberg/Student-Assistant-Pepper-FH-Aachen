@@ -109,6 +109,8 @@ def test_scenario_c_emergency_stop_during_gesture_interrupts_without_restore_and
         "name": "live_wave_breathing",
         "schema_version": 2,
         "tested_status": "live_validated",
+        "tested_date": "2026-01-01",
+        "test_note": "Test-Fixture: synthetische Evidenz.",
         "disable_breathing": ["Arms"],
         "keyframes": [
             {"time_from_start_s": 0.0, "joints": {"RShoulderPitch": 0.0}},

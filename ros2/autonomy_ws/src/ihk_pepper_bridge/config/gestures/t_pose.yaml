@@ -3,6 +3,11 @@ description: >
   Beide Arme seitlich ausstrecken (T-Pose). HAELT NUR CA. 10 SEKUNDEN,
   danach faellt die Pose von selbst zurueck (getestet, siehe docs/STATUS.md/
   docs/CAPABILITIES.md) -- als kurze Geste nutzen, nicht zum Dauerhalten.
+  Historische v1-Kalibrier-/Testbewegung ohne nachgewiesenen
+  nutzergerichteten Einsatzpfad, deshalb nicht vom LLM auswaehlbar.
+system_only: true
+selectable_by_llm: false
+semantic_tags: []
 metadata:
   imported_from: "apps/web/pepper/qicli.py raise_arms_sideways()"
 disable_breathing: ["Arms"]
@@ -15,6 +20,13 @@ test_note: >
   docs/CAPABILITIES.md). Bleibt bewusst im sequenziellen v1-Format --
   Metadatenfelder (tested_status u.a.) sind seit Entwicklungsauftrag 1
   fuer beide Schema-Versionen nutzbar.
+  AP8 (11/14): dieser historische live_validated-Status betrifft NUR die
+  v1-Hardwarebewegung selbst -- v1 bleibt strukturell aus 'production'
+  gesperrt (siehe gesture_execution_policy.py), dieser Status umgeht
+  KEINES der AP8-R1-/AP8-R2-Gates (Kollisionsnachweis, Fingerprint-
+  Bindung, Lease/Quarantaene, Watchdog). Kein Aufruf ueber einen
+  Behavior-Tree-Knoten oder eine sonstige nutzergerichtete Stelle
+  gefunden -- deshalb system_only=true/selectable_by_llm=false.
 max_duration_s: 15.0
 steps:
   - {joint: LShoulderPitch, angle: 0.0, duration: 2.5}

@@ -1,14 +1,11 @@
 schema_version: 2
 name: small_bow
 description: >
-  Neu fuer das Pepper Developer Tutorial (Arbeitspaket 15), nach der
-  Checkliste in docs/GESTURE_AUTHORING.md: kleine, hoefliche Verbeugung
-  ueber HipPitch (Oberkoerper-Neigung nach vorn) statt einer Arm-Geste.
-  KEINE bisherige Katalog-Geste in diesem Projekt nutzt HipPitch aktiv
-  (neutral_stand.yaml haelt es lediglich bei 0.0) -- es gibt also keine
-  live getestete Referenz fuer die Vorzeichenrichtung von HipPitch.
-  Kopf senkt sich zusaetzlich leicht (wie nod_once.yaml), passend zur
-  Verbeugung.
+  Kleine, hoefliche Verbeugung ueber eine leichte Oberkoerper-Neigung
+  nach vorn -- ein Zeichen von Respekt.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [politeness, bow, respect]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.4
@@ -16,17 +13,18 @@ restore_after: true
 tested_status: draft
 tested_date: null
 test_note: >
-  KEINE Live-Referenz fuer HipPitch in diesem Projekt vorhanden -- die
-  Vorzeichenrichtung ("vorwaerts geneigt" vs. "rueckwaerts geneigt") ist
-  aus der Dokumentation allein nicht sicher bestimmbar. Betrag bewusst
-  sehr klein gewaehlt (0.15 rad von einem dokumentierten Bereich von
-  +-1.0385 rad, deutlich unter 15% der Gesamtspanne). VOR jedem
-  dry-run zwingend: `gesturectl preview small_bow` (RViz) nutzen, um die
-  tatsaechliche Neigungsrichtung visuell zu bestaetigen -- schlaegt die
-  Neigung in die falsche Richtung aus, ist das Vorzeichen zu invertieren,
-  bevor irgendein weiterer Schritt (dry-run, geschweige denn live-test)
-  unternommen wird. Kopf-Anteil (HeadPitch) direkt von nod_once.yaml
-  uebernommen.
+  KEINE Live-Referenz fuer HipPitch in diesem Projekt vorhanden (keine
+  bisherige Katalog-Geste nutzt HipPitch aktiv, neutral_stand.yaml haelt
+  es lediglich bei 0.0) -- die Vorzeichenrichtung ("vorwaerts geneigt"
+  vs. "rueckwaerts geneigt") ist aus der Dokumentation allein nicht
+  sicher bestimmbar. Betrag bewusst sehr klein gewaehlt (0.15 rad von
+  einem dokumentierten Bereich von +-1.0385 rad, deutlich unter 15% der
+  Gesamtspanne). VOR jedem dry-run zwingend: `gesturectl preview
+  small_bow` (RViz) nutzen, um die tatsaechliche Neigungsrichtung visuell
+  zu bestaetigen -- schlaegt die Neigung in die falsche Richtung aus,
+  ist das Vorzeichen zu invertieren, bevor irgendein weiterer Schritt
+  (dry-run, geschweige denn live-test) unternommen wird. Kopf-Anteil
+  (HeadPitch) direkt von nod_once.yaml uebernommen.
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

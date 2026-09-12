@@ -1,11 +1,10 @@
 schema_version: 2
 name: wave_left
 description: >
-  Winkt mit dem linken Arm. Aus der vorher live getesteten sequenziellen
-  v1-Version (LShoulderPitch=-1.0, LElbowRoll=-0.9, LElbowYaw -0.6<->-1.6
-  oszillierend, siehe docs/STATUS.md/docs/CAPABILITIES.md) in synchrone
-  Keyframes uebersetzt -- dieselben Winkelwerte, jetzt als EIN
-  synchroner ALMotion-Aufruf statt 8 sequenzieller qicli-Einzelaufrufe.
+  Winkt mit dem linken Arm -- ein freundlicher Gruss.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [greeting, waving, farewell]
 requires_stationary: true
 allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 1.0
@@ -13,8 +12,12 @@ restore_after: true
 tested_status: dry_run_validated
 tested_date: "2026-09-03"
 test_note: >
-  Winkelwerte identisch zur live getesteten v1-Sequenz. Der NEUE
-  synchrone v2-Transportweg selbst ist dry_run_validated, NICHT
+  Aus der vorher live getesteten sequenziellen v1-Version
+  (LShoulderPitch=-1.0, LElbowRoll=-0.9, LElbowYaw -0.6<->-1.6
+  oszillierend, siehe docs/STATUS.md/docs/CAPABILITIES.md) in synchrone
+  Keyframes uebersetzt -- dieselben Winkelwerte, jetzt als EIN
+  synchroner ALMotion-Aufruf statt 8 sequenzieller qicli-Einzelaufrufe.
+  Der NEUE synchrone v2-Transportweg selbst ist dry_run_validated, NICHT
   live_validated -- kein Pepper-Zugriff in dieser Session. Vor
   produktivem Einsatz einzeln unter Aufsicht pruefen.
 max_duration_s: 3.5

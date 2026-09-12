@@ -149,9 +149,19 @@ Das ist der entscheidende Unterschied zu einer naiven Verdrahtung: ohne
 diese Trennung könnte LLM 3 einen von LLM 2 nie erwähnten
 Datenbank-Kandidaten nachträglich verwenden. `system_only`/
 `selectable_by_llm=false`-Gesten (z.B. `acknowledge_nod_small`,
-`thinking_loop_subtle`) werden LLM 2 strukturell nie angeboten
-(`include_system_only=false` in jeder LLM-Suchanfrage, zusätzlich
-clientseitig defensiv nochmal gefiltert).
+`thinking_loop_subtle`, `look_at_person`, `neutral_stand`, `t_pose` --
+vollständige, generierte Liste in
+`docs/GESTURE_CATALOG_INVENTORY.md`) werden LLM 2 strukturell nie
+angeboten (`include_system_only=false` in jeder LLM-Suchanfrage,
+zusätzlich clientseitig defensiv nochmal gefiltert).
+
+Seit Entwicklungsauftrag 04-B, AP8 (11/14) sind `system_only`/
+`selectable_by_llm`/`semantic_tags` erstklassige, validierte
+`Gesture`-Attribute (siehe `docs/GESTURE_AUTHORING.md`) -- `semantic_tags`
+fließen zusätzlich zu Name/Beschreibung in den Suchtext von
+`GestureIndexStore.reindex()` ein, technische Testhistorien/Keyframes/
+`test_note` bewusst NICHT (die würden die semantische Auswahl
+verzerren, nicht verbessern).
 
 ## Grenzen (weiterhin gültig)
 

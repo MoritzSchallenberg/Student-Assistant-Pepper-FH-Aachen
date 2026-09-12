@@ -148,3 +148,56 @@ def test_affects_head_is_persisted_correctly_for_head_and_non_head_gestures(tmp_
     ranked = store.search(GestureSearchRequest(query="", top_k=10))
     affects_head_by_name = {entry.name: entry.affects_head for entry, _score in ranked}
     assert affects_head_by_name == {"agree_nod": True, "wave_right": False}
+
+
+def test_semantic_tags_are_persisted_and_used_in_the_search_text(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 8: semantic_tags
+    # sind jetzt echte Gesture-Attribute und fliessen in den Suchtext ein.
+    catalog_dir = _copy_real_gestures(tmp_path, ["wave_right"])
+    catalog = GestureCatalog(catalog_dir)
+    assert catalog.get("wave_right").semantic_tags == ["greeting", "waving", "farewell"]
+
+    store = _store(tmp_path)
+    store.reindex(catalog, force=True)
+    ranked = store.search(GestureSearchRequest(query="farewell"))
+    assert ranked
+    assert ranked[0][0].name == "wave_right"
+    assert ranked[0][0].semantic_tags == ["greeting", "waving", "farewell"]
+
+
+def test_opening_a_pre_existing_db_file_without_the_semantic_tags_column_does_not_crash(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8 (11/14) (bestaetigter Fund):
+    # 'CREATE TABLE IF NOT EXISTS' legt KEINE fehlende Spalte in einer
+    # bereits bestehenden Datei nach -- eine aeltere gesture_index.db
+    # (aus einer Session vor dieser Migration) darf reindex() NICHT mit
+    # einem sqlite3.OperationalError abbrechen lassen.
+    import sqlite3
+    db_path = tmp_path / "old_gesture_index.db"
+    old_schema = """
+    CREATE TABLE gesture_index (
+        name TEXT PRIMARY KEY,
+        description TEXT NOT NULL,
+        tested_status TEXT NOT NULL,
+        duration_s REAL NOT NULL,
+        allowed_interaction_states TEXT NOT NULL,
+        requires_stationary INTEGER NOT NULL,
+        affects_head INTEGER NOT NULL,
+        system_only INTEGER NOT NULL,
+        selectable_by_llm INTEGER NOT NULL,
+        embedding TEXT,
+        source_path TEXT NOT NULL,
+        source_mtime REAL NOT NULL,
+        indexed_at REAL NOT NULL
+    );
+    CREATE TABLE gesture_index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    """
+    conn = sqlite3.connect(str(db_path))
+    conn.executescript(old_schema)
+    conn.commit()
+    conn.close()
+
+    catalog_dir = _copy_real_gestures(tmp_path, ["wave_right"])
+    catalog = GestureCatalog(catalog_dir)
+    store = GestureIndexStore(str(db_path), embedding_backend=DifflibFallbackBackend())
+    result = store.reindex(catalog, force=True)
+    assert result["indexed_count"] == 1

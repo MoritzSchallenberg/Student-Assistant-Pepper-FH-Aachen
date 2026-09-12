@@ -1,11 +1,10 @@
 schema_version: 2
 name: wave_right
 description: >
-  Winkt mit dem rechten Arm. Aus der vorher live getesteten sequenziellen
-  v1-Version (RShoulderPitch=-1.0, RElbowRoll=0.9, RElbowYaw 0.6<->1.6
-  oszillierend, siehe docs/STATUS.md/docs/CAPABILITIES.md) in synchrone
-  Keyframes uebersetzt -- dieselben Winkelwerte, jetzt als EIN
-  synchroner ALMotion-Aufruf statt 8 sequenzieller qicli-Einzelaufrufe.
+  Winkt mit dem rechten Arm -- ein freundlicher Gruss.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [greeting, waving, farewell]
 requires_stationary: true
 allowed_interaction_states: [IDLE, ATTRACT, CONVERSATION_READY]
 speed_scale_default: 1.0
@@ -13,6 +12,11 @@ restore_after: true
 tested_status: dry_run_validated
 tested_date: "2026-09-03"
 test_note: >
+  Aus der vorher live getesteten sequenziellen v1-Version
+  (RShoulderPitch=-1.0, RElbowRoll=0.9, RElbowYaw 0.6<->1.6
+  oszillierend, siehe docs/STATUS.md/docs/CAPABILITIES.md) in synchrone
+  Keyframes uebersetzt -- dieselben Winkelwerte, jetzt als EIN
+  synchroner ALMotion-Aufruf statt 8 sequenzieller qicli-Einzelaufrufe.
   Winkelwerte identisch zur live getesteten v1-Sequenz (dieselbe Person,
   dieselbe Session urspruenglich getestet). Der NEUE synchrone
   v2-Transportweg selbst (play_trajectory/qicli-JSON-Argumente) ist

@@ -2,10 +2,11 @@ schema_version: 2
 name: self_hug_symbolic
 description: >
   Kontaktlose, SYMBOLISCHE Eigenbewegung -- Arme leicht Richtung eigenen
-  Oberkoerper. Pepper darf hierbei KEINE Person beruehren und KEINE
-  echte Umarmung ausfuehren (Entwicklungsauftrag 1, Abschnitt 7,
-  explizit ausgeschlossen). Keine vergleichbare bisher getestete Geste
-  vorhanden -- Winkel deshalb bewusst klein/konservativ gewaehlt.
+  Oberkoerper. Pepper beruehrt dabei KEINE Person und fuehrt KEINE echte
+  Umarmung aus, und erkennt keine Emotion.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [comfort, self_soothing, symbolic_gesture]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.5
@@ -16,7 +17,9 @@ test_note: >
   Keine Live-Referenzgeste vorhanden -- Winkel bewusst konservativ
   gewaehlt, noch nicht einmal dry_run visuell an einem echten Pepper
   geprueft. Vor jeder Live-Nutzung besonders sorgfaeltig einzeln,
-  langsam und unter direkter Aufsicht pruefen.
+  langsam und unter direkter Aufsicht pruefen. Kontaktloses Verbot
+  (Entwicklungsauftrag 1, Abschnitt 7) gilt strikt -- keine vergleichbare
+  bisher getestete Geste vorhanden.
   AP8.4-Korrektur (Entwicklungsauftrag 04-B): max_duration_s bezog sich
   bislang auf die unskalierte time_from_start_s-Achse. Der Compiler
   prueft seit AP8.4 die tatsaechlich AUSGEFUEHRTE Dauer nach

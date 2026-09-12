@@ -1,12 +1,11 @@
 schema_version: 2
 name: explain_small
 description: >
-  Entwicklungsauftrag 3, AP13: kleine, neutrale Erklaer-Geste mit dem
-  rechten Arm (leichtes Anheben/Absenken), fuer allgemeine
-  Antwortsegmente ohne Richtungsbezug. Bewusst deutlich kleiner als
-  wave_right/open_arms -- keine seitliche Ausladung, Hand bleibt weit
-  vor jedem Gesichts-/Kopfbereich (kein Ellbogenwinkel, der die Hand
-  nach oben zum Kopf fuehren wuerde).
+  Kleine, neutrale Erklaer-Geste mit dem rechten Arm (leichtes Anheben/
+  Absenken), fuer allgemeine Antwortsegmente ohne Richtungsbezug.
+system_only: false
+selectable_by_llm: true
+semantic_tags: [explanation, small_gesture, neutral]
 requires_stationary: true
 allowed_interaction_states: [CONVERSATION_READY]
 speed_scale_default: 0.7
@@ -16,7 +15,10 @@ tested_date: null
 test_note: >
   Neue, kleine Bewegung ohne direkte Live-Referenz -- Winkel deutlich
   konservativer als die bereits dry_run_validated open_arms.yaml
-  gewaehlt (RShoulderRoll -0.3 statt -0.9).
+  gewaehlt (RShoulderRoll -0.3 statt -0.9). Bewusst deutlich kleiner als
+  wave_right/open_arms -- keine seitliche Ausladung, Hand bleibt weit
+  vor jedem Gesichts-/Kopfbereich (kein Ellbogenwinkel, der die Hand
+  nach oben zum Kopf fuehren wuerde).
 max_duration_s: 2.0
 on_cancel: restore
 keyframes:

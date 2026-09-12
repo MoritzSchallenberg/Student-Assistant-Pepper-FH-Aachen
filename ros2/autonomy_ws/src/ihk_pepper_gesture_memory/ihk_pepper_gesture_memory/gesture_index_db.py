@@ -11,14 +11,12 @@ Fehlerhafte YAML-Dateien werden (wie in GestureCatalog.reload()) mit
 Fehlermeldung uebersprungen statt den gesamten Reindex-Vorgang
 abzubrechen.
 
-system_only/selectable_by_llm existieren als eigene Gesture-Attribute
-noch nicht (Stand dieses Auftrags -- kommen erst mit den dynamischen
-Interaktionssequenzen). Bis dahin liest dieser Indexer sie ueber
-gesture.metadata (bereits vorhandenes freies dict-Feld) mit sicheren
-Defaults: system_only=False, selectable_by_llm=True. Sobald
-gesture_catalog.py eigene Attribute dafuer bekommt, greift
-getattr(..., None) automatisch bevorzugt darauf zu -- kein Code hier
-muss dafuer geaendert werden.
+Entwicklungsauftrag 04-B, AP8 (11/14): system_only/selectable_by_llm/
+semantic_tags sind jetzt ECHTE, validierte Gesture-Attribute (kanonische
+Top-Level-YAML-Felder, siehe gesture_catalog.py::Gesture) -- der frueher
+noetige Fallback auf gesture.metadata (das freie dict-Feld) entfaellt
+hier, weil Gesture.__init__ diesen Fallback bereits SELBST auflest
+(_resolve_legacy_bool_field()) und IMMER ein echtes bool-Attribut liefert.
 """
 import json
 import sqlite3
@@ -40,6 +38,7 @@ CREATE TABLE IF NOT EXISTS gesture_index (
     affects_head INTEGER NOT NULL,
     system_only INTEGER NOT NULL,
     selectable_by_llm INTEGER NOT NULL,
+    semantic_tags TEXT NOT NULL,
     embedding TEXT,
     source_path TEXT NOT NULL,
     source_mtime REAL NOT NULL,
@@ -50,15 +49,6 @@ CREATE TABLE IF NOT EXISTS gesture_index_meta (
     value TEXT NOT NULL
 );
 """
-
-
-def _gesture_metadata_flag(gesture, attr_name: str, metadata_key: str, default: bool) -> bool:
-    """Bevorzugt ein echtes Gesture-Attribut, sobald es existiert;
-    faellt bis dahin auf gesture.metadata[metadata_key] zurueck."""
-    direct = getattr(gesture, attr_name, None)
-    if direct is not None:
-        return bool(direct)
-    return bool(gesture.metadata.get(metadata_key, default))
 
 
 def _catalog_fingerprint(catalog) -> str:
@@ -85,8 +75,23 @@ class GestureIndexStore:
         self.db_path = str(resolved)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         self.conn.executescript(SCHEMA)
+        self._migrate_schema()
         self.conn.commit()
         self.embedding_backend = embedding_backend or create_embedding_backend()
+
+    def _migrate_schema(self) -> None:
+        """Entwicklungsauftrag 04-B, AP8 (11/14): 'CREATE TABLE IF NOT
+        EXISTS' legt KEINE fehlende Spalte in einer bereits bestehenden
+        Datei nach -- eine aeltere gesture_index.db (ohne semantic_tags,
+        aus einer frueheren Session) wuerde reindex() sonst mit einem
+        sqlite3.OperationalError abbrechen. Fuegt die Spalte nach, falls
+        sie fehlt (bestehende Zeilen bekommen automatisch NULL -->
+        '[]' beim naechsten reindex() ohnehin ueberschrieben)."""
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(gesture_index)")}
+        if "semantic_tags" not in columns:
+            self.conn.execute(
+                "ALTER TABLE gesture_index ADD COLUMN semantic_tags TEXT NOT NULL DEFAULT '[]'"
+            )
 
     def reindex(self, catalog, force: bool = False) -> dict:
         """Baut den Index komplett neu auf (kein inkrementelles Patchen
@@ -116,7 +121,14 @@ class GestureIndexStore:
         indexed = 0
         for name in catalog.names():
             gesture = catalog.get(name)
-            text_for_embedding = f"{gesture.name} {gesture.description}".strip()
+            # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 8: semantic_tags
+            # fliessen jetzt in den Suchtext ein -- test_note/Keyframes/
+            # technische Migrationshistorien BEWUSST NICHT (die stehen nur
+            # in gesture.test_note bzw. gesture.keyframes, werden hier nie
+            # gelesen).
+            text_for_embedding = (
+                f"{gesture.name} {gesture.description} {' '.join(gesture.semantic_tags)}"
+            ).strip()
             raw_embedding = self.embedding_backend.encode(text_for_embedding)
             embedding = raw_embedding.tolist() if hasattr(raw_embedding, "tolist") else raw_embedding
 
@@ -128,14 +140,14 @@ class GestureIndexStore:
             self.conn.execute(
                 "INSERT INTO gesture_index (name, description, tested_status, duration_s, "
                 "allowed_interaction_states, requires_stationary, affects_head, system_only, "
-                "selectable_by_llm, embedding, source_path, source_mtime, indexed_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "selectable_by_llm, semantic_tags, embedding, source_path, source_mtime, indexed_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     gesture.name, gesture.description, gesture.tested_status, gesture.duration_s(),
                     json.dumps(gesture.allowed_interaction_states), int(gesture.requires_stationary),
                     int(gesture.affects_head()),
-                    int(_gesture_metadata_flag(gesture, "system_only", "system_only", False)),
-                    int(_gesture_metadata_flag(gesture, "selectable_by_llm", "selectable_by_llm", True)),
+                    int(gesture.system_only), int(gesture.selectable_by_llm),
+                    json.dumps(gesture.semantic_tags),
                     json.dumps(embedding), gesture.source_path, mtime, now,
                 ),
             )
@@ -156,17 +168,18 @@ class GestureIndexStore:
     def _load_all_entries(self) -> list:
         rows = self.conn.execute(
             "SELECT name, description, tested_status, duration_s, allowed_interaction_states, "
-            "requires_stationary, affects_head, system_only, selectable_by_llm, embedding "
-            "FROM gesture_index"
+            "requires_stationary, affects_head, system_only, selectable_by_llm, semantic_tags, "
+            "embedding FROM gesture_index"
         ).fetchall()
         entries = []
         for (name, description, tested_status, duration_s, states_json, requires_stationary,
-                affects_head, system_only, selectable_by_llm, embedding_json) in rows:
+                affects_head, system_only, selectable_by_llm, tags_json, embedding_json) in rows:
             entries.append(GestureIndexEntry(
                 name=name, description=description, tested_status=tested_status,
                 duration_s=duration_s, allowed_interaction_states=json.loads(states_json),
                 requires_stationary=bool(requires_stationary), affects_head=bool(affects_head),
                 system_only=bool(system_only), selectable_by_llm=bool(selectable_by_llm),
+                semantic_tags=json.loads(tags_json) if tags_json else [],
                 embedding=json.loads(embedding_json) if embedding_json else None,
             ))
         return entries

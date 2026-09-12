@@ -36,7 +36,13 @@ class GestureIndexEntry:
     requires_stationary: bool = False
     affects_head: bool = False
     system_only: bool = False
-    selectable_by_llm: bool = True
+    # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 4.2: der sichere
+    # Default ist jetzt False -- gesture_catalog.py::Gesture liefert
+    # IMMER ein explizites bool (nie mehr None), dieser Klassen-Default
+    # greift nur, wenn ein Aufrufer selbst KEINEN Wert uebergibt (z.B.
+    # ein synthetischer Test-Entry).
+    selectable_by_llm: bool = False
+    semantic_tags: list = field(default_factory=list)
     embedding: object = None
 
 
@@ -81,12 +87,16 @@ def passes_hard_filters(entry: GestureIndexEntry, request: GestureSearchRequest)
         return False
     if entry.system_only and not request.include_system_only:
         return False
-    if not entry.selectable_by_llm and request.query and not request.include_system_only:
-        # Auftrag: "system_only-Gesten sind strukturell nie LLM-
-        # waehlbar" -- selectable_by_llm=False wird bei einer echten
-        # (nicht-leeren) Suchanfrage genauso behandelt wie system_only,
-        # ausser ein interner Aufrufer setzt include_system_only
-        # explizit (z.B. gesturectl-Introspektion).
+    if not entry.selectable_by_llm and not request.include_system_only:
+        # Entwicklungsauftrag 04-B, AP8 (11/14), Abschnitt 11.3
+        # (bestaetigter Fund): dieser Filter griff bisher NUR bei einer
+        # nicht-leeren Suchanfrage (request.query) -- eine leere Anfrage
+        # (z.B. eine reine Listing-Abfrage) liess ein selectable_by_llm=
+        # False-Gesture unabhaengig vom system_only-Flag durchrutschen.
+        # "selectable_by_llm=false wird UNABHAENGIG von system_only
+        # beruecksichtigt" (Abnahmekriterium) gilt jetzt IMMER, ausser
+        # ein interner Aufrufer setzt include_system_only explizit
+        # (z.B. gesturectl-Introspektion).
         return False
     return True
 
