@@ -112,6 +112,10 @@ class _DialogueFakeNode:
         self._params.update(params or {})
         self.gesture_calls = []
         self.cancel_active_actions_calls = 0
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3: neue
+        # Unbestaetigt-Nachverfolgung fuer Systemgesten-Threads --
+        # _acknowledge_and_run_pipeline() liest/schreibt dieses Attribut.
+        self._unconfirmed_system_gesture_thread = None
         self._pipeline_fn = pipeline_fn or (lambda *a: (
             "plan", None,
             {"final_allowlist": set(), "head_gesture_names": set(),

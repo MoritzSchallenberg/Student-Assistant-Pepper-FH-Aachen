@@ -642,24 +642,48 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
   bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
-  /// Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund):
-  /// true, sobald onHalted() eintraf, WAEHREND die Goal-Acceptance noch
-  /// aussteht (goal_handle_ also noch null war) -- der in onStart()
-  /// registrierte goal_response_callback prueft dieses Flag bei jeder
-  /// (moeglicherweise verspaeteten) Annahme und storniert dann sofort,
-  /// statt das Ziel unbeaufsichtigt weiterlaufen zu lassen.
-  bool haltedBeforeAcceptance() const {return halted_before_acceptance_;}
+  /// Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund,
+  /// nach Nachbesserung durchlaufgebunden statt ueber ein gemeinsames
+  /// Member-Flag): true, wenn der AKTUELLE Durchlauf (current_attempt_)
+  /// bereits gehaltet wurde, WAEHREND seine Goal-Acceptance noch
+  /// aussteht. Liest den Zustand des jeweils aktuellen Attempt-Objekts,
+  /// siehe GoalAttemptState unten.
+  bool haltedBeforeAcceptance() const
+  {
+    return current_attempt_ && current_attempt_->halted_before_acceptance.load();
+  }
 
 private:
   using DialogueAction = ihk_pepper_interfaces::action::RunDialogue;
   using GoalHandle = rclcpp_action::ClientGoalHandle<DialogueAction>;
+
+  /// Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund):
+  /// ein EINZELNES gemeinsames Member-Flag wurde von JEDEM onStart()-
+  /// Aufruf zurueckgesetzt -- traf die verspaetete Annahme eines ALTEN
+  /// Durchlaufs (Ziel A) erst NACH onStart() eines NEUEN Durchlaufs
+  /// (Ziel B) ein, las As eigener goal_response_callback faelschlich
+  /// Bs frisch zurueckgesetzten Zustand (false) und stornierte A NICHT
+  /// mehr. Durchlaufgebundener Zustand statt eines gemeinsamen Flags:
+  /// jeder onStart()-Aufruf legt ein EIGENES GoalAttemptState-Objekt an;
+  /// der fuer DIESEN Durchlauf registrierte goal_response_callback
+  /// erhaelt eine Kopie des zugehoerigen shared_ptr (per Wert erfasst).
+  /// Der shared_ptr haelt das Objekt exakt so lange am Leben, wie
+  /// irgendeine Lambda-Kopie noch existiert -- unabhaengig davon, ob
+  /// current_attempt_ inzwischen bereits auf einen neueren Durchlauf
+  /// zeigt. As Callback sieht dadurch immer NUR As eigenen Zustand, nie
+  /// den eines spaeteren Durchlaufs B.
+  struct GoalAttemptState
+  {
+    std::atomic<bool> halted_before_acceptance {false};
+  };
+
   rclcpp::Node::SharedPtr node_;
   rclcpp_action::Client<DialogueAction>::SharedPtr client_;
   std::shared_future<GoalHandle::SharedPtr> goal_future_;
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
   bool last_halt_cancel_confirmed_ {false};
-  bool halted_before_acceptance_ {false};
+  std::shared_ptr<GoalAttemptState> current_attempt_;
 };
 
 /// Ruft /set_interaction_state auf (neuer Service, behandelt von

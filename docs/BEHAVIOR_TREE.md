@@ -189,16 +189,39 @@ Ziels storniert -- dieses Ziel lief vollständig unbeaufsichtigt weiter,
 ohne dass je ein Cancel gestellt wurde.
 
 Fix: `onStart()` übergibt jetzt `SendGoalOptions` mit einem
-`goal_response_callback`, der ein neues `halted_before_acceptance_`-Flag
-prüft -- ist es gesetzt, wird das verspätet angenommene Ziel SOFORT per
-`async_cancel_goal()` storniert. `onHalted()` setzt dieses Flag genau
-dann, wenn es (im `else`-Zweig, `goal_handle_ == nullptr`) auf ein noch
-unbestätigtes Ziel trifft. Ein bestätigt abgeschlossenes Cancel-Future
-beweist dabei für sich allein weder eine erfolgreiche Annahme noch einen
-tatsächlichen Stillstand -- die bestehende Unterscheidung
+`goal_response_callback`, der prüft, ob DIESER Durchlauf bereits gehaltet
+wurde -- ist das der Fall, wird das verspätet angenommene Ziel SOFORT per
+`async_cancel_goal()` storniert. `onHalted()` markiert das genau dann,
+wenn es (im `else`-Zweig, `goal_handle_ == nullptr`) auf ein noch
+unbestätigtes Ziel trifft.
+
+**Nachbesserung (Entwicklungsauftrag 04-B, AP8.9)**: die ursprüngliche
+Fassung band diese Prüfung an ein EINZELNES gemeinsames
+`halted_before_acceptance_`-Member -- `onStart()` setzte es bei JEDEM
+neuen Durchlauf zurück. Traf die verspätete Annahme eines ALTEN
+Durchlaufs A erst NACH `onStart()` eines NEUEN Durchlaufs B ein, las As
+eigener Callback fälschlich Bs bereits zurückgesetzten Zustand und
+stornierte A NICHT mehr -- ein bestätigter Generationen-Fehler. Jetzt
+legt jeder `onStart()`-Aufruf ein eigenes `GoalAttemptState`-Objekt an
+(`std::shared_ptr`, in der jeweiligen Lambda per Wert erfasst) -- dessen
+Lebensdauer hält es unabhängig von `current_attempt_` am Leben, sodass
+As Callback immer nur As EIGENEN Zustand sieht, nie den eines späteren
+Durchlaufs B. Zusätzlich verifiziert der Cancel-Callback jetzt die
+tatsächliche Serverantwort (`return_code == ERROR_NONE` UND ein
+nicht-leeres `goals_canceling`) statt ein abgeschlossenes Future allein
+als Bestätigung zu werten -- ein bestätigt abgeschlossenes Cancel-Future
+beweist weiterhin für sich allein weder eine erfolgreiche Annahme noch
+einen tatsächlichen Stillstand; die bestehende Unterscheidung
 `cancel_requested`/`cancel_accepted`/`action_terminal`/
 `transport_terminal`/`physisch bestätigt` (`docs/ACTION_CANCELLATION.md`)
 bleibt hier vollständig anwendbar und unverändert.
+
+Funktional bewiesen: `test/test_bt_dialogue_gesture_lifecycle.cpp::
+LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration` -- exakte
+Reproduktion der Auftragsvorgabe (Ziel A → Halt vor Annahme → neuer
+Durchlauf B → verspätete Annahme von A): A wird storniert, B bleibt
+komplett unbeeinflusst (eigener, echter `rclcpp_action`-Server zählt
+Cancel-Anfragen PRO Goal-UUID, nicht nur aggregiert).
 
 Funktional bewiesen über echte `rclcpp_action`-Kommunikation
 (`test/test_bt_dialogue_gesture_lifecycle.cpp`, neu, per
@@ -208,12 +231,16 @@ ruft `onStart()` und UNMITTELBAR DANACH `onHalted()` ohne dazwischen zu
 spinnen (garantiert `goal_handle_ == nullptr` beim Halt), spint dann
 erst und beobachtet, dass der Fake-Server tatsächlich eine Cancel-
 Anfrage empfängt; ein zweiter Test bestätigt den unveränderten
-Normalfall (Halt NACH bestätigter Annahme). `colcon test --packages-select
-ihk_pepper_behavior_tree`: **28 Tests, 0 Fehler, 0 Fehlschläge, 5
-übersprungen** (vorher 23/0/0/4). Davon direkt nachvollziehbar:
-`test_bt_dialogue_gesture_lifecycle.gtest.xml` selbst trägt genau die 2
-neuen funktionalen Tests dieses Abschnitts bei (0 übersprungen); die
-restlichen +3 Tests/+1 übersprungen stammen aus `ament_lint_auto`s
-automatischer Mitregistrierung von Lint-/Stil-Prüfläufen für die neue
-Testdatei (uncrustify mit der bereits bestehenden Zeilenumbruch-
-Korrektur bestanden, siehe Fehlerhistorie im Abschlussbericht).
+Normalfall (Halt NACH bestätigter Annahme). Ein dritter Test
+(`LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration`, AP8.9)
+beweist zusätzlich die Generationentreue (siehe oben) über einen
+eigenen, echten `rclcpp_action`-Server, der Cancel-Anfragen pro
+Goal-UUID zählt. `colcon test --packages-select
+ihk_pepper_behavior_tree`: **29 Tests, 0 Fehler, 0 Fehlschläge, 5
+übersprungen** (vorher 23/0/0/4, dann 28/0/0/5 nach den ersten zwei
+Tests). Davon direkt nachvollziehbar:
+`test_bt_dialogue_gesture_lifecycle.gtest.xml` selbst trägt genau die 3
+funktionalen Tests dieses Abschnitts bei (0 übersprungen); die
+restlichen Tests/übersprungenen stammen aus `ament_lint_auto`s
+automatischer Mitregistrierung von Lint-/Stil-Prüfläufen für die
+Testdatei (uncrustify weiterhin bestanden).

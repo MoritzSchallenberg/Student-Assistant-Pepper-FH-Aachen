@@ -33,7 +33,13 @@ class _FakeLogger:
     def warn(self, *_a, **_kw):
         pass
 
+    def warning(self, *_a, **_kw):
+        pass
+
     def info(self, *_a, **_kw):
+        pass
+
+    def error(self, *_a, **_kw):
         pass
 
 
@@ -53,6 +59,10 @@ class _FakeNode:
         self._active_say_goal_handle = None
         self._active_gesture_goal_handle = None
         self.cancel_active_actions_calls = 0
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3: neue
+        # Unbestaetigt-Nachverfolgung fuer Systemgesten-Threads --
+        # _acknowledge_and_run_pipeline() liest/schreibt dieses Attribut.
+        self._unconfirmed_system_gesture_thread = None
 
     def get_parameter(self, name):
         return _FakeParam(self._params[name])

@@ -1436,7 +1436,22 @@ class PepperBridgeNode(Node):
     def _publish_health(self):
         msg = SystemHealth()
         msg.header.stamp = self.get_clock().now().to_msg()
-        reachable = self.pepper.is_reachable(timeout_s=1.0)
+        # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 5 (bestaetigter
+        # Fund): is_reachable() oeffnet einen ECHTEN TCP-Socket zu
+        # self.pepper's konfiguriertem Host:22 -- bisher VOLLSTAENDIG
+        # unabhaengig von dry_run. Ein periodischer Health-Timer (dieser
+        # Aufruf laeuft alle health_publish_interval_s, auch offline)
+        # durfte NIE einen echten Verbindungsversuch ausloesen, selbst
+        # wenn dieser scheitert -- vollstaendige Offline-Isolation
+        # bedeutet KEIN Netzwerkzugriff, nicht nur "keine erfolgreiche
+        # Verbindung". Im dry_run wird deshalb is_reachable() gar nicht
+        # erst aufgerufen; reachable gilt simuliert/sicher als False --
+        # dieselbe fail-closed Semantik wie ein echter, gescheiterter
+        # Check (blockiert _publish_joint_states()/die Bumper-/Charging-/
+        # Batterieabfragen unten identisch), aber ohne je ein Paket zu
+        # senden.
+        dry_run = self.get_parameter("dry_run").value
+        reachable = False if dry_run else self.pepper.is_reachable(timeout_s=1.0)
         # Entwicklungsauftrag 04-B, AP8.2: wiederverwendet genau diesen
         # bereits periodisch laufenden Erreichbarkeits-Check fuer
         # RuntimeContext.pepper_reachable -- kein zweiter, blockierender

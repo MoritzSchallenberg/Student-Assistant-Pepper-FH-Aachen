@@ -248,3 +248,23 @@ hier nur die Kurzfassung für die Abbruch-Kette:
   lassen. Über echte ROS2-Action-Kommunikation bewiesen:
   `test/test_run_dialogue_real_ros2_integration.py::
   test_a_second_concurrent_run_dialogue_goal_is_rejected`.
+
+## Unbestätigtes Ende gab den Handle trotzdem frei (Entwicklungsauftrag 04-B, AP8.9)
+
+Bestätigter Fund: `_send_goal_and_wait()`s `finally`-Block rief
+`_release_if_owner()` bisher UNBEDINGT auf -- auch dann, wenn selbst die
+zusätzliche 2.0s-Cancel-Bestätigungswartezeit nach dem eigenen Timeout
+KEIN Ergebnis brachte. Ein Timeout beweist aber kein terminales Ende
+einer noch laufenden Action (dieselbe Regel wie beim Bridge-seitigen
+`cancel_unconfirmed`, siehe oben). Ein neues `self._unconfirmed_action_attrs`-
+Set verhindert jetzt sowohl die Freigabe als auch jeden NEUEN Aufruf für
+dasselbe `active_goal_attr`, bis der irgendwann doch noch eintreffende
+echte `on_result()`-Callback die Markierung wieder aufhebt (und dabei --
+wie zuvor -- nur den eigenen Datensatz bereinigt, siehe Call-Token oben).
+`RunDialogueActionServer._execute()`s Hauptschleife behandelt ein so
+markiertes Attribut als sichtbaren `ACTION_UNCONFIRMED`-Fehlerzustand:
+kein normaler Folgezustand, kein Memory-Schreiben, keine neue
+konkurrierende Ausführung. Getestet in `test_run_dialogue_cancellation.py`
+(`test_send_goal_and_wait_does_not_release_the_handle_after_an_unconfirmed_timeout`,
+`test_a_new_call_is_refused_while_the_same_attr_is_still_unconfirmed`,
+`test_a_late_arriving_result_clears_the_unconfirmed_marker_and_releases_the_handle`).

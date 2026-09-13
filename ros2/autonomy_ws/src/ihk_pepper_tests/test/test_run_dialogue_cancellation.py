@@ -18,6 +18,9 @@ class _FakeLogger:
     def info(self, *a, **kw):
         pass
 
+    def error(self, *a, **kw):
+        pass
+
 
 class _FakeActionResult:
     def __init__(self, success):
@@ -84,6 +87,10 @@ class _FakeNode:
         # _send_goal_and_wait() jetzt nutzt, um active_goal_attr nur vom
         # tatsaechlichen Eigentuemer-Aufruf schreiben/loeschen zu lassen.
         self._active_goal_tokens = {}
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2: Unbestaetigt-
+        # Nachverfolgung -- ein Timeout ohne spaetere Bestaetigung
+        # markiert active_goal_attr hier, statt ihn freizugeben.
+        self._unconfirmed_action_attrs = set()
 
     def get_logger(self):
         return _FakeLogger()
@@ -103,14 +110,22 @@ def test_send_goal_and_wait_returns_false_on_rejected_goal():
     assert result is False
 
 
-def test_send_goal_and_wait_tracks_active_goal_handle_while_running():
+def test_send_goal_and_wait_does_not_release_the_handle_after_an_unconfirmed_timeout():
+    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter Fund,
+    # Nachbesserung -- diese Assertion war vorher genau umgekehrt und
+    # enshrined damit den Fehler): ein Timeout, dem selbst nach der
+    # zusaetzlichen Cancel-Kulanzzeit KEIN Ergebnis folgt (never_finishes),
+    # beweist kein terminales Ende der Action. Der Handle bleibt deshalb
+    # bewusst bestehen (weiterhin per _cancel_active_actions() erreichbar)
+    # und active_goal_attr wird als unbestaetigt markiert, statt
+    # bedingungslos freigegeben zu werden.
     node = _FakeNode()
     gh = _FakeGoalHandle(never_finishes=True)
     client = _FakeActionClient(gh)
     # timeout_s klein halten -- der Test wartet real auf den Ablauf.
     node._send_goal_and_wait(client, object(), timeout_s=0.05, active_goal_attr="_active_say_goal_handle")
-    # Nach Rueckkehr (Timeout+Cancel-Kulanzzeit) wieder zurueckgesetzt.
-    assert node._active_say_goal_handle is None
+    assert node._active_say_goal_handle is gh
+    assert "_active_say_goal_handle" in node._unconfirmed_action_attrs
 
 
 def test_send_goal_and_wait_calls_cancel_goal_async_on_its_own_timeout():
@@ -221,6 +236,56 @@ def test_send_goal_and_wait_clears_its_own_handle_on_normal_completion():
     result = node._send_goal_and_wait(
         client, object(), timeout_s=1.0, active_goal_attr="_active_say_goal_handle")
     assert result is True
+
+
+class _FakeGoalHandleWithDeferredResult(_FakeGoalHandle):
+    """Wird sofort angenommen, aber das Ergebnis kommt erst, wenn der
+    Test es manuell per result_future.fire() ausloest -- simuliert ein
+    Ziel, dessen Ende weit nach dem eigenen Timeout eintrifft."""
+
+    def __init__(self):
+        super().__init__(accepted=True)
+        self.result_future = _DeferredFuture()
+
+    def get_result_async(self):
+        return self.result_future
+
+
+def test_a_new_call_is_refused_while_the_same_attr_is_still_unconfirmed():
+    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2/9 (Testpunkt 8,
+    # "unbestaetigte Say-/Gesture-Action bleibt nachverfolgt"): solange
+    # active_goal_attr unbestaetigt ist, darf KEINE neue, konkurrierende
+    # Ausfuehrung fuer dasselbe Attribut starten.
+    node = _FakeNode()
+    gh = _FakeGoalHandleWithDeferredResult()
+    client = _FakeActionClient(gh)
+    node._send_goal_and_wait(client, object(), timeout_s=0.05, active_goal_attr="_active_gesture_goal_handle")
+    assert "_active_gesture_goal_handle" in node._unconfirmed_action_attrs
+
+    other_client = _FakeActionClient(_FakeGoalHandle())
+    result = node._send_goal_and_wait(
+        other_client, object(), timeout_s=1.0, active_goal_attr="_active_gesture_goal_handle")
+    assert result is False
+    assert other_client.sent_goals == []  # kein neues Ziel wurde je gesendet
+
+
+def test_a_late_arriving_result_clears_the_unconfirmed_marker_and_releases_the_handle():
+    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2/9 (Testpunkt 10,
+    # "spaetes Result raeumt ausschliesslich seinen eigenen Datensatz
+    # auf"): das schliesslich doch noch eintreffende Ergebnis hebt die
+    # Unbestaetigt-Markierung wieder auf und gibt den Handle frei.
+    node = _FakeNode()
+    gh = _FakeGoalHandleWithDeferredResult()
+    client = _FakeActionClient(gh)
+    node._send_goal_and_wait(client, object(), timeout_s=0.05, active_goal_attr="_active_gesture_goal_handle")
+    assert node._active_gesture_goal_handle is gh
+    assert "_active_gesture_goal_handle" in node._unconfirmed_action_attrs
+
+    gh.result_future.fire(_FakeActionResult(True))
+
+    assert "_active_gesture_goal_handle" not in node._unconfirmed_action_attrs
+    assert node._active_gesture_goal_handle is None
+    assert "_active_gesture_goal_handle" not in node._active_goal_tokens
     assert node._active_say_goal_handle is None
     assert "_active_say_goal_handle" not in node._active_goal_tokens
 

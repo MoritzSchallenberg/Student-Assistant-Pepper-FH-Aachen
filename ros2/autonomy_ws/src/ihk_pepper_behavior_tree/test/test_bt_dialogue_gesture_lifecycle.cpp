@@ -15,7 +15,9 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <set>
 #include <thread>
+#include <vector>
 
 #include <gtest/gtest.h>
 #include <rclcpp/rclcpp.hpp>
@@ -47,8 +49,10 @@ public:
       [](const rclcpp_action::GoalUUID &, std::shared_ptr<const RunDialogueAction::Goal>) {
         return rclcpp_action::GoalResponse::ACCEPT_AND_EXECUTE;
       },
-      [this](const std::shared_ptr<GoalHandleRunDialogue>) {
+      [this](const std::shared_ptr<GoalHandleRunDialogue> goal_handle) {
         cancel_requested_count_.fetch_add(1);
+        std::lock_guard<std::mutex> lock(mutex_);
+        cancelled_goal_ids_.insert(goal_handle->get_goal_id());
         return rclcpp_action::CancelResponse::ACCEPT;
       },
       [this](const std::shared_ptr<GoalHandleRunDialogue> goal_handle) {
@@ -56,16 +60,36 @@ public:
         // steuert alles ueber Cancel/Timeout, keine echte Auto-Beendigung).
         std::lock_guard<std::mutex> lock(mutex_);
         held_goal_handles_.push_back(goal_handle);
+        accepted_goal_ids_in_order_.push_back(goal_handle->get_goal_id());
       });
   }
 
   int cancelRequestedCount() const {return cancel_requested_count_.load();}
 
+  /// Entwicklungsauftrag 04-B, AP8.8, Abschnitt 9 (Szenario "generationstreu"):
+  /// erlaubt einem Test, gezielt zu pruefen, WELCHES von mehreren
+  /// angenommenen Zielen tatsaechlich storniert wurde -- ein blosser
+  /// Gesamtzaehler koennte einen falschen Treffer (Ziel B statt Ziel A)
+  /// nicht von einem richtigen unterscheiden.
+  bool wasGoalCancelled(const rclcpp_action::GoalUUID & goal_id) const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return cancelled_goal_ids_.count(goal_id) > 0;
+  }
+
+  std::vector<rclcpp_action::GoalUUID> acceptedGoalIdsInOrder() const
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return accepted_goal_ids_in_order_;
+  }
+
 private:
   rclcpp_action::Server<RunDialogueAction>::SharedPtr action_server_;
   std::atomic<int> cancel_requested_count_{0};
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::vector<std::shared_ptr<GoalHandleRunDialogue>> held_goal_handles_;
+  std::vector<rclcpp_action::GoalUUID> accepted_goal_ids_in_order_;
+  std::set<rclcpp_action::GoalUUID> cancelled_goal_ids_;
 };
 
 /// Baut eine RunDialogueViaBT-Instanz mit einem literalen session_id-
@@ -156,6 +180,72 @@ TEST(RunDialogueViaBTLifecycle, AcceptedGoalIsCancelledDirectlyWhenHaltArrivesAf
     executor.spin_some(std::chrono::milliseconds(20));
   }
   EXPECT_GE(server_node->cancelRequestedCount(), 1);
+}
+
+TEST(RunDialogueViaBTLifecycle, LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration)
+{
+  // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (Nachbesserung) +
+  // Abschnitt 9, Szenario "generationstreu": exakte Reproduktion der im
+  // Auftrag beschriebenen Sequenz --
+  //   Ziel A angefragt -> Halt VOR Annahme -> neuer Durchlauf B ->
+  //   verspaetete Annahme von A.
+  // A muss weiterhin storniert werden, sein (verspaetetes) Callback darf
+  // B nicht beeinflussen. Vor der Nachbesserung teilten sich A und B ein
+  // gemeinsames halted_before_acceptance_-Member, das onStart() fuer B
+  // zuruecksetzte, BEVOR As eigenes Callback je gefeuert hatte -- A waere
+  // dadurch faelschlich NICHT storniert worden.
+  auto server_node = std::make_shared<FakeRunDialogueServer>();
+  auto client_node = std::make_shared<rclcpp::Node>("test_client_node_generational");
+
+  rclcpp::executors::SingleThreadedExecutor executor;
+  executor.add_node(server_node);
+  executor.add_node(client_node);
+
+  auto bt_node = makeNode(client_node, "run_dialogue_via_bt_under_test_generational");
+
+  // Ziel A: onStart() sendet asynchron, NICHTS wird gespinnt -- die
+  // Annahme kann strukturell noch nicht angekommen sein.
+  ASSERT_EQ(bt_node->onStart(), BT::NodeStatus::RUNNING);
+  // Halt VOR Annahme von A.
+  bt_node->onHalted();
+  EXPECT_TRUE(bt_node->haltedBeforeAcceptance());
+
+  // Neuer Durchlauf B: onStart() erneut aufgerufen (derselbe BT-Knoten,
+  // wie es ein erneuter Tick nach einem Halt tun wuerde) -- IMMER NOCH
+  // OHNE dazwischen zu spinnen, damit As Annahme garantiert noch
+  // aussteht, wenn B gestartet wird.
+  ASSERT_EQ(bt_node->onStart(), BT::NodeStatus::RUNNING);
+  EXPECT_FALSE(bt_node->haltedBeforeAcceptance())
+    << "onStart() fuer den neuen Durchlauf B muss dessen EIGENEN "
+       "(frischen) Attempt-Zustand zeigen, nicht As Halt-Zustand.";
+
+  // ERST JETZT spinnen -- sowohl As als auch Bs (verspaetete) Annahme
+  // treffen ein. Der Server haelt beide offen (zwei angenommene Ziele).
+  auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+  while (server_node->acceptedGoalIdsInOrder().size() < 2 &&
+    std::chrono::steady_clock::now() < deadline)
+  {
+    executor.spin_some(std::chrono::milliseconds(50));
+  }
+  ASSERT_EQ(server_node->acceptedGoalIdsInOrder().size(), 2u)
+    << "Erwartet: der Server hat beide Ziele (A und B) angenommen.";
+
+  // Beiden Zielen etwas Zeit geben, damit ein etwaiger (fehlerhafter)
+  // Cancel fuer B ebenfalls ankommen koennte, bevor wir pruefen.
+  auto settle_deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(500);
+  while (std::chrono::steady_clock::now() < settle_deadline) {
+    executor.spin_some(std::chrono::milliseconds(20));
+  }
+
+  const auto accepted_ids = server_node->acceptedGoalIdsInOrder();
+  const auto & goal_a_id = accepted_ids[0];
+  const auto & goal_b_id = accepted_ids[1];
+
+  EXPECT_TRUE(server_node->wasGoalCancelled(goal_a_id))
+    << "Ziel A (gehaltet VOR seiner Annahme) muss weiterhin storniert werden.";
+  EXPECT_FALSE(server_node->wasGoalCancelled(goal_b_id))
+    << "Ziel B (der neue, nicht gehaltete Durchlauf) darf durch As "
+       "verspaetetes Callback NICHT beeinflusst/storniert werden.";
 }
 
 int main(int argc, char ** argv)

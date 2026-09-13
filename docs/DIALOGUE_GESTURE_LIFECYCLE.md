@@ -260,4 +260,83 @@ Unterbrechung existiert real, aber mit Keyframe-/Segment-Granularität,
 kein hardwarebestätigter Mid-Servo-Stopp); ob ein echter LLM-Provider
 einen laufenden Request tatsächlich serverseitig abbricht (keiner der
 verfügbaren Provider-Implementierungen bietet das); jede physische
-Stufe-5-Bestätigung (Abschnitt 7).
+Stufe-5-Bestätigung (Abschnitt 7). Vollständige Hardware-Abnahme-
+Checkliste: `docs/GESTURE_HARDWARE_ACCEPTANCE.md` (neu, AP8.9).
+
+## 10. Nachbesserungen (Entwicklungsauftrag 04-B, AP8.9, Commit 14/14)
+
+Bei der Vorabschlussprüfung gegen den tatsächlichen HEAD wurden vier
+weitere, konkrete Softwarelücken bestätigt und geschlossen (jeweils mit
+eigenem Regressionstest):
+
+- **Memory-Schreiben nach Abbruch/Fehlschlag** (bestätigter Fund,
+  Abschnitt 3.1 des Auftrags): die Bedingung
+  `memory_summary_candidate vorhanden UND person_context.known` prüfte
+  `exec_result` NIE -- ein während der Ausführung abgebrochener oder
+  fehlgeschlagener Durchlauf schrieb trotzdem Memory. Erfordert jetzt
+  zusätzlich `exec_result.success` (schließt `cancelled` aus, siehe
+  `ResponsePlanExecutor`) UND einen frischen Recheck von
+  `_safety_ok()`/`_track_alive()` UNMITTELBAR vor dem Schreiben selbst.
+  Bewiesen über echte ROS2-Service-/Action-Kommunikation
+  (`test_run_dialogue_real_ros2_integration.py::
+  test_cancel_during_speaking_writes_no_memory_summary_even_for_a_known_person`/
+  `test_say_failure_writes_no_memory_summary_even_for_a_known_person`,
+  mit echten `/get_person_context`-/`/write_memory_summary`-Services).
+- **Unbestätigtes Action-Ende gab den Handle trotzdem frei**
+  (bestätigter Fund, Abschnitt 3.2): `_send_goal_and_wait()`s
+  `finally`-Block rief `_release_if_owner()` bisher UNBEDINGT auf --
+  auch wenn selbst die zusätzliche 2.0s-Cancel-Bestätigungswartezeit
+  KEIN Ergebnis brachte. Ein neues `self._unconfirmed_action_attrs`-Set
+  verhindert jetzt sowohl die Freigabe als auch jeden NEUEN Aufruf für
+  dasselbe `active_goal_attr`, bis der irgendwann doch noch eintreffende
+  echte `on_result()`-Callback die Markierung aufhebt. Die
+  `_execute()`-Hauptschleife behandelt ein unbestätigtes Attribut jetzt
+  als sichtbaren `ACTION_UNCONFIRMED`-Fehlerzustand (kein normaler
+  Folgezustand, kein Memory-Schreiben).
+- **Denkschleifen-Ende war nicht aktiv/nicht verfolgt** (bestätigter
+  Fund, Abschnitt 3.3): bei normalem Pipeline-Ende wurde nur
+  `thinking_loop_stop` gesetzt (passives Warten auf das natürliche Ende
+  eines laufenden Zyklus, keine aktive Stornierung); ein den Join-
+  Timeout überschreitender Thread wurde stillschweigend als beendet
+  behandelt. `_cancel_active_actions()` wird jetzt AUCH beim normalen
+  Ende sofort aufgerufen; ein `self._unconfirmed_system_gesture_thread`
+  verfolgt einen den Timeout überschreitenden Thread sichtbar weiter und
+  blockiert jede neue Bestätigungs-/Denkgeste, bis er nachweislich endet.
+  Zusätzlich: Pipeline-/Executor-Worker kapseln ihre Arbeit jetzt in
+  `try/finally`, damit eine Ausnahme das jeweilige Abschluss-Event
+  IMMER setzt (vorher: mögliche endlose Warteschleife bei einer
+  Worker-Ausnahme). Alle internen Zeitdeckel dieser Datei
+  (`session_start`/`_wait_for_question()`/`_run_thinking_loop()`/
+  `_acknowledge_and_run_pipeline()`-Deadline u.a.) nutzen jetzt
+  `time.monotonic()` statt `time.time()` -- eine frühere Doku-Aussage,
+  `time.time()` sei "innerhalb eines Laufs monoton", war schlicht
+  falsch und wurde hier korrigiert (bewusst NICHT auf die
+  node-übergreifende `safety_topics.FreshBool`-Frischeprüfung
+  ausgeweitet, siehe Code-Kommentar an `session_start`).
+- **`RunDialogueViaBT`s Halt-vor-Annahme-Flag war nicht durchlaufgebunden**
+  (bestätigter Fund, Abschnitt 3.4): ein einzelnes gemeinsames
+  `halted_before_acceptance_`-Member wurde von JEDEM `onStart()`
+  zurückgesetzt -- traf eine verspätete Annahme für einen ALTEN
+  Durchlauf A erst NACH `onStart()` eines NEUEN Durchlaufs B ein, las
+  As eigener Callback fälschlich Bs frisch zurückgesetzten Zustand und
+  stornierte A nicht mehr. Ein neues, je Durchlauf frisch angelegtes
+  `GoalAttemptState`-Objekt (per `shared_ptr`, in der Lambda per Wert
+  erfasst) bindet den Zustand jetzt an genau den Durchlauf, der ihn
+  gesetzt hat -- unabhängig davon, ob inzwischen ein neuerer Durchlauf
+  begonnen hat. Der Cancel-Callback verifiziert außerdem die tatsächliche
+  Serverantwort (`return_code`/`goals_canceling`), statt ein fertiges
+  Future allein als Bestätigung zu werten. Funktional bewiesen:
+  `test/test_bt_dialogue_gesture_lifecycle.cpp::
+  LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration` (exakte
+  Reproduktion: Ziel A → Halt vor Annahme → neuer Durchlauf B →
+  verspätete Annahme von A -- A wird storniert, B bleibt unbeeinflusst).
+
+Zusätzlich (Abschnitt 5 des Auftrags, Offline-Isolation): `bridge_node.py::
+_publish_health()` rief bisher UNBEDINGT `self.pepper.is_reachable()` auf
+-- ein echter TCP-Verbindungsversuch, unabhängig von `dry_run`. Im
+`dry_run` wird dieser Aufruf jetzt gar nicht mehr erreicht; `reachable`
+gilt simuliert/sicher als `False` (siehe `docs/ACTUATOR_ARBITER.md`/
+`docs/GESTURE_TRANSPORT.md` für die downstream fail-closed-Wirkung).
+Bewiesen über `test_bridge_node_health_offline_isolation.py` (ein Fake-
+Pepper-Client, der bei JEDEM echten Zugriffsversuch im `dry_run` sofort
+eine `AssertionError` auslöst).

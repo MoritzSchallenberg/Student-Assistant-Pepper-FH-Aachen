@@ -89,6 +89,20 @@ tested_date: "<Datum des Tests>"
 test_note: "Live getestet: <kurze Beschreibung, wer/was beobachtet wurde>"
 ```
 
+## Startmodus für die laufende Bridge (Entwicklungsauftrag 04-B, AP8.9)
+
+Der obige manuelle `bridge_node`-Aufruf bleibt gültig. Alternativ startet
+`interaction_full_safe.launch.py mode:=pepper_gesture_test
+i_confirm_gesture_test_supervised:=true` denselben Zustand
+(`dry_run:=false`, `execution_profile:=supervised_hardware_test`) über
+die zentrale Launch-Datei -- seit AP8.9 zusätzlich hinter einer eigenen
+Bestätigungshürde (`i_confirm_gesture_test_supervised`), die vorher
+für diesen Modus fehlte (bestätigter Fund, siehe
+`docs/DEVELOPMENT_ORDER_04_B_REPORT.md`). Siehe
+`docs/GESTURE_HARDWARE_ACCEPTANCE.md` für die vollständige, darüber
+hinausgehende Abnahme-Checkliste (Startpose, Cancel/Restore, Codewort,
+Not-Stopp, Kopf-/Sensorausrichtung, Systemgesten im Dialog).
+
 ## Ehrlicher Stand dieser Session
 
 In keiner Session bis einschließlich Entwicklungsauftrag 04-B, AP8

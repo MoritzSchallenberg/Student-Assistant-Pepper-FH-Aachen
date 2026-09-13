@@ -2600,3 +2600,294 @@ Katalogstatus/Dateihashes/Fingerabdrücke sind unverändert, keine echte
 Bewegung/externe Verbindung fand statt. **14/14
 (Produktions-Startmodi und vollständiger AP8-Abschlussbericht) kann auf
 dieser Grundlage beginnen.**
+
+## AP8.9 (14/14): sichere Betriebsmodi, Launch-Isolation, Abnahmevorbereitung und AP8-Softwareabschluss
+
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `8eec564`
+(entspricht exakt dem gemeldeten Stand), working tree sauber, Python
+`1778 bestanden, 3 übersprungen`, BT.CPP `28/0/0/5` (6 funktionale
+GTests: 3 `test_bt_cancel_confirmation` + 2 `test_bt_dialogue_gesture_lifecycle`
+zu diesem Zeitpunkt -- korrekt, vor den Ergänzungen dieses Commits),
+Katalog `24 Gesten` (`17 draft / 6 dry_run_validated / 1 live_validated`).
+
+### Vorabschlussprüfung: bestätigte Softwarelücken (Abschnitt 3 des Auftrags)
+
+Alle vier benannten Verdachtsstellen wurden gegen den tatsächlichen
+HEAD gelesen und bestätigt:
+
+1. **Memory-Schreiben nach Abbruch/Fehlschlag** (3.1): die Bedingung
+   `memory_summary_candidate vorhanden UND person_context.known` prüfte
+   `exec_result` nie -- ein während der Ausführung abgebrochener oder
+   fehlgeschlagener Durchlauf schrieb trotzdem Memory.
+2. **Unbestätigtes Action-Ende gab den Handle trotzdem frei** (3.2):
+   `_send_goal_and_wait()`s `finally`-Block rief `_release_if_owner()`
+   bisher UNBEDINGT auf, selbst wenn nach dem eigenen Timeout auch die
+   zusätzliche Cancel-Bestätigungswartezeit kein Ergebnis brachte.
+3. **Denkschleifen-Ende war weder aktiv noch verlässlich verfolgt**
+   (3.3): bei normalem Pipeline-Ende wurde nur `thinking_loop_stop`
+   gesetzt (rein passives Warten), ein den Join-Timeout überschreitender
+   Thread wurde stillschweigend als beendet behandelt; Pipeline-/
+   Executor-Worker konnten bei einer Ausnahme ihr Abschluss-Event
+   überspringen (mögliche endlose Warteschleife); die Doku-Behauptung,
+   `time.time()` sei "innerhalb eines Laufs monoton", war schlicht
+   falsch.
+4. **`RunDialogueViaBT`s Halt-vor-Annahme-Zustand war nicht
+   durchlaufgebunden** (3.4): ein einzelnes gemeinsames
+   `halted_before_acceptance_`-Member wurde von JEDEM `onStart()`
+   zurückgesetzt -- ein verspätet eintreffendes Callback für einen
+   ALTEN Durchlauf A las nach Beginn eines NEUEN Durchlaufs B
+   fälschlich Bs bereits zurückgesetzten Zustand.
+
+Alle vier wurden gezielt geschlossen (Details siehe
+`docs/DIALOGUE_GESTURE_LIFECYCLE.md` Abschnitt 10,
+`docs/ACTION_CANCELLATION.md`, `docs/BEHAVIOR_TREE.md`). Zusätzlich
+bestätigt (Abschnitt 5 des Auftrags): `bridge_node.py::_publish_health()`
+rief bisher UNBEDINGT `self.pepper.is_reachable()` auf -- ein echter
+TCP-Verbindungsversuch, unabhängig von `dry_run`; im `dry_run` wird
+dieser Aufruf jetzt gar nicht mehr erreicht.
+
+### Testzuordnungsmatrix (Abschnitt 3.5 des Auftrags)
+
+Die vorherige Zuordnung von Szenario J (Doppelstart) war fehlerhaft --
+der Original-Auftrag (13/14) definierte J als Gruppenänderung/
+Gruppenverlust. Korrigierte Matrix (Auszug, vollständige Zuordnung in
+`docs/DIALOGUE_GESTURE_LIFECYCLE.md` Abschnitt 9):
+
+| Anforderung | Test | Laufzeitschicht | Assertion | Grenze |
+|---|---|---|---|---|
+| Cancel während Antwort → kein Memory-Write | `test_run_dialogue_real_ros2_integration.py::test_cancel_during_speaking_writes_no_memory_summary_...` | echte ROS2-Action+Service-Kommunikation | `person_memory.write_memory_calls == []` | kein echter LLM/keine echte Person |
+| Fehlgeschlagene Antwort → kein Memory-Write | `...::test_say_failure_writes_no_memory_summary_...` | echte ROS2-Action+Service-Kommunikation | `person_memory.write_memory_calls == []` | Say-Fehlschlag simuliert, kein echtes TTS |
+| Unbestätigte Action bleibt nachverfolgt | `test_run_dialogue_cancellation.py::test_send_goal_and_wait_does_not_release_the_handle_after_an_unconfirmed_timeout` u.a. | reine Python-Logik (echte ungebundene Methode) | Handle bleibt gesetzt, Attr in `_unconfirmed_action_attrs` | kein echter Action-Server |
+| Spätes Result räumt nur eigenen Datensatz | `...::test_a_late_arriving_result_clears_the_unconfirmed_marker_and_releases_the_handle` | dito | Marker/Handle nach spätem Ergebnis korrekt bereinigt | dito |
+| BT-Halt/Wiederstart/verspätete Annahme generationstreu | `test_bt_dialogue_gesture_lifecycle.cpp::LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration` | echte `rclcpp_action`-Kommunikation | A storniert, B unbeeinflusst (pro Goal-UUID gezählt) | kein echter Pepper/BT-Baum |
+| Personenverlust via `_track_alive` | `test_ap8_dialogue_lifecycle_offline_e2e.py` Szenario I | echte, ungebundene Methode | `_track_alive()` fail-closed | beweist NICHT allein eine Präemption während eines laufenden Dialogs (siehe unten) |
+| Offline-Isolation Health-Timer | `test_bridge_node_health_offline_isolation.py` | echte, ungebundene Methode + fail-on-use-Fake | kein Aufruf von `is_reachable()`/Hardwaremethoden im `dry_run` | kein echter Pepper |
+| Launch-Modus-Profilzuordnung | `test_interaction_full_safe_launch.py` (neu: Bestätigungshürde + Profilmapping) | echter `LaunchContext`, keine Prozesse | Profil je Modus, Ablehnung ohne Bestätigung | kein echter Node-Start |
+
+Ausdrücklich klargestellt (Abschnitt 3.5, geforderte Einschränkungen):
+`_track_alive()` allein beweist keine Präemption eines LAUFENDEN
+Dialogs (das erfordert zusätzlich den Loop-Top-Recheck in `_execute()`
+UND den neuen Recheck unmittelbar vor Antwortstart, beide jetzt
+vorhanden, aber nicht durch einen weiteren End-zu-Ende-Test dupliziert);
+der Bridge-Offline-Isolationstest beweist keinen ausbleibenden
+Dialog-Memory-Write (das leisten die zwei neuen ROS2-Integrationstests
+oben); die Doppelstartprüfung (`test_response_plan_executor.py`) ersetzt
+keinen Gruppenverlusttest (Gruppenverlust bleibt bei der unveränderten,
+bestehenden `MonitorParticipants`-Infrastruktur aus AP7, außerhalb des
+Dateiumfangs dieses Auftrags); die Gesten-Exception-Erfassung
+(`_run_gesture_safely()`) ersetzt keine Pipeline-Worker-Exception-Prüfung
+(dafür jetzt eigene `try/finally`-Kapselung in `_run_pipeline()`s/
+`executor.execute()`s jeweiligem Worker-Thread, siehe Abschnitt 3.3
+oben -- kein eigener End-zu-Ende-Test wegen des Aufwands, eine volle
+`_execute()`-Instanz nachzubilden, aber durch Code-Struktur (`try/except/
+finally` um jeden Worker-Body) und das identische, bereits getestete
+Muster in `_acknowledge_and_run_pipeline()` belegt).
+
+### Launch-Modi und Ausführungsprofile (Abschnitt 4 des Auftrags)
+
+Bestätigter Fund: `interaction_full_safe.launch.py` übergab der Bridge
+bisher NUR `dry_run`, nie `execution_profile` -- dieses blieb dadurch
+IMMER auf seinem sicheren Standard `offline_mock` stehen, unabhängig vom
+gewählten `mode`. Da nur `supervised_hardware_test`/`production` laut
+`gesture_execution_policy.py::HARDWARE_CAPABLE_PROFILES` überhaupt
+Hardwarebewegung erlauben, wäre selbst `mode=production` dauerhaft im
+NICHT-hardwarefähigen Profil gefangen gewesen. Neues
+`_MODE_EXECUTION_PROFILE`-Mapping (jeder der 19 bestehenden Modi
+bekommt einen expliziten Eintrag, per Test abgesichert):
+`production`→`production`, `respeaker_head_test`/`pepper_gesture_test`/
+`navigation_dry_run`→`supervised_hardware_test` (die einzigen vier
+Modi mit `bridge_dry_run=false`), alle übrigen 15 (dry_run) Modi bleiben
+bei `offline_mock`. `execution_profile` wird jetzt zusätzlich zu
+`dry_run` an die Bridge übergeben.
+
+Zusätzlich bestätigt: `pepper_gesture_test`/`navigation_dry_run` hatten
+trotz `bridge_dry_run=false` bisher KEINE Bestätigungshürde (anders als
+`production`/`respeaker_head_test`). Neue, gemeinsame Hürde
+`i_confirm_gesture_test_supervised` (Default `false`) für beide Modi.
+Bestehende AP6-/AP7-/AP7.1-Modi bleiben unverändert (kein Diff in ihren
+Flag-Tabellenzeilen), Regression bestätigt (21 neue, 2 angepasste
+Launch-Tests, alle bestehenden weiterhin grün).
+
+### Vollständige Offline-Isolation (Abschnitt 5 des Auftrags)
+
+`bridge_node.py::_publish_health()` (periodischer Health-Timer, läuft
+AUCH im vollständigen Offline-/`dry_run`-Betrieb) rief bisher UNBEDINGT
+`self.pepper.is_reachable()` auf -- ein echter `socket.create_connection`
+zum konfigurierten Pepper-Host, Port 22, unabhängig von `dry_run`. Im
+`dry_run` wird dieser Aufruf jetzt gar nicht mehr erreicht (`reachable`
+gilt simuliert/sicher als `False`) -- alle nachgelagerten
+Hardwareabfragen (Bumper/Charging/Battery/Joint-States) bleiben dadurch
+strukturell unerreichbar, exakt wie bei einem echten, gescheiterten
+Check. Bewiesen über ein fail-on-use-Test-Double
+(`test_bridge_node_health_offline_isolation.py`): ein Fake-Pepper-Client,
+der bei JEDEM echten Zugriffsversuch sofort eine `AssertionError`
+auslöst -- der Test besteht nur, wenn im `dry_run` TATSÄCHLICH kein
+einziger Aufruf stattfindet. Eine Gegenprobe bestätigt, dass der
+reguläre (nicht-`dry_run`) Health-Check unverändert funktioniert.
+
+### Beaufsichtigter Hardwaretestmodus (Abschnitt 6 des Auftrags) -- nur vorbereitet
+
+`mode=pepper_gesture_test` startet strukturell bereits KEINEN
+Perception-/Dialog-/BT-Knoten (nur die Bridge selbst) -- automatische
+Auslöser sind dadurch bereits architektonisch ausgeschlossen. Die neue
+`i_confirm_gesture_test_supervised`-Hürde (Abschnitt 4 oben) ergänzt das
+um eine explizite Bestätigung, analog zu `i_confirm_hardware_acceptance_complete`/
+`i_confirm_head_test_supervised`. Ressourcentrennung
+(`resources_for_gesture()`, Aktuator-Lease je Ressource) ist unverändert
+bestehende Infrastruktur aus AP5B/AP6 -- kein Diff, keine neue
+Ressourcenlogik in diesem Commit. Der Hardwaretestmodus selbst wurde in
+dieser Session nicht gestartet.
+
+### Produktions-Gates (Abschnitt 7 des Auftrags) -- unverändert bestätigt
+
+`git diff --stat` gegen `gesture_execution_policy.py`/`gesture_catalog.py`/
+`gesture_cancellation.py` ist LEER -- keine dieser Dateien wurde in
+diesem Commit angefasst. `overall_verdict==pass AND collision_checked==true`
+bleibt unverändert die einzige Produktionsfreigabe;
+`gesturectl validate-all` liefert weiterhin `24 geprüft, 0 pass, 24
+inconclusive, 0 fail` (Exitcode 2) -- unverändert zur Baseline.
+
+### Launch- und Isolationstests (Abschnitt 8 des Auftrags)
+
+21 neue/2 angepasste Tests in `test_interaction_full_safe_launch.py`
+(echter `LaunchContext`, keine Prozesse): neue Bestätigungshürde
+(je 2 Tests raise/nicht-raise für die beiden betroffenen Modi),
+vollständige `_MODE_EXECUTION_PROFILE`-Abdeckung (1 Test), die vier
+hardwarefähigen Profile korrekt zugeordnet (4 parametrisierte Fälle),
+alle 14 `dry_run`-Modi bleiben auf `offline_mock` (14 parametrisierte
+Fälle). Realer Offline-Prozess-Smoketest (Abschnitt 8, "mindestens
+einen"): bereits durch `test_run_dialogue_real_ros2_integration.py`
+erfüllt (echte Timer/Say/PlayGesture/Abbruch/Shutdown, siehe Commit
+13/14) -- nicht dupliziert. Zusätzlich neu: der Health-Offline-
+Isolationstest oben beweist fail-on-use, dass selbst bei einer
+vorbereiteten (aber ungenutzten) Pepper-Client-Instanz kein
+Verbindungsversuch stattfindet.
+
+### Abschließende Lifecycle-Regression (Abschnitt 9 des Auftrags)
+
+Siehe Testzuordnungsmatrix oben für die genaue Zuordnung der 12
+geforderten Punkte. Neue/geänderte Tests in diesem Commit: 3
+(`test_bridge_node_health_offline_isolation.py`, neu), 2
+(`test_run_dialogue_cancellation.py`), 2
+(`test_run_dialogue_real_ros2_integration.py`), 21/-2
+(`test_interaction_full_safe_launch.py`), 1
+(`test_bt_dialogue_gesture_lifecycle.cpp`) -- **28 neue Python-Tests,
+1 neuer funktionaler GTest**.
+
+### Hardware-Abnahmeunterlagen (Abschnitt 10 des Auftrags)
+
+Neues `docs/GESTURE_HARDWARE_ACCEPTANCE.md`: 14 einzelne Abnahmepunkte
+(rein lesendes Capture, sichere erste v2-Trajektorie, reales
+qicli-/NAOqi-Verhalten, Startpose/normale Beendigung, Cancel mit
+`hold`, normaler Cancel + separat geprüftes Restore, Codewortpräemption,
+Not-Stopp/Bumper ohne Restore, unabhängiger Interrupt-Kanal, reale
+Reaktionszeit/physischer Stillstand, Arm-/Tablet-/Torso-Abstände,
+RealSense-/ReSpeaker-Ausrichtung bei Kopfbewegung, Breathing-Verhalten,
+Systemgesten im beaufsichtigten Dialog), jeder einzeln
+`hwverificationrequired` mit vollständigem Protokollformat
+(Datum/Bediener/Modell/Firmware/Commit/Hash/Fingerprint/Modus/Freigaben/
+Startpose/Speed-Scale/Beobachtung/Cancel-Ergebnis/Auffälligkeiten/
+Statusentscheidung). `docs/GESTURE_LIVE_TEST_CHECKLIST.md` um einen
+Abschnitt zum neuen Startmodus (`i_confirm_gesture_test_supervised`)
+ergänzt. Keiner der 14 Punkte wurde in dieser Session hardwareverifiziert.
+
+### Dokumentationskonsistenz (Abschnitt 11 des Auftrags)
+
+Aktualisiert: `docs/DIALOGUE_GESTURE_LIFECYCLE.md` (neuer Abschnitt 10,
+alle vier AP8.9-Nachbesserungen), `docs/ACTION_CANCELLATION.md` (neuer
+Abschnitt zum unbestätigten Action-Ende), `docs/BEHAVIOR_TREE.md`
+(Generationentreue-Nachbesserung, aktualisierte Testzahlen),
+`docs/GESTURE_LIVE_TEST_CHECKLIST.md` (neuer Startmodus-Absatz). Neu:
+`docs/GESTURE_HARDWARE_ACCEPTANCE.md`. NICHT verändert, weil nicht
+tatsächlich betroffen (kein Diff in den zugrundeliegenden Modulen):
+`docs/GESTURE_EXECUTION_POLICY.md`, `docs/GESTURE_RUNTIME_CONTEXT.md`,
+`docs/GESTURE_KINEMATIC_VALIDATION.md`, `docs/GESTURE_CATALOG_INVENTORY.md`,
+`docs/GESTURE_CAPTURE_WORKFLOW.md`, `docs/GESTURE_OFFLINE_EVIDENCE.md`,
+`docs/GESTURE_AUTHORING.md`, `docs/GESTURE_TRANSPORT.md`,
+`docs/ACTUATOR_ARBITER.md`, `docs/LLM_PIPELINE_DESIGN.md`, `README.md`,
+`STATUS.md`, `CAPABILITIES.md`, `docs/DEVELOPMENT_MODES.md` (beschreibt
+ausschließlich die älteren Einzel-Launch-Dateien, nicht
+`interaction_full_safe.launch.py`s Modus-Tabelle -- bleibt unverändert
+korrekt). Keine unzutreffende frühere Abschlussbehauptung gefunden, die
+über die bereits in Commit 13/14 korrigierte PlayGesture-Docstring
+hinausgeht.
+
+### Katalog und Offline-Evidenz (Abschnitt 12 des Auftrags) -- unverändert
+
+`sha256sum config/gestures/*.yaml` byte-identisch zur Baseline,
+`gesturectl audit`-Ausgabe byte-identisch, `gesturectl validate-all`:
+`24 geprüft, 0 pass, 24 inconclusive, 0 fail`, Exitcode 2 (unverändert
+zur Baseline -- kein Produktions-Pass, `inconclusive` bleibt kein
+Nachweis). `python3 scripts/generate_gesture_inventory.py --check`:
+Exitcode 0, `GESTURE_CATALOG_INVENTORY.md` weiterhin aktuell. Alle 24
+Dateien laden, alle 23 v2-Dateien kompilieren (unverändert). `greet_open`
+bleibt `draft`, `t_pose` bleibt v1-Sonderfall, `look_at_person` bleibt
+Platzhalter/Systemgeste.
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete, keine Fehler) →
+`python3 -m pytest ihk_pepper_tests/test -q` → **1806 bestanden, 3
+übersprungen** (vorher 1778/3 -- **28 neue Tests**: 3
+`test_bridge_node_health_offline_isolation.py` (neu), 2
+`test_run_dialogue_cancellation.py`, 2
+`test_run_dialogue_real_ros2_integration.py`, 21 (netto, aus 23 neuen
+minus 2 durch die Entfernung von `navigation_dry_run` aus zwei
+bestehenden "braucht nie eine Hürde"-Parametrisierungen)
+`test_interaction_full_safe_launch.py`). `colcon test --packages-select
+ihk_pepper_behavior_tree` → **29/0/0/5** (vorher 28/0/0/5 -- 1 neuer
+funktionaler GTest, `LateAcceptanceOfHaltedGoalDoesNotAffectANewerGeneration`).
+Secret-/Tracking-Scan über alle geänderten/neuen Dateien: keine echten
+Zugangsdaten/Adressen (Treffer waren ausschließlich Parameternamen wie
+`respeaker_password`/Kommentare, die die Abwesenheit von `/cmd_vel`
+dokumentieren). Kein SSH-/qicli-Aufruf, kein echter LLM-Aufruf, kein
+`/cmd_vel`-Publisher, kein Start von `navigation_live.launch.py`, keine
+Hardwarebewegung.
+
+### Bewusste Scoping-Entscheidungen
+
+- Section 6 (Hardwaretestmodus) wurde ausschließlich VORBEREITET
+  (Bestätigungshürde + Ausführungsprofil-Zuordnung) -- keine neue,
+  granularere Arm-/Kopf-/Torso-Einzelfreigabe-Parametrisierung über die
+  bereits bestehende `resources_for_gesture()`-Infrastruktur hinaus
+  eingeführt, da diese Infrastruktur bereits aus AP5B/AP6 vorhanden und
+  unverändert ist und eine granularere Neuausrichtung außerhalb des
+  bestätigten Fund-Umfangs dieses Commits läge.
+- `docs/DEVELOPMENT_MODES.md` (beschreibt die ÄLTEREN, einzelnen
+  Launch-Dateien) wurde bewusst NICHT verändert -- es macht keine
+  Aussage über `execution_profile`/die neue Bestätigungshürde und bleibt
+  weiterhin korrekt.
+- Kein neuer End-zu-Ende-Test für Pipeline-/Executor-Worker-Ausnahmen
+  in `_execute()` selbst (aufwendige Nachbildung eines vollständigen
+  Goal-Handles) -- stattdessen durch Code-Struktur (unbedingtes
+  `try/except/finally` um jeden Worker-Body) und das identische, bereits
+  getestete Muster in `_acknowledge_and_run_pipeline()` belegt.
+
+### AP8-Softwareabschluss
+
+Alle in Abschnitt 14 des Auftrags genannten Kriterien sind erfüllt: die
+vier bestätigten Softwarewidersprüche aus Abschnitt 3 sind geschlossen
+und regressionsgetestet; Launch-Modi entsprechen jetzt den korrekten
+Ausführungsprofilen; Offline-Isolation umfasst jetzt auch den
+Health-Timer; der Hardwaretestmodus startet keine automatischen
+Gestentrigger (strukturell, durch fehlende Perception-/Dialog-/BT-Knoten
+in `pepper_gesture_test`, plus neue Bestätigungshürde); Produktions-Gates
+sind unverändert und nicht absenkbar; fehlender Kollisionsnachweis
+blockiert weiterhin jede Produktionsgeste; verspätete Pipeline-/Action-
+Ergebnisse beleben keine beendete Sitzung wieder; Abbruch/Fehlschlag
+lösen keinen Memory-Write mehr aus (über echte ROS2-Kommunikation
+bewiesen); unbestätigte Ausführungen bleiben sichtbar gesperrt;
+funktionale Dialog-/ROS2-/BT-Nachweise liegen vor; volle Regression und
+Katalogprüfungen bestehen; Dokumentation und Code stimmen überein; kein
+Hardwarezugriff/keine reale Bewegung fanden statt. **AP8 gilt hiermit
+softwareseitig als abgeschlossen.**
+
+Getrennt zu betrachtende, NICHT automatisch begonnene Folgearbeiten:
+ein echtes Kollisions-Backend (eigenständiges Arbeitspaket, nicht Teil
+von AP8); die `t_pose`-v2-Migration (nur nach separater kinematischer
+Neuentwicklung); eine gesondert autorisierte Hardwareabnahme (nach
+`docs/GESTURE_HARDWARE_ACCEPTANCE.md`, NUR mit physischem Pepper und
+Bedienperson vor Ort); ein späteres Emotion-Gating (eigenständiges
+Arbeitspaket außerhalb des AP8-Gestenumfangs). Keine dieser vier Arbeiten
+wurde in diesem Commit begonnen.

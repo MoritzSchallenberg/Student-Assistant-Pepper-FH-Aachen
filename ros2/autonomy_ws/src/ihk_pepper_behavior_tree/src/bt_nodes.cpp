@@ -796,7 +796,12 @@ BT::NodeStatus RunDialogueViaBT::onStart()
   DialogueAction::Goal goal;
   goal.session_id = std::to_string(session_id.value());
   goal_handle_.reset();
-  halted_before_acceptance_ = false;
+  // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (Nachbesserung): ein
+  // NEUES GoalAttemptState-Objekt je Durchlauf statt eines gemeinsamen
+  // Flags -- siehe Klassendeklaration in bt_nodes.hpp fuer die genaue
+  // Begruendung (Generationen-/Lebensdauerproblem).
+  current_attempt_ = std::make_shared<GoalAttemptState>();
+  auto attempt = current_attempt_;
 
   // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund):
   // traf onHalted() bisher ein, WAEHREND die Goal-Acceptance noch
@@ -805,20 +810,51 @@ BT::NodeStatus RunDialogueViaBT::onStart()
   // Cancel wurde je gestellt). Der goal_response_callback wird IMMER
   // aufgerufen, sobald der Server tatsaechlich antwortet -- unabhaengig
   // davon, ob dieser BT-Knoten zwischenzeitlich schon gehaltet wurde --
-  // und storniert das Ziel sofort, falls das der Fall war.
+  // und storniert das Ziel sofort, falls das der Fall war. Die Kopie
+  // von `attempt` (statt eines Lesens von current_attempt_/eines
+  // gemeinsamen Members) bindet diese Pruefung an GENAU DIESEN
+  // Durchlauf, auch wenn inzwischen laengst ein neuer Durchlauf B
+  // begonnen hat.
   rclcpp_action::Client<DialogueAction>::SendGoalOptions options;
   options.goal_response_callback =
-    [this](const GoalHandle::SharedPtr & handle) {
+    [this, attempt](const GoalHandle::SharedPtr & handle) {
       if (!handle) {
         return;
       }
-      if (halted_before_acceptance_) {
-        RCLCPP_WARN(
-          node_->get_logger(),
-          "RunDialogueViaBT: verspaetete Goal-Acceptance NACH onHalted() -- "
-          "Ziel wird sofort storniert.");
-        client_->async_cancel_goal(handle);
+      if (!attempt->halted_before_acceptance.load()) {
+        return;
       }
+      RCLCPP_WARN(
+        node_->get_logger(),
+        "RunDialogueViaBT: verspaetete Goal-Acceptance NACH onHalted() -- "
+        "Ziel wird sofort storniert.");
+      // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4: ein fertiger
+      // Cancel-Future allein beweist noch keine erfolgreiche
+      // Cancel-Annahme -- erst eine tatsaechliche Serverantwort mit
+      // return_code==ERROR_NONE UND einem nicht-leeren
+      // goals_canceling (die Anfrage war bereits auf GENAU dieses
+      // goal_handle beschraenkt, siehe async_cancel_goal()) gilt hier
+      // als bestaetigt. Ausschliesslich fuer Logging/Diagnose -- der
+      // Cancel selbst wurde bereits angefordert, unabhaengig vom
+      // Ergebnis dieser Pruefung.
+      client_->async_cancel_goal(
+        handle,
+        [this](auto response) {
+          const bool confirmed = response &&
+          response->return_code == action_msgs::srv::CancelGoal::Response::ERROR_NONE &&
+          !response->goals_canceling.empty();
+          if (confirmed) {
+            RCLCPP_INFO(
+              node_->get_logger(),
+              "RunDialogueViaBT: verspaetet angenommenes Ziel wurde vom Server "
+              "bestaetigt storniert.");
+          } else {
+            RCLCPP_WARN(
+              node_->get_logger(),
+              "RunDialogueViaBT: Stornierung des verspaetet angenommenen Ziels "
+              "wurde vom Server NICHT eindeutig bestaetigt.");
+          }
+        });
     };
   goal_future_ = client_->async_send_goal(goal, options);
   return BT::NodeStatus::RUNNING;
@@ -858,11 +894,14 @@ void RunDialogueViaBT::onHalted()
   } else {
     // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter
     // Fund): die Goal-Acceptance steht noch aus -- es gibt (noch) keinen
-    // Handle, den wir hier stornieren koennten. Das Flag sorgt dafuer,
-    // dass der in onStart() registrierte goal_response_callback das
-    // Ziel SOFORT storniert, sobald die (moeglicherweise verspaetete)
-    // Annahme eintrifft -- keine unbeaufsichtigte Fortsetzung.
-    halted_before_acceptance_ = true;
+    // Handle, den wir hier stornieren koennten. Markiert den AKTUELLEN
+    // Durchlauf (current_attempt_, nicht ein gemeinsames Member) --
+    // dessen goal_response_callback storniert das Ziel SOFORT, sobald
+    // die (moeglicherweise verspaetete) Annahme eintrifft, unabhaengig
+    // davon, ob inzwischen laengst ein neuer Durchlauf begonnen hat.
+    if (current_attempt_) {
+      current_attempt_->halted_before_acceptance = true;
+    }
     last_halt_cancel_confirmed_ = false;
   }
 }

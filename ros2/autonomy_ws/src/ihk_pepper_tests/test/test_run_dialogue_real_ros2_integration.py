@@ -28,6 +28,7 @@ from ihk_pepper_dialog.faq_cache import FaqCache
 from ihk_pepper_dialog.run_dialogue_action_server import RunDialogueActionServer
 from ihk_pepper_interfaces.action import PlayGesture, RunDialogue, Say
 from ihk_pepper_interfaces.msg import DialogueState, SafetyState
+from ihk_pepper_interfaces.srv import GetPersonContext, WriteMemorySummary
 
 _KNOWLEDGE_MOCK = json.dumps({
     "schema_version": 1, "normalized_intent": "information_request",
@@ -35,11 +36,16 @@ _KNOWLEDGE_MOCK = json.dumps({
     "use_person_memory": False, "uncertainties": [], "assumes_known_identity": False,
 })
 _GESTURE_MOCK = json.dumps({"schema_version": 1, "suggestions": []})
+# Entwicklungsauftrag 04-B, AP8.9, Abschnitt 9 (Testpunkte 1/2): ein
+# echtes memory_summary_candidate -- ohne das koennte der Memory-Write-
+# Ausschluss nach Cancel/Fehlschlag gar nicht sichtbar geprueft werden
+# (die bestehende Bedingung wuerde ohnehin schon an einem leeren
+# Kandidaten scheitern, unabhaengig vom neuen exec_result.success-Gate).
 _RESPONSE_MOCK = json.dumps({
     "schema_version": 1,
     "segments": [{"segment_id": "answer", "text": "Das ist die Testantwort.",
                   "gesture_name": None, "gesture_relation": None}],
-    "source_ids": [], "memory_summary_candidate": None,
+    "source_ids": [], "memory_summary_candidate": "Test-Zusammenfassung.",
 })
 
 
@@ -47,12 +53,18 @@ class _FakeSayServer(Node):
     """Kontrollierter Fake-ActionServer fuer /pepper_bridge/say -- echte
     rclpy_action-Kommunikation, keine SSH-/qicli-Verbindung zu Pepper."""
 
-    def __init__(self, delay_s: float = 0.0, allow_cancel: bool = True):
+    def __init__(self, delay_s: float = 0.0, allow_cancel: bool = True, fail_immediately: bool = False):
         super().__init__("fake_say_server")
         self.calls = []
         self.cancel_requests = 0
         self._delay_s = delay_s
         self._allow_cancel = allow_cancel
+        # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 9 (Testpunkt 2): ein
+        # NACH der Konstruktion auf der Instanz ueberschriebenes _execute
+        # haette KEINE Wirkung mehr -- ActionServer erfasst den zum
+        # Konstruktionszeitpunkt gebundenen Methoden-Callable, keine
+        # spaetere Neuzuweisung. Deshalb ein echter Konstruktorparameter.
+        self._fail_immediately = fail_immediately
         self._server = ActionServer(
             self, Say, "/pepper_bridge/say",
             execute_callback=self._execute, cancel_callback=self._cancel,
@@ -65,6 +77,11 @@ class _FakeSayServer(Node):
 
     def _execute(self, goal_handle):
         self.calls.append(goal_handle.request.text)
+        if self._fail_immediately:
+            result = Say.Result()
+            result.success = False
+            goal_handle.abort()
+            return result
         deadline = time.monotonic() + self._delay_s
         while time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
@@ -111,6 +128,36 @@ class _FakeGestureServer(Node):
         result.success = True
         goal_handle.succeed()
         return result
+
+
+class _FakePersonMemoryServices(Node):
+    """Entwicklungsauftrag 04-B, AP8.9, Abschnitt 9 (Testpunkte 1/2):
+    echte rclpy-Services fuer /get_person_context und
+    /write_memory_summary -- macht 'kein Memory-Write nach Cancel/
+    Fehlschlag' ueber ECHTE ROS2-Service-Kommunikation nachweisbar
+    (statt nur ueber person_context.get('known')==False strukturell
+    unerreichbar zu sein, wie in den uebrigen Tests dieser Datei)."""
+
+    def __init__(self, known: bool = True):
+        super().__init__("fake_person_memory_services")
+        self.known = known
+        self.write_memory_calls = []
+        self.create_service(
+            GetPersonContext, "/get_person_context", self._get_person_context,
+            callback_group=ReentrantCallbackGroup())
+        self.create_service(
+            WriteMemorySummary, "/write_memory_summary", self._write_memory_summary,
+            callback_group=ReentrantCallbackGroup())
+
+    def _get_person_context(self, request, response):
+        response.known = self.known
+        response.display_name = "Testperson" if self.known else ""
+        return response
+
+    def _write_memory_summary(self, request, response):
+        self.write_memory_calls.append(request.summary)
+        response.success = True
+        return response
 
 
 class _DriverNode(Node):
@@ -180,11 +227,12 @@ def dialogue_env():
 
     say_server = _FakeSayServer()
     gesture_server = _FakeGestureServer()
+    person_memory = _FakePersonMemoryServices(known=True)
     dialog_node = RunDialogueActionServer(faq)
     driver = _DriverNode()
 
     executor = MultiThreadedExecutor()
-    for n in (say_server, gesture_server, dialog_node, driver):
+    for n in (say_server, gesture_server, person_memory, dialog_node, driver):
         executor.add_node(n)
     spin_thread = threading.Thread(target=executor.spin, daemon=True)
     spin_thread.start()
@@ -194,7 +242,7 @@ def dialogue_env():
 
     env = {
         "say_server": say_server, "gesture_server": gesture_server,
-        "dialog_node": dialog_node, "driver": driver,
+        "person_memory": person_memory, "dialog_node": dialog_node, "driver": driver,
     }
     yield env
 
@@ -207,7 +255,7 @@ def dialogue_env():
     # Action-Callback-Ausfuehrung).
     time.sleep(0.3)
     executor.shutdown()
-    for n in (say_server, gesture_server, dialog_node, driver):
+    for n in (say_server, gesture_server, person_memory, dialog_node, driver):
         n.destroy_node()
     faq.close()
     for p in (faq_path, params_path):
@@ -339,3 +387,70 @@ def test_a_second_concurrent_run_dialogue_goal_is_rejected(dialogue_env):
     # Aufraeumen: Sitzung 201 abbrechen, damit der Executor sauber
     # herunterfaehrt.
     handle_a.cancel_goal_async()
+
+
+def test_cancel_during_speaking_writes_no_memory_summary_even_for_a_known_person(dialogue_env):
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 3.1/9 (Testpunkt 1,
+    # bestaetigter Fund): die alte Bedingung schrieb Memory bereits bei
+    # 'memory_summary_candidate vorhanden UND person_context.known' --
+    # OHNE exec_result je zu konsultieren. Hier ECHT ueber ROS2-Service-
+    # Kommunikation bewiesen: eine bekannte Person (known=True) UND ein
+    # echter memory_summary_candidate reichen NICHT mehr, wenn die
+    # Ausfuehrung selbst abgebrochen wurde.
+    driver = dialogue_env["driver"]
+    say_server = dialogue_env["say_server"]
+    person_memory = dialogue_env["person_memory"]
+    say_server._delay_s = 3.0
+
+    client = ActionClient(driver, RunDialogue, "/run_dialogue")
+    assert client.wait_for_server(timeout_sec=5.0)
+
+    goal = RunDialogue.Goal()
+    goal.session_id = "session-301"
+    send_future = client.send_goal_async(goal)
+    assert _wait_for(send_future.done, timeout_s=5.0)
+    goal_handle = send_future.result()
+    assert goal_handle.accepted
+
+    assert _publish_transcript_until_seen(
+        driver, "Kennst du mich?", lambda: len(say_server.calls) >= 1, timeout_s=5.0)
+
+    cancel_future = goal_handle.cancel_goal_async()
+    assert _wait_for(cancel_future.done, timeout_s=5.0)
+    result_future = goal_handle.get_result_async()
+    assert _wait_for(result_future.done, timeout_s=10.0)
+
+    assert say_server.cancel_requests >= 1
+    assert person_memory.write_memory_calls == []
+
+
+def test_say_failure_writes_no_memory_summary_even_for_a_known_person(dialogue_env):
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 3.1/9 (Testpunkt 2):
+    # dieselbe Anforderung, diesmal ueber einen regulaeren Say-
+    # Fehlschlag (kein Cancel) -- der ResponsePlanExecutor bricht den
+    # GESAMTEN Plan ab (siehe docs/RESPONSE_PLAN_EXECUTION.md), exec_result.success
+    # wird False, kein Memory-Write darf erfolgen.
+    driver = dialogue_env["driver"]
+    say_server = dialogue_env["say_server"]
+    person_memory = dialogue_env["person_memory"]
+    say_server._fail_immediately = True
+
+    client = ActionClient(driver, RunDialogue, "/run_dialogue")
+    assert client.wait_for_server(timeout_sec=5.0)
+
+    goal = RunDialogue.Goal()
+    goal.session_id = "session-302"
+    send_future = client.send_goal_async(goal)
+    assert _wait_for(send_future.done, timeout_s=5.0)
+    goal_handle = send_future.result()
+    assert goal_handle.accepted
+
+    assert _publish_transcript_until_seen(
+        driver, "Wie war das nochmal?", lambda: len(say_server.calls) >= 1, timeout_s=5.0)
+
+    result_future = goal_handle.get_result_async()
+    assert _wait_for(result_future.done, timeout_s=10.0)
+
+    assert person_memory.write_memory_calls == []
+    handle_cleanup = goal_handle.cancel_goal_async()
+    _wait_for(handle_cleanup.done, timeout_s=2.0)

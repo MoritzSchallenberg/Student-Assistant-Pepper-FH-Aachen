@@ -47,10 +47,12 @@ def test_valid_modes_match_required_set(launch_module):
     )
 
 
-def _validate(launch_module, ctx, mode, production_confirm="false", head_test_confirm="false"):
+def _validate(
+        launch_module, ctx, mode, production_confirm="false", head_test_confirm="false",
+        gesture_test_confirm="false"):
     return launch_module._validate_mode_and_guards(
         ctx, TextSubstitution(text=mode), TextSubstitution(text=production_confirm),
-        TextSubstitution(text=head_test_confirm),
+        TextSubstitution(text=head_test_confirm), TextSubstitution(text=gesture_test_confirm),
     )
 
 
@@ -84,8 +86,28 @@ def test_respeaker_head_test_with_confirmation_flag_does_not_raise(launch_module
     assert result
 
 
+# Entwicklungsauftrag 04-B, AP8.9, Abschnitt 4/6/8 (bestaetigter Fund):
+# pepper_gesture_test/navigation_dry_run setzen beide bridge_dry_run=False
+# (echte SSH-Verbindung moeglich), hatten aber bisher UEBERHAUPT KEINE
+# Bestaetigungshuerde -- anders als production/respeaker_head_test.
+# Deshalb NICHT mehr Teil der "braucht nie eine Huerde"-Parametrisierung
+# unten, sondern eigene, dedizierte Tests wie bei den anderen beiden.
+@pytest.mark.parametrize("mode", ["pepper_gesture_test", "navigation_dry_run"])
+def test_gesture_test_modes_without_confirmation_flag_raise(launch_module, mode):
+    ctx = LaunchContext()
+    with pytest.raises(RuntimeError, match="i_confirm_gesture_test_supervised"):
+        _validate(launch_module, ctx, mode, gesture_test_confirm="false")
+
+
+@pytest.mark.parametrize("mode", ["pepper_gesture_test", "navigation_dry_run"])
+def test_gesture_test_modes_with_confirmation_flag_do_not_raise(launch_module, mode):
+    ctx = LaunchContext()
+    result = _validate(launch_module, ctx, mode, gesture_test_confirm="true")
+    assert result
+
+
 @pytest.mark.parametrize("mode", [
-    "offline_test", "microphone_test", "realsense_test", "navigation_dry_run",
+    "offline_test", "microphone_test", "realsense_test",
     "respeaker_offline_test", "respeaker_hardware_test", "audio_visual_test",
 ])
 def test_non_production_modes_never_need_the_confirmation_flag(launch_module, mode):
@@ -97,13 +119,50 @@ def test_non_production_modes_never_need_the_confirmation_flag(launch_module, mo
 
 
 @pytest.mark.parametrize("mode", [
-    "offline_test", "microphone_test", "realsense_test", "navigation_dry_run",
+    "offline_test", "microphone_test", "realsense_test",
     "respeaker_offline_test", "respeaker_hardware_test", "audio_visual_test",
 ])
 def test_non_head_test_modes_never_need_the_head_test_confirmation_flag(launch_module, mode):
     ctx = LaunchContext()
     result = _validate(launch_module, ctx, mode, head_test_confirm="false")
     assert result
+
+
+def test_mode_execution_profile_covers_every_valid_mode(launch_module):
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 4: jeder Modus MUSS ein
+    # explizites Eintrag haben -- kein stillschweigendes Fehlen, das
+    # spaeter zu einem KeyError im PythonExpression fuehren wuerde.
+    assert set(launch_module._MODE_EXECUTION_PROFILE.keys()) == set(launch_module.VALID_MODES)
+
+
+@pytest.mark.parametrize("mode,expected_profile", [
+    ("production", "production"),
+    ("respeaker_head_test", "supervised_hardware_test"),
+    ("pepper_gesture_test", "supervised_hardware_test"),
+    ("navigation_dry_run", "supervised_hardware_test"),
+])
+def test_bridge_live_modes_get_a_hardware_capable_execution_profile(launch_module, mode, expected_profile):
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 4 (bestaetigter Fund):
+    # diese vier sind die EINZIGEN mit bridge_dry_run=False -- ein
+    # execution_profile, das bei diesen weiterhin auf dem sicheren
+    # 'offline_mock' (nicht hardwarefaehig) stehen bliebe, wuerde jede
+    # Gestenausfuehrung strukturell verhindern, obwohl dry_run=False
+    # bereits eine echte SSH-Verbindung erlaubt.
+    assert launch_module._MODE_FLAGS[mode][4] is False  # bridge_dry_run
+    assert launch_module._MODE_EXECUTION_PROFILE[mode] == expected_profile
+
+
+@pytest.mark.parametrize("mode", [
+    "offline_test", "microphone_test", "realsense_test",
+    "respeaker_offline_test", "respeaker_hardware_test", "audio_visual_test",
+    "role_authorization_offline_test", "group_interaction_offline_test",
+    "follow_person_dry_run", "interaction_lifecycle_dry_run",
+    "identity_offline_test", "authorization_tablet_test",
+    "command_follow_dry_run", "group_interaction_dry_run",
+])
+def test_bridge_dry_run_modes_stay_on_the_safe_offline_mock_profile(launch_module, mode):
+    assert launch_module._MODE_FLAGS[mode][4] is True  # bridge_dry_run
+    assert launch_module._MODE_EXECUTION_PROFILE[mode] == "offline_mock"
 
 
 def test_motion_capable_and_enable_live_motion_default_to_false(launch_module):

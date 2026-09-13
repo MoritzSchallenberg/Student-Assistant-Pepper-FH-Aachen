@@ -228,6 +228,26 @@ class RunDialogueActionServer(Node):
         # ein zweites Ziel wird abgelehnt, waehrend eines bereits laeuft.
         self._active_execution_lock = threading.Lock()
         self._active_session_id = None
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3 (bestaetigter
+        # Fund): ein Denkschleifen-Thread, dessen begrenzter Join nach
+        # einem Abbruch/normalem Ende bereits ueberschritten wurde (der
+        # Thread also NACHWEISLICH NICHT bestaetigt beendet ist) --
+        # solange dieses Attribut auf einen noch lebenden Thread zeigt,
+        # verweigert _acknowledge_and_run_pipeline() jede neue
+        # Bestaetigungs-/Denkgeste (siehe dortiger Docstring).
+        self._unconfirmed_system_gesture_thread = None
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter
+        # Fund): _send_goal_and_wait() gab den Handle/Token einer Say-/
+        # PlayGesture-Action bisher AUCH dann frei, wenn ihr
+        # tatsaechliches Ende nach einem eigenen Timeout NIE bestaetigt
+        # wurde -- ein Timeout/eine beendete Dialogrunde bewies dabei
+        # kein terminales Ende der noch laufenden Action. Dieses Set
+        # verfolgt active_goal_attr-Namen, deren letzte Ausfuehrung
+        # unbestaetigt blieb: eine neue Ausfuehrung fuer DASSELBE
+        # active_goal_attr wird verweigert, bis der spaeter doch noch
+        # eintreffende echte Ergebnis-Callback (on_result) den Eintrag
+        # wieder entfernt.
+        self._unconfirmed_action_attrs = set()
 
         cb_group = ReentrantCallbackGroup()
 
@@ -382,7 +402,21 @@ class RunDialogueActionServer(Node):
             self.dialogue_state_pub.publish(ds)
 
         track_id = _try_parse_int(session_id)
-        session_start = time.time()
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3: monotone Zeit
+        # fuer JEDEN rein internen Zeitdeckel/jede lokale Wartefrist
+        # dieses Dialog-Durchlaufs (session_start/session_timeout,
+        # _wait_for_question(), _run_thinking_loop(),
+        # _acknowledge_and_run_pipeline()) -- time.time() (Wanduhrzeit)
+        # kann durch NTP-Korrekturen/manuelle Verstellung waehrend eines
+        # laufenden Durchlaufs ruecklaufen, time.monotonic() nie. Bewusst
+        # NICHT auf die node-weite Freshness-Pruefung
+        # (_track_alive()/_safety_state_received_at/safety_topics.FreshBool)
+        # ausgeweitet: dieser gemeinsame, cross-node Kontrakt (siehe u.a.
+        # motion_guard_node.py/supervisor_node.py) vergleicht ankommende
+        # Nachrichtenzeitstempel und ist bewusst ausserhalb des
+        # Dateiumfangs dieses Auftrags -- eine Umstellung dort waere eine
+        # eigene, breitere Aenderung mit eigener Pruefung.
+        session_start = time.monotonic()
         person_context = self._load_person_context(session_id)
 
         feedback(DialogueState.LISTENING, "LISTENING")
@@ -413,7 +447,7 @@ class RunDialogueActionServer(Node):
                     goal_handle.canceled()
                     return result
 
-                if (time.time() - session_start) > self.get_parameter("session_timeout_s").value:
+                if (time.monotonic() - session_start) > self.get_parameter("session_timeout_s").value:
                     return self._finish(goal_handle, result, "SESSION_TIMEOUT", success=True, feedback=feedback)
 
                 if track_id is not None and not self._track_alive(track_id):
@@ -422,6 +456,24 @@ class RunDialogueActionServer(Node):
                 if not self._safety_ok():
                     return self._finish(goal_handle, result, "SAFETY_EVENT", success=False,
                                          error="Sicherheitsereignis waehrend des Dialogs", feedback=feedback)
+
+                # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter
+                # Fund): ein unbestaetigt gebliebenes Ende einer Say-/
+                # PlayGesture-Action ODER einer Systemgeste (Denkschleife)
+                # darf die Sitzung NICHT einfach normal in eine neue Runde
+                # weiterlaufen lassen -- sichtbarer Fehlerzustand statt
+                # eines normalen Folgezustands, kein Memory-Schreiben
+                # (result.success bleibt False), keine neue konkurrierende
+                # Gestenausfuehrung wird durch diesen Turn ausgeloest.
+                if self._unconfirmed_action_attrs or (
+                    self._unconfirmed_system_gesture_thread is not None
+                    and self._unconfirmed_system_gesture_thread.is_alive()
+                ):
+                    return self._finish(
+                        goal_handle, result, "ACTION_UNCONFIRMED", success=False,
+                        error="cancel_unconfirmed: eine fruehere Action ist noch nicht "
+                              "bestaetigt beendet -- keine neue Dialogrunde wird gestartet.",
+                        feedback=feedback)
 
                 feedback(DialogueState.LISTENING, "LISTENING")
                 question = self._wait_for_question(goal_handle)
@@ -437,6 +489,24 @@ class RunDialogueActionServer(Node):
                     continue  # Sicherheitsfehler -- Segment/Runde ueberspringen, Session laeuft weiter
 
                 response_plan, memory_summary_candidate, gesture_recheck_context = pipeline_output
+
+                # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3 (bestaetigter
+                # Fund): Safety-/Teilnehmer-/Sitzungspruefungen liefen
+                # bisher NUR am Anfang der Schleife -- ein waehrend der
+                # (moeglicherweise mehrere Sekunden dauernden) Pipeline
+                # eingetretener Verlust wurde erst NACH dem kompletten
+                # Antwortversuch der NAECHSTEN Runde bemerkt. Unmittelbar
+                # VOR Antwortstart hier erneut geprueft (Abschnitt 3.3,
+                # "unmittelbar vor Antwortstart ... erneut pruefen") --
+                # bei einem Treffer wird zur Schleifenspitze gesprungen,
+                # die dieselbe Pruefung ohnehin schon durchfuehrt und den
+                # korrekten _finish()-Zustand erzeugt (keine Duplizierung
+                # der _finish()-Logik noetig).
+                if not self._safety_ok():
+                    continue
+                if track_id is not None and not self._track_alive(track_id):
+                    continue
+
                 # Entwicklungsauftrag 04-B, AP5A, Abschnitt 8: unmittelbar
                 # vor jeder tatsaechlichen PlayGesture-Action liest
                 # _gesture_and_wait() diesen Kontext erneut -- zusaetzliche
@@ -456,8 +526,19 @@ class RunDialogueActionServer(Node):
                 exec_result_holder = {}
 
                 def _run_exec():
-                    exec_result_holder["value"] = executor.execute(response_plan)
-                    exec_done.set()
+                    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3
+                    # (bestaetigter Fund): OHNE try/finally haette eine
+                    # Ausnahme aus executor.execute() exec_done NIE
+                    # gesetzt -- die Warteschleife unten haette (ohne
+                    # einen inzwischen eintreffenden Cancel) ENDLOS
+                    # gewartet.
+                    try:
+                        exec_result_holder["value"] = executor.execute(response_plan)
+                    except Exception as e:
+                        exec_result_holder["error"] = str(e)
+                        self.get_logger().error(f"Executor-Worker-Ausnahme: {e}")
+                    finally:
+                        exec_done.set()
 
                 exec_thread = threading.Thread(target=_run_exec, daemon=True)
                 exec_thread.start()
@@ -468,6 +549,11 @@ class RunDialogueActionServer(Node):
                         executor.cancel()
                         exec_done.wait(5.0)
                         break
+                if "error" in exec_result_holder:
+                    # Wie ein unbestaetigtes Ende behandeln: kein
+                    # Memory-Schreiben, keine neuen Segmente auf Basis
+                    # eines nicht zustandegekommenen Ergebnisses.
+                    continue
                 exec_result = exec_result_holder.get("value")
                 if exec_result is None:
                     # Selbst nach der Cancel-Kulanzzeit noch nicht fertig --
@@ -487,7 +573,28 @@ class RunDialogueActionServer(Node):
                 else:
                     recent_gestures.clear()
 
-                if memory_summary_candidate and person_context.get("known"):
+                # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.1
+                # (bestaetigter Fund): die bisherige Bedingung
+                # ('memory_summary_candidate vorhanden UND
+                # person_context.known') schrieb Memory auch nach einem
+                # Cancel/Fehlschlag WAEHREND der Ausfuehrung -- exec_result
+                # wurde dafuer nie konsultiert. Erfordert jetzt zusaetzlich
+                # exec_result.success (schliesst cancelled/nicht-erfolgreich
+                # aus, siehe ResponsePlanExecutor: cancelled impliziert
+                # stets success=False) UND einen frischen Recheck von
+                # Sicherheits-/Teilnehmerzustand UNMITTELBAR vor dem
+                # Schreiben selbst (Abschnitt 3.3, "unmittelbar vor ...
+                # Memory-Schreiben erneut pruefen") -- ein zwischen
+                # Ausfuehrungsende und diesem Punkt eingetretener Verlust
+                # blockiert das Schreiben, auch wenn die Ausfuehrung
+                # selbst noch erfolgreich war.
+                if (
+                    exec_result.success
+                    and memory_summary_candidate
+                    and person_context.get("known")
+                    and self._safety_ok()
+                    and (track_id is None or self._track_alive(track_id))
+                ):
                     self._write_memory_summary(session_id, memory_summary_candidate, question)
 
                 feedback(DialogueState.WAITING_FOR_FOLLOWUP, "WAITING_FOR_FOLLOWUP")
@@ -540,8 +647,8 @@ class RunDialogueActionServer(Node):
         req = GetPersonContext.Request()
         req.person_id = session_id
         future = self.get_person_context_client.call_async(req)
-        deadline = time.time() + 3.0
-        while not future.done() and time.time() < deadline:
+        deadline = time.monotonic() + 3.0
+        while not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
         if not future.done():
             return {"known": False, "display_name": None, "person_id": None}
@@ -556,8 +663,8 @@ class RunDialogueActionServer(Node):
         self._latest_transcript_event.clear()
         self._voice_command = None
         timeout = self.get_parameter("question_timeout_s").value
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
             if goal_handle.is_cancel_requested:
                 return None
             if self._voice_command is not None and is_hard_stop(self._voice_command):
@@ -606,13 +713,21 @@ class RunDialogueActionServer(Node):
         Trajektorienbewegung -- diese feinere Garantie haengt von
         qicli/NAOqi ab und ist ohne echten Hardwaretest nicht
         nachweisbar (hwverificationrequired, siehe
-        docs/DIALOGUE_GESTURE_LIFECYCLE.md)."""
-        started_at = time.time()
+        docs/DIALOGUE_GESTURE_LIFECYCLE.md).
+
+        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3: Zeitdeckel ueber
+        time.monotonic() (nicht time.time()/Wanduhrzeit) -- eine fruehere
+        Doku-Aussage, time.time() sei 'innerhalb eines Laufs monoton',
+        war schlicht falsch (time.time() kann durch NTP/manuelle
+        Zeitverstellung auch waehrend eines laufenden Zyklus ruecklaufen)
+        und wurde hier korrigiert, nicht nur im Text, sondern auch im
+        Code."""
+        started_at = time.monotonic()
         repetitions = 0
         while (
             not stop_event.is_set()
             and repetitions < max_repetitions
-            and (time.time() - started_at) < max_total_duration_s
+            and (time.monotonic() - started_at) < max_total_duration_s
         ):
             try:
                 self._gesture_and_wait("thinking_loop_subtle", 1.0)
@@ -652,7 +767,40 @@ class RunDialogueActionServer(Node):
         Ausserdem wird jetzt auch waehrend ACKNOWLEDGING/THINKING (nicht
         erst waehrend SPEAKING) sofort _cancel_active_actions() aufgerufen,
         damit eine noch laufende Bestaetigungsgeste bei einem Cancel
-        tatsaechlich abgebrochen wird, statt unbeaufsichtigt weiterzulaufen."""
+        tatsaechlich abgebrochen wird, statt unbeaufsichtigt weiterzulaufen.
+
+        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3 (bestaetigte
+        Funde, weitere Nachbesserung ueber Abschnitt 7 hinaus):
+        (1) Bei NORMALEM Pipeline-Ende wurde bisher NUR thinking_loop_stop
+        gesetzt und dann bis zu (max_duration_s + 2.0)s auf das
+        natuerliche Ende eines GERADE laufenden Denkgesten-Zyklus
+        gewartet, statt ihn aktiv abzubrechen -- verzoegert den
+        Antwortbeginn unnoetig. Jetzt wird _cancel_active_actions() AUCH
+        beim normalen Ende sofort aufgerufen (nicht nur bei einem
+        RunDialogue-Cancel).
+        (2) Ueberschritt der begrenzte Thread-Join sein Zeitlimit
+        (Thread noch am Leben), wurde trotzdem sicher weitergemacht, als
+        waere die Systemgeste sauber beendet -- eine unbestaetigt noch
+        laufende Geste haette so unkontrolliert mit der gleich
+        folgenden Antwort-Geste um dieselben Ressourcen konkurrieren
+        koennen. self._unconfirmed_system_gesture_thread verfolgt einen
+        solchen Thread jetzt sichtbar weiter; diese Methode verweigert
+        an ihrem eigenen Anfang JEDE neue Bestaetigungs-/Denkgeste,
+        solange ein frueherer Thread noch nicht nachweislich beendet
+        ist -- dieselbe 'unbestaetigtes Ende bleibt sichtbar gesperrt'-
+        Regel wie bei den Say-/PlayGesture-Action-Handles (Abschnitt
+        3.2/7)."""
+        if (
+            self._unconfirmed_system_gesture_thread is not None
+            and self._unconfirmed_system_gesture_thread.is_alive()
+        ):
+            self.get_logger().error(
+                "Eine fruehere Systemgeste (Denkschleife) ist immer noch nicht "
+                "bestaetigt beendet -- keine neue Bestaetigungs-/Denkgeste wird "
+                "gestartet, Runde wird sicher uebersprungen."
+            )
+            return None
+
         feedback(DialogueState.ACKNOWLEDGING, "ACKNOWLEDGING", question)
         acknowledge_done = threading.Event()
 
@@ -670,9 +818,21 @@ class RunDialogueActionServer(Node):
         pipeline_done = threading.Event()
 
         def _run():
-            pipeline_result["value"] = self._run_pipeline(
-                question, session_id, person_context, recent_gestures)
-            pipeline_done.set()
+            # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3 (bestaetigter
+            # Fund): OHNE try/finally haette eine Ausnahme aus
+            # _run_pipeline() pipeline_done NIE gesetzt -- die aeussere
+            # Warteschleife unten haette (ohne einen inzwischen
+            # eintreffenden Cancel) ENDLOS gewartet. Die Ausnahme wird
+            # jetzt als Ergebnis erfasst statt unbehandelt im Thread zu
+            # verschwinden.
+            try:
+                pipeline_result["value"] = self._run_pipeline(
+                    question, session_id, person_context, recent_gestures)
+            except Exception as e:
+                pipeline_result["error"] = str(e)
+                self.get_logger().error(f"Pipeline-Worker-Ausnahme: {e}")
+            finally:
+                pipeline_done.set()
 
         pipeline_thread = threading.Thread(target=_run, daemon=True)
         pipeline_thread.start()
@@ -680,7 +840,7 @@ class RunDialogueActionServer(Node):
         thinking_loop_stop = threading.Event()
         thinking_loop_thread = None
         loop_started = False
-        deadline = time.time() + self.get_parameter("thinking_loop_delay_s").value
+        deadline = time.monotonic() + self.get_parameter("thinking_loop_delay_s").value
         cancelled = False
 
         while not pipeline_done.wait(timeout=0.05):
@@ -689,7 +849,7 @@ class RunDialogueActionServer(Node):
                 thinking_loop_stop.set()
                 self._cancel_active_actions()
                 break
-            if not loop_started and time.time() >= deadline:
+            if not loop_started and time.monotonic() >= deadline:
                 feedback(DialogueState.WAITING_FOR_RESPONSE, "WAITING_FOR_RESPONSE", question)
                 thinking_loop_thread = threading.Thread(
                     target=self._run_thinking_loop,
@@ -705,7 +865,27 @@ class RunDialogueActionServer(Node):
 
         thinking_loop_stop.set()
         if thinking_loop_thread is not None:
+            # Aktiv abbrechen statt nur passiv auf das natuerliche Ende
+            # zu warten -- gilt jetzt fuer BEIDE Faelle (Cancel UND
+            # normales Pipeline-Ende), siehe Docstring oben.
+            self._cancel_active_actions()
             thinking_loop_thread.join(timeout=self.get_parameter("thinking_loop_max_duration_s").value + 2.0)
+            if thinking_loop_thread.is_alive():
+                self._unconfirmed_system_gesture_thread = thinking_loop_thread
+                self.get_logger().error(
+                    "thinking_loop_subtle nach Abbruch/Ende nicht rechtzeitig bestaetigt "
+                    "beendet -- bleibt sichtbar als unbestaetigt nachverfolgt, keine "
+                    "neue Systemgeste wird gestartet, bis dieser Thread nachweislich endet."
+                )
+                if not acknowledge_done.wait(timeout=2.0):
+                    self.get_logger().warning(
+                        "acknowledge_nod_small nach Cancel/Timeout nicht rechtzeitig bestaetigt -- "
+                        "bleibt unbeaufsichtigt im Hintergrund nachverfolgt (daemon-Thread)."
+                    )
+                return None
+            # Nachweislich beendet -- ein evtl. frueher hier eingetragener
+            # (laengst erledigter) Thread wird nicht mehr benoetigt.
+            self._unconfirmed_system_gesture_thread = None
         if not acknowledge_done.wait(timeout=2.0):
             self.get_logger().warning(
                 "acknowledge_nod_small nach Cancel/Timeout nicht rechtzeitig bestaetigt -- "
@@ -719,6 +899,12 @@ class RunDialogueActionServer(Node):
             return None
 
         pipeline_thread.join(timeout=1.0)  # sollte durch pipeline_done bereits fertig sein
+        if "error" in pipeline_result:
+            # Pipeline-Worker-Ausnahme (siehe oben): wie ein regulaerer
+            # Sicherheits-/Validierungsfehlschlag behandeln -- sicherer,
+            # begrenzter Fehlerpfad, keine Antwort/Geste/Memory-Schreiben
+            # auf Basis eines nicht zustandegekommenen Ergebnisses.
+            return None
         return pipeline_result.get("value")
 
     def _search_gestures(self, query: str, interaction_state: str, exclude_recent: list) -> list:
@@ -758,8 +944,8 @@ class RunDialogueActionServer(Node):
         request.include_system_only = False  # Auftrag Abschnitt 6, Regel 2
 
         future = self.search_gestures_client.call_async(request)
-        deadline = time.time() + timeout_s
-        while not future.done() and time.time() < deadline:
+        deadline = time.monotonic() + timeout_s
+        while not future.done() and time.monotonic() < deadline:
             time.sleep(0.01)
         if not future.done():
             self.get_logger().warn("search_gestures: Zeitueberschreitung -- keine Geste.")
@@ -931,8 +1117,8 @@ class RunDialogueActionServer(Node):
         req.valid_until_iso = time.strftime(
             "%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 180 * 86400))
         future = self.write_memory_client.call_async(req)
-        deadline = time.time() + 3.0
-        while not future.done() and time.time() < deadline:
+        deadline = time.monotonic() + 3.0
+        while not future.done() and time.monotonic() < deadline:
             time.sleep(0.02)
 
     # ---- blockierende Action-Aufrufe (Muster wie presentation_manager_node::_say_and_wait) ----
@@ -1037,7 +1223,31 @@ class RunDialogueActionServer(Node):
         Attributwert nie mehr beruehren. Eine NACH dem eigenen Timeout
         verspaetet eintreffende Annahme wird ausserdem sofort storniert
         (keine normale Fortsetzung), ihr Ergebnis wird nur noch
-        konsumiert, nie mehr verwendet."""
+        konsumiert, nie mehr verwendet.
+
+        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter
+        Fund, weitere Nachbesserung): der bisherige finally-Block gab
+        den Handle/Token UNBEDINGT frei -- auch dann, wenn nach dem
+        eigenen Timeout selbst die zusaetzliche 2.0s-Cancel-
+        Bestaetigungswartezeit KEIN Ergebnis brachte (done blieb
+        ungesetzt). Ein Timeout beweist aber kein terminales Ende einer
+        noch laufenden Action. Freigabe passiert jetzt NUR NOCH, wenn
+        done tatsaechlich gesetzt ist (Ergebnis angekommen ODER Ziel
+        klar abgelehnt) -- sonst bleibt active_goal_attr/der Token
+        UNVERAENDERT bestehen (weiterhin per _cancel_active_actions()
+        erreichbar) UND active_goal_attr wird als unbestaetigt markiert:
+        ein NEUER Aufruf fuer DASSELBE active_goal_attr wird verweigert
+        (sichtbarer Fehlerzustand, keine konkurrierende neue Ausfuehrung),
+        bis der irgendwann doch noch eintreffende echte on_result()-
+        Callback die Markierung wieder aufhebt und (als tatsaechlicher
+        Eigentuemer) korrekt aufraeumt."""
+        if active_goal_attr and active_goal_attr in self._unconfirmed_action_attrs:
+            self.get_logger().error(
+                f"'{active_goal_attr}' ist noch unbestaetigt (cancel_unconfirmed) -- "
+                "keine neue konkurrierende Ausfuehrung wird gestartet."
+            )
+            return False
+
         done = threading.Event()
         outcome = {"success": False}
         goal_state = {"handle": None}
@@ -1048,6 +1258,8 @@ class RunDialogueActionServer(Node):
             if active_goal_attr and self._active_goal_tokens.get(active_goal_attr) is call_token:
                 setattr(self, active_goal_attr, None)
                 self._active_goal_tokens.pop(active_goal_attr, None)
+            if active_goal_attr:
+                self._unconfirmed_action_attrs.discard(active_goal_attr)
 
         def on_result(fut):
             try:
@@ -1076,7 +1288,20 @@ class RunDialogueActionServer(Node):
                 except Exception:
                     self.get_logger().warning(
                         "Stornierung des verspaetet angenommenen Ziels fehlgeschlagen.", exc_info=True)
-                gh.get_result_async()  # terminales Ergebnis wird weiterhin konsumiert, nie mehr verwendet
+
+                def _on_late_result(_fut):
+                    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2: das
+                    # schliesslich doch eintreffende terminale Ergebnis
+                    # dieses verspaetet angenommenen (und sofort
+                    # stornierten) Ziels hebt NUR die eigene
+                    # Unbestaetigt-Markierung auf (siehe finally-Block
+                    # unten) -- ruehrt active_goal_attr/den Token NICHT
+                    # an, der koennte laengst einem neuen, legitimen
+                    # Aufruf gehoeren.
+                    if active_goal_attr:
+                        self._unconfirmed_action_attrs.discard(active_goal_attr)
+
+                gh.get_result_async().add_done_callback(_on_late_result)
                 return
             if active_goal_attr:
                 setattr(self, active_goal_attr, gh)
@@ -1103,7 +1328,14 @@ class RunDialogueActionServer(Node):
                 done.wait(2.0)
             return False
         finally:
-            _release_if_owner()
+            if done.is_set():
+                _release_if_owner()
+            elif active_goal_attr:
+                # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2: selbst
+                # nach der zusaetzlichen Cancel-Bestaetigungswartezeit
+                # kein Ergebnis -- NICHT freigeben, sondern sichtbar als
+                # unbestaetigt markieren (siehe Docstring oben).
+                self._unconfirmed_action_attrs.add(active_goal_attr)
 
     def _cancel_active_actions(self):
         """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: von

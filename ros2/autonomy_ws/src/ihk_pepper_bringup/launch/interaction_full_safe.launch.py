@@ -238,6 +238,26 @@ _MODE_FLAGS = {
     "group_interaction_dry_run":       (True, True, False, False, True),
 }
 
+# Entwicklungsauftrag 04-B, AP8.9, Abschnitt 4 (bestaetigter Fund): die
+# Bridge bekam bisher NUR den dry_run-Parameter -- execution_profile
+# blieb dadurch IMMER auf seinem sicheren Standard 'offline_mock' stehen
+# (siehe bridge_node.py::__init__/gesture_execution_policy.py), egal
+# welcher mode gewaehlt wurde. Fuer die VIER Modi mit bridge_dry_run=False
+# (production/respeaker_head_test/pepper_gesture_test/navigation_dry_run)
+# MUSS jetzt explizit ein hardwarefaehiges Profil gesetzt werden --
+# sonst waere z.B. production dauerhaft im NICHT-hardwarefaehigen
+# offline_mock-Profil gefangen (siehe
+# gesture_execution_policy.py::HARDWARE_CAPABLE_PROFILES), obwohl
+# dry_run=False bereits eine echte SSH-Verbindung erlaubt. Jeder andere
+# (bridge_dry_run=True) Modus bleibt beim sicheren 'offline_mock'.
+_MODE_EXECUTION_PROFILE = {mode_name: "offline_mock" for mode_name in VALID_MODES}
+_MODE_EXECUTION_PROFILE.update({
+    "production": "production",
+    "respeaker_head_test": "supervised_hardware_test",
+    "pepper_gesture_test": "supervised_hardware_test",
+    "navigation_dry_run": "supervised_hardware_test",
+})
+
 # Modi, in denen audio_node source_kind=respeaker_core_v2 verwenden soll
 # (statt des per audio_source_kind gewaehlten Werts) -- eigene
 # Konstante statt eines weiteren Tabellenindex, damit _MODE_FLAGS bei
@@ -249,13 +269,35 @@ RESPEAKER_AUDIO_MODES = (
 
 
 def _validate_mode_and_guards(
-        context, mode_arg, production_confirm_arg, head_test_confirm_arg, *args, **kwargs):
+        context, mode_arg, production_confirm_arg, head_test_confirm_arg,
+        gesture_test_confirm_arg, *args, **kwargs):
     mode = context.perform_substitution(mode_arg)
     if mode not in VALID_MODES:
         raise RuntimeError(
             f"interaction_full_safe.launch.py: unbekannter mode '{mode}'. "
             f"Erlaubt: {', '.join(VALID_MODES)}."
         )
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 6 (bestaetigter Fund):
+    # pepper_gesture_test/navigation_dry_run hatten bisher UEBERHAUPT
+    # KEINE Bestaetigungshuerde, obwohl beide bridge_dry_run=False setzen
+    # (echte SSH-Verbindung, echte Gesten-/Sprachausgabe moeglich) --
+    # anders als production/respeaker_head_test, die bereits je eine
+    # eigene i_confirm_*-Huerde verlangen. Dieselbe Huerde jetzt auch
+    # hier: KEINE echte Sicherheitspruefung, nur ein Schutz gegen
+    # versehentliches Copy-Paste eines Launch-Befehls.
+    if mode in ("pepper_gesture_test", "navigation_dry_run"):
+        if context.perform_substitution(gesture_test_confirm_arg) != "true":
+            raise RuntimeError(
+                f"interaction_full_safe.launch.py: mode={mode} verlangt "
+                "i_confirm_gesture_test_supervised:=true. Dieser Modus startet "
+                "die Bridge mit dry_run=false (echte SSH-Verbindung, echte "
+                "Say-/PlayGesture-Ausfuehrung moeglich) -- NUR mit einer "
+                "Bedienperson direkt am Roboter und physischem Not-Stopp in "
+                "Reichweite starten. Keine automatischen Ausloeser (kein "
+                "Perception-/Dialog-/BT-Knoten startet in pepper_gesture_test; "
+                "in navigation_dry_run bleibt nur Nav2/RealSense-seitig echt, "
+                "der /cmd_vel-Ausgang bleibt trotzdem auf einen Sink umgebogen)."
+            )
     if mode == "production":
         if context.perform_substitution(production_confirm_arg) != "true":
             raise RuntimeError(
@@ -384,6 +426,7 @@ def generate_launch_description():
     database_path = LaunchConfiguration("database_path")
     production_confirm = LaunchConfiguration("i_confirm_hardware_acceptance_complete")
     head_test_confirm = LaunchConfiguration("i_confirm_head_test_supervised")
+    gesture_test_confirm = LaunchConfiguration("i_confirm_gesture_test_supervised")
     respeaker_transport_kind = LaunchConfiguration("respeaker_transport_kind")
     respeaker_host = LaunchConfiguration("respeaker_host")
     respeaker_user = LaunchConfiguration("respeaker_user")
@@ -438,6 +481,13 @@ def generate_launch_description():
 
     is_dry_bridge = PythonExpression([repr(_MODE_FLAGS), "['", mode, "'][4]"])
     bridge_dry_run_param = PythonExpression(["'true' if ", is_dry_bridge, " else 'false'"])
+    # Entwicklungsauftrag 04-B, AP8.9, Abschnitt 4: siehe
+    # _MODE_EXECUTION_PROFILE oben -- die Bridge bekommt jetzt IMMER das
+    # zum gewaehlten mode passende execution_profile, nicht mehr nur
+    # dry_run.
+    execution_profile_param = PythonExpression([
+        f"{_MODE_EXECUTION_PROFILE!r}['", mode, "']"
+    ])
 
     ld = [
         DeclareLaunchArgument("mode", default_value="offline_test",
@@ -455,6 +505,9 @@ def generate_launch_description():
             description="NUR fuer mode=production. Siehe docs/NAVIGATION_SAFETY_ACCEPTANCE.md."),
         DeclareLaunchArgument("i_confirm_head_test_supervised", default_value="false",
             description="NUR fuer mode=respeaker_head_test. Siehe docs/RESPEAKER_HARDWARE_ACCEPTANCE.md, Phase C."),
+        DeclareLaunchArgument("i_confirm_gesture_test_supervised", default_value="false",
+            description="NUR fuer mode=pepper_gesture_test/navigation_dry_run (beide "
+                         "bridge_dry_run=false). Siehe docs/GESTURE_HARDWARE_ACCEPTANCE.md."),
         DeclareLaunchArgument("respeaker_transport_kind", default_value="mock",
             description="mock|local_alsa|ssh_pcm|network_pcm, siehe ihk_pepper_audio/respeaker_transport.py"),
         DeclareLaunchArgument("respeaker_host", default_value=""),
@@ -486,7 +539,7 @@ def generate_launch_description():
 
         OpaqueFunction(
             function=_validate_mode_and_guards,
-            args=[mode, production_confirm, head_test_confirm]),
+            args=[mode, production_confirm, head_test_confirm, gesture_test_confirm]),
         OpaqueFunction(
             function=_launch_identity_node,
             args=[
@@ -500,7 +553,10 @@ def generate_launch_description():
         Node(
             package="ihk_pepper_bridge", executable="bridge_node",
             namespace="pepper_bridge", output="screen",
-            parameters=[{"dry_run": bridge_dry_run_param}],
+            parameters=[{
+                "dry_run": bridge_dry_run_param,
+                "execution_profile": execution_profile_param,
+            }],
         ),
         Node(
             package="ihk_pepper_interaction", executable="supervisor_node", output="screen",
