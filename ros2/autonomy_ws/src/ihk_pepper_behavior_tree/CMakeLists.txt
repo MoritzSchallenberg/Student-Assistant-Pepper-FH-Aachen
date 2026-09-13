@@ -85,6 +85,22 @@ if(BUILD_TESTING)
     rclcpp rclcpp_action ihk_pepper_interfaces action_msgs std_msgs behaviortree_cpp
   )
 
+  # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6/7: funktionaler Test
+  # der Gruppenverlust-Praeemption -- ein echter ReactiveSequence-
+  # Teilbaum aus MonitorParticipants + RunDialogueViaBT (dieselbe
+  # Struktur wie GroupConversationLoop in pepper_main.xml), echte
+  # /perception/conversation_groups-Publikation, echter
+  # rclcpp_action-Fake-Server -- siehe test/test_bt_group_loss_preemption.cpp.
+  ament_add_gtest(
+    test_bt_group_loss_preemption test/test_bt_group_loss_preemption.cpp)
+  target_include_directories(test_bt_group_loss_preemption PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(test_bt_group_loss_preemption ihk_pepper_bt_nodes)
+  ament_target_dependencies(test_bt_group_loss_preemption
+    rclcpp rclcpp_action ihk_pepper_interfaces action_msgs std_msgs behaviortree_cpp
+  )
+
   find_package(ament_lint_auto REQUIRED)
   # ament_copyright: Copyright-Kopfzeilen sind in diesem Projekt keine
   # Konvention (keine andere Datei im Repo traegt eine) -- eine erfundene
