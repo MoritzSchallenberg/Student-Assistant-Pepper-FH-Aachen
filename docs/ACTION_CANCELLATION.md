@@ -268,3 +268,16 @@ konkurrierende Ausführung. Getestet in `test_run_dialogue_cancellation.py`
 (`test_send_goal_and_wait_does_not_release_the_handle_after_an_unconfirmed_timeout`,
 `test_a_new_call_is_refused_while_the_same_attr_is_still_unconfirmed`,
 `test_a_late_arriving_result_clears_the_unconfirmed_marker_and_releases_the_handle`).
+
+## Nachbesserung: Action-Ausführungsregistry statt Attributnamen-Set (Entwicklungsauftrag 04-B, AP8-R3)
+
+Bestätigter Fund: die oben beschriebene Kombination aus Handle-Attribut
++ Call-Token-Dict + `_unconfirmed_action_attrs`-Set konnte mehrere
+Ausführungen DESSELBEN Kanals nicht per Identität unterscheiden, nur
+per gemeinsamem Namen -- ein altes Ergebnis konnte dadurch die
+Unbestätigt-Markierung eines völlig anderen, neueren Datensatzes
+löschen. Ersetzt durch `_action_registry` (`channel ->
+_ActionExecutionRecord`, unter `_action_registry_lock`): Registrierung
+atomar VOR dem Senden, jede Mutation prüft Objektidentität. Vollständig
+dokumentiert in `docs/AP8_R3_RUNTIME_HARDENING.md`/
+`docs/DIALOGUE_GESTURE_LIFECYCLE.md` Abschnitt 11.

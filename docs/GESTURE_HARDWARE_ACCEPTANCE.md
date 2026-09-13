@@ -29,6 +29,16 @@ vollständiger, separater Abnahme (`docs/NAVIGATION_SAFETY_ACCEPTANCE.md`).
 `navigation_live.launch.py` wird für KEINEN Punkt dieses Dokuments
 gestartet.
 
+**Seit AP8-R3 zusätzlich erforderlich**: die betroffenen
+Ressourcenfreigaben müssen EXPLIZIT als Launch-Argumente gesetzt werden
+-- `allow_head_motion:=true`/`allow_arm_motion:=true`/
+`allow_torso_motion:=true`, je nachdem, welche Körperteile der
+jeweilige Test tatsächlich bewegt (Default überall `false`, auch in
+`mode=production`). Keine der beiden obigen Bestätigungshürden
+(`i_confirm_gesture_test_supervised`/`i_confirm_hardware_acceptance_complete`)
+gibt allein irgendeine Bewegungsfreigabe. Details:
+`docs/AP8_R3_RUNTIME_HARDENING.md`.
+
 ## Abnahmepunkte (jeder einzeln `hwverificationrequired`, bis nachgewiesen)
 
 1. **Rein lesendes Capture** (`gesturectl capture-sequence`/

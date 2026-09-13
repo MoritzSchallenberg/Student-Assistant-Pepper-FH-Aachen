@@ -340,3 +340,26 @@ gilt simuliert/sicher als `False` (siehe `docs/ACTUATOR_ARBITER.md`/
 Bewiesen über `test_bridge_node_health_offline_isolation.py` (ein Fake-
 Pepper-Client, der bei JEDEM echten Zugriffsversuch im `dry_run` sofort
 eine `AssertionError` auslöst).
+
+## 11. AP8-R3: Action-Registry, monotone Freshness, vertrauenswürdige Personen-ID, vollständige Unterbrechung
+
+Vollständig dokumentiert in `docs/AP8_R3_RUNTIME_HARDENING.md` (neu).
+Kurzfassung der vier bestätigten und geschlossenen Lücken: (1) die
+vorherige Handle-Attribut+Token+Set-Kombination in
+`_send_goal_and_wait()` konnte mehrere Ausführungen desselben Kanals
+nicht per Identität unterscheiden -- ersetzt durch eine kleine,
+lock-geschützte `_action_registry` (`channel -> _ActionExecutionRecord`),
+jede Mutation prüft Objektidentität statt nur den Kanalnamen; (2)
+`_track_alive()`/`_safety_ok()`/`_runtime_gesture_context()` vergleichen
+jetzt gegen `time.monotonic()` statt `time.time()` -- ein
+Wanduhrsprung macht einen veralteten Track/SafetyState nicht mehr
+fälschlich frisch; (3) `_load_person_context()`/
+`_write_memory_summary()` reichen `session_id` nicht mehr unmittelbar
+als `person_id` weiter, sondern nutzen die bestehende, vertrauens-
+würdige AP7-Zuordnung (`/identity/person_identities`) über
+`_resolve_persistent_person_id()`; (4) eine neue gemeinsame
+`_dialogue_abort_requested()`-Prüfung (Cancel/Safety/Personenverlust)
+wird jetzt in ALLEN drei Wartephasen konsultiert, statt nur
+`goal_handle.is_cancel_requested` -- ein Cancel während der
+Frage-Wartephase wird dadurch korrekt als `CANCELLED` statt
+fälschlich als `QUESTION_TIMEOUT` gemeldet.

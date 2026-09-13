@@ -127,3 +127,17 @@ unabhängig vom Profil — auch offline. Sie begrenzt aber nur die
 **kompilierte Solltrajektorie**; die tatsächliche Ausführungszeit wird
 zusätzlich vom Laufzeit-Watchdog begrenzt (siehe
 `docs/GESTURE_RUNTIME_CONTEXT.md`).
+
+## Ressourcenbelegung ist keine Bewegungsfreigabe (Entwicklungsauftrag 04-B, AP8-R3)
+
+`GestureExecutionPolicy.authorize()`/`resources_for_gesture()`
+beantworten NICHT, ob Kopf/Arme/Torso im aktuellen Modus überhaupt
+bewegt werden dürfen — eine erfolgreiche Autorisierung UND ein
+erworbenes Lease sind notwendig, aber nicht hinreichend. Eine
+zusätzliche, restriktive Schicht (`bridge_node.py::_resource_motion_denied()`,
+neue read_only-Parameter `allow_head_motion`/`allow_arm_motion`/
+`allow_torso_motion`) prüft VOR Lease-Erwerb zusätzlich, ob die
+betroffenen Ressourcen tatsächlich freigegeben sind — wirkungslos für
+`offline_mock`/`offline_preview` (dieselbe Ausnahme wie hier), aktiv für
+`supervised_hardware_test`/`production`. Details:
+`docs/AP8_R3_RUNTIME_HARDENING.md`.

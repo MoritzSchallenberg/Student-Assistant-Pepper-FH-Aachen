@@ -2891,3 +2891,106 @@ Neuentwicklung); eine gesondert autorisierte Hardwareabnahme (nach
 Bedienperson vor Ort); ein späteres Emotion-Gating (eigenständiges
 Arbeitspaket außerhalb des AP8-Gestenumfangs). Keine dieser vier Arbeiten
 wurde in diesem Commit begonnen.
+
+## AP8-R3: verbleibende Sicherheitslücken und Laufzeit-Härtung
+
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `200a97b`
+(entspricht exakt dem gemeldeten Stand), working tree sauber, Python
+`1806 bestanden, 3 übersprungen`, BT.CPP `29/0/0/5`, Katalog `24 Gesten`
+(`17 draft / 6 dry_run_validated / 1 live_validated`).
+
+Vollständig dokumentiert in `docs/AP8_R3_RUNTIME_HARDENING.md` (neu)
+und `docs/AP8_RUNTIME_PERFORMANCE.md` (neu) -- hier nur die
+Kurzfassung, keine Duplizierung.
+
+### Bestätigte und geschlossene Softwarelücken
+
+Vier bestätigte Lücken (Abschnitte 3/4/6 des Auftrags), jeweils mit
+Regressionstest geschlossen: (1) Action-Ausführungsregistry ersetzt die
+vorherige Kombination aus Handle-Attribut+Token+Attributnamen-Set, die
+mehrere Ausführungen desselben Kanals nicht per Identität unterscheiden
+konnte; (2) `time.monotonic()` statt `time.time()` für alle rein
+lokalen Freshness-Vergleiche in `run_dialogue_action_server.py`
+(bewusst NICHT auf die geteilte `safety_topics.py`-Kopie ausgeweitet);
+(3) `_resolve_persistent_person_id()` nutzt die bestehende AP7-
+Zuordnung (`/identity/person_identities`) statt `session_id`
+unmittelbar als `person_id` zu verwenden; (4) eine gemeinsame
+`_dialogue_abort_requested()`-Prüfung ersetzt separate, teilweise
+fehlende Cancel-Prüfungen in allen drei Wartephasen, korrigiert dabei
+auch einen bestätigten Fund: ein Cancel während der Frage-Wartephase
+wurde bisher fälschlich als `QUESTION_TIMEOUT` (`goal_handle.succeed()`)
+statt als `CANCELLED` (`goal_handle.canceled()`) gemeldet.
+
+### Getrennte Bewegungsfreigaben (Abschnitt 5)
+
+Drei neue, read_only deklarierte Bridge-Parameter
+(`allow_head_motion`/`allow_arm_motion`/`allow_torso_motion`, Default
+überall aus) als restriktive Zusatzschicht VOR Lease-Erwerb --
+wirkungslos für `offline_mock`/`offline_preview` (dieselbe Ausnahme wie
+bei der bestehenden `GestureExecutionPolicy`). `dry_run`/
+`execution_profile` zusätzlich auf `read_only=True` umgestellt --
+rclpy lehnt jeden nachträglichen `set_parameters()`-Versuch für alle
+fünf Parameter selbst ab (echter rclpy-Node-Test, kein Fake).
+`interaction_full_safe.launch.py` erhält drei neue Launch-Argumente
+(Default überall `"false"`), direkt an die Bridge durchgereicht.
+
+### Funktionale Nachweise und Katalogunveränderlichkeit
+
+12 der 12 im Auftrag geforderten Testpunkte (Abschnitt 7) sind
+funktional nachgewiesen (Zuordnungstabelle in
+`docs/AP8_R3_RUNTIME_HARDENING.md`, Abschnitt 4) -- eine Ausnahme
+("Safety-Verlust während Antwort verhindert weitere Segmente") ist NUR
+über Code-Struktur + dieselbe getestete Prüfung belegt, nicht über
+einen dedizierten End-zu-Ende-Test (Aufwand einer vollständigen
+`_execute()`-Nachbildung, siehe dortige "Verbleibende Softwarefehler").
+Neu: `test_bt_group_loss_preemption.cpp` (3 GTests) -- der zuvor
+komplett fehlende funktionale Nachweis für Gruppenverlust-Präemption
+über einen echten `ReactiveSequence`-Teilbaum + echten
+`rclcpp_action`-Server.
+
+Verifikation: `colcon build --symlink-install` (alle 15 Pakete, keine
+Fehler) → `python3 -m pytest ihk_pepper_tests/test -q` → **1819
+bestanden, 3 übersprungen** (vorher 1806/3 -- 13 neue Python-Tests: 2
+`test_run_dialogue_cancellation.py`-Nettozuwachs (bei kompletter
+Registry-Migration aller 17 dortigen Tests), 5
+`test_ap8_dialogue_lifecycle_offline_e2e.py`, 1
+`test_run_dialogue_real_ros2_integration.py`, 4
+`test_bridge_node_actuator_arbiter.py`, 1 neue Datei
+`test_bridge_node_read_only_safety_parameters.py`, 1 neue
+`test_interaction_full_safe_launch.py`-Wiring-Prüfung, `-1` durch
+Konsolidierung -- Nettosumme siehe Commit-Historie).
+`colcon test --packages-select ihk_pepper_behavior_tree` → **32/0/0/5**
+(vorher 29/0/0/5 -- 3 neue funktionale GTests). Katalog-Hashes/
+`gesturectl audit`-Ausgabe byte-identisch zur Baseline. Kein SSH-/
+qicli-Aufruf, kein echter LLM-Aufruf, kein `/cmd_vel`, keine
+Hardwarebewegung.
+
+### Benchmarks und Optimierungen (Abschnitt 8/9)
+
+`scripts/benchmark_ap8_runtime.py` (neu, ausschließlich offline, echter
+24-Gesten-Katalog). Kandidat A (Gestenindex-Snapshot-Cache in
+`gesture_index_db.py::GestureIndexStore`) umgesetzt -- gemessen
+~13.6x schneller (p50) für die Suche ohne Suchtext, ~10% schneller
+(p50) für Suchtext-Anfragen (dort dominiert die Embedding-Kodierung,
+nicht das SQL-Laden). Kandidat B (Warte-/Callback-Umstellung) bewusst
+NICHT umgesetzt -- Risiko/Nutzen-Abwägung ehrlich dokumentiert. Alle
+Zahlen/Bedingungen vollständig in `docs/AP8_RUNTIME_PERFORMANCE.md`.
+
+### Unveränderte Sicherheitsgrenzen
+
+`git diff --stat` gegen `gesture_execution_policy.py`/
+`gesture_catalog.py`/`gesture_cancellation.py` bleibt über den
+gesamten AP8-R3-Auftrag LEER. Produktionsgate (`overall_verdict==pass
+AND collision_checked==true`) unverändert, kein Fake-Collision-Backend
+im produktiven Pfad. Katalog unverändert (17/6/1, byte-identische
+Hashes/Fingerprints).
+
+### Bekannte Einschränkungen
+
+Kein dedizierter End-zu-Ende-Test für Safety-Verlust während der
+Antwortausführung (Code-Struktur + Prüfung ausreichend belegt, kein
+eigener Test); Kandidat B nicht umgesetzt. Beide bewusste, dokumentierte
+Entscheidungen, keine vergessene Arbeit. Working Tree sauber, kein
+Push, `main` unverändert, Secret-/Tracking-Scan sauber (nur
+Parameternamen/Kommentare als Treffer).

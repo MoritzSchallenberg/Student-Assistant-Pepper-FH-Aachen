@@ -20,6 +20,7 @@ hier, weil Gesture.__init__ diesen Fallback bereits SELBST auflest
 """
 import json
 import sqlite3
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -78,6 +79,20 @@ class GestureIndexStore:
         self._migrate_schema()
         self.conn.commit()
         self.embedding_backend = embedding_backend or create_embedding_backend()
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 9 (Kandidat A):
+        # search() lud bisher bei JEDER Anfrage saemtliche Zeilen aus
+        # SQLite neu und deserialisierte deren JSON-Felder erneut, auch
+        # wenn sich der Index seit der letzten Anfrage nicht veraendert
+        # hatte. Ein unveraenderlicher Snapshot (_cached_entries) wird
+        # jetzt genau EINMAL geladen und bis zum naechsten TATSAECHLICHEN
+        # reindex() (nicht dem fruehen 'unchanged'-Fingerprint-Pfad, der
+        # die Daten gar nicht aendert) wiederverwendet. Harte Filter
+        # (passes_hard_filters()) laufen weiterhin bei JEDER Anfrage neu
+        # gegen den aktuellen Request -- nur das teure Laden/
+        # Deserialisieren wird wiederverwendet, keine fertige
+        # Autorisierungsentscheidung wird je gecacht.
+        self._snapshot_lock = threading.Lock()
+        self._cached_entries = None
 
     def _migrate_schema(self) -> None:
         """Entwicklungsauftrag 04-B, AP8 (11/14): 'CREATE TABLE IF NOT
@@ -159,6 +174,12 @@ class GestureIndexStore:
             (fingerprint,),
         )
         self.conn.commit()
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 9: Invalidierung
+        # ERST nach erfolgreichem commit() -- ein zwischen DELETE und
+        # commit() abgefragter Snapshot bliebe sonst der ALTE, gueltige
+        # Stand (kein teilweise aufgebauter Index wird je sichtbar).
+        with self._snapshot_lock:
+            self._cached_entries = None
         return {
             "indexed_count": indexed,
             "skipped_count": len(reload_errors),
@@ -184,12 +205,28 @@ class GestureIndexStore:
             ))
         return entries
 
+    def _entries_snapshot(self) -> list:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 9 (Kandidat A):
+        gibt den unveraenderlichen, generationengebundenen Snapshot
+        zurueck -- laedt ihn genau einmal, wenn er (noch) fehlt oder
+        durch den letzten reindex() invalidiert wurde. Threadsicher
+        (mehrere gleichzeitige search()-Aufrufe teilen sich denselben
+        Ladevorgang, keiner baut versehentlich zweimal)."""
+        with self._snapshot_lock:
+            if self._cached_entries is None:
+                self._cached_entries = self._load_all_entries()
+            return self._cached_entries
+
     def search(self, request: GestureSearchRequest) -> list:
         """Gibt eine Liste von (GestureIndexEntry, score) zurueck --
-        reine Delegation an gesture_search.rank_candidates() nach dem
-        Laden aller Zeilen (der Katalog ist klein, kein Grund fuer eine
-        eigene SQL-Aehnlichkeitssuche)."""
-        entries = self._load_all_entries()
+        reine Delegation an gesture_search.rank_candidates() gegen den
+        aktuellen Snapshot (siehe _entries_snapshot()). Harte Filter
+        (passes_hard_filters(), Teil von rank_candidates()) laufen dabei
+        weiterhin bei JEDER Anfrage frisch gegen den aktuellen request --
+        gecacht wird ausschliesslich das teure SQL-Laden/JSON-
+        Deserialisieren, nie eine fertige Auswahl-/Autorisierungs-
+        entscheidung."""
+        entries = self._entries_snapshot()
         return rank_candidates(entries, request, self.embedding_backend)
 
     def entry_count(self) -> int:
