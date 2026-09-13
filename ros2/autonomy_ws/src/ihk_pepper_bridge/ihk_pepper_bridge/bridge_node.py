@@ -17,6 +17,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
+from rcl_interfaces.msg import ParameterDescriptor
 from std_msgs.msg import String, Bool, Float32, UInt8
 from sensor_msgs.msg import JointState
 from ament_index_python.packages import get_package_share_directory
@@ -25,7 +26,9 @@ from ihk_pepper_interfaces.action import Say, PlayGesture, SetHeadPose
 from ihk_pepper_interfaces.msg import ActuatorLease, InteractionCommand, SafetyState, SystemHealth
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease, RenewActuatorLease
 
-from ihk_pepper_interaction.actuator_arbiter import HEAD, PRIORITY_ATTRACT, PRIORITY_DIALOGUE
+from ihk_pepper_interaction.actuator_arbiter import (
+    BASE, HEAD, LEFT_ARM, PRIORITY_ATTRACT, PRIORITY_DIALOGUE, RIGHT_ARM, TORSO,
+)
 from ihk_pepper_interaction.interaction_state import InteractionState
 from ihk_pepper_interaction.resource_derivation import resources_for_gesture, resources_for_speech
 
@@ -130,6 +133,17 @@ class PepperBridgeNode(Node):
 
         self.declare_parameter("gesture_dir", DEFAULT_GESTURE_DIR)
         self.declare_parameter("health_publish_interval_s", 5.0)
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5 (bestaetigter
+        # Fund): "Ein Offline-Prozess darf nicht durch nachtraegliche
+        # ROS-Parameteraenderung hardwarefaehig werden." dry_run/
+        # execution_profile wurden bisher als GEWOEHNLICHE Parameter
+        # deklariert -- ein spaeterer set_parameters()-Aufruf (versehentlich
+        # oder absichtlich) haette sie zur Laufzeit aendern koennen.
+        # read_only=True laesst rclpy JEDEN nachtraeglichen
+        # Aenderungsversuch selbst ablehnen (eindeutige, von ROS2 selbst
+        # ausgesprochene Fehlermeldung), nicht erst eine eigene Pruefung
+        # hier im Code.
+        _READ_ONLY = ParameterDescriptor(read_only=True)
         # Entwicklungsauftrag 1, Abschnitt 12: erlaubt offline_test/
         # navigation_dry_run, den kompletten Behavior-Tree-Ablauf bis
         # CONVERSATION_READY zu durchlaufen, OHNE eine echte SSH-
@@ -137,7 +151,7 @@ class PepperBridgeNode(Node):
         # sofort Erfolg, OHNE pepper_client anzufassen. Siehe
         # gesture_catalog.py::play(dry_run=...), das dieselbe Idee schon
         # fuer die reine Katalog-Logik hatte.
-        self.declare_parameter("dry_run", False)
+        self.declare_parameter("dry_run", False, _READ_ONLY)
         if self.get_parameter("dry_run").value:
             self.get_logger().warn(
                 "pepper_bridge im dry_run-Modus -- KEINE echte SSH-Verbindung zu Pepper, "
@@ -152,13 +166,28 @@ class PepperBridgeNode(Node):
         # explizites Launch-Argument beruehrt damit NIE Hardware, selbst
         # wenn dry_run versehentlich auf False stuende (Verteidigung in
         # der Tiefe, siehe _execute_gesture()).
-        self.declare_parameter("execution_profile", PROFILE_OFFLINE_MOCK)
+        self.declare_parameter("execution_profile", PROFILE_OFFLINE_MOCK, _READ_ONLY)
         execution_profile = self.get_parameter("execution_profile").value
         if execution_profile not in VALID_EXECUTION_PROFILES:
             raise ValueError(
                 f"pepper_bridge: unbekanntes execution_profile '{execution_profile}' "
                 f"(erlaubt: {VALID_EXECUTION_PROFILES})"
             )
+
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: getrennte,
+        # ebenfalls schreibgeschuetzte Bewegungsfreigaben je Ressourcen-
+        # gruppe -- Ressourcenbelegung (resources_for_gesture()) und ein
+        # erfolgreich erworbenes Lease beantworten NICHT, ob eine
+        # Ressource im aktuellen Modus ueberhaupt freigegeben ist. Alle
+        # drei bleiben per Default AUS; ein Kopf-Test schaltet KEINE
+        # Arm-/Torsobewegung frei und umgekehrt (siehe
+        # _resource_motion_allowed()). Basisbewegung erhaelt durch diese
+        # drei Parameter KEINE Freigabe (bleibt ausschliesslich ueber das
+        # bestehende motion_capable/enable_live_motion-Zwei-Schluessel-
+        # System gesteuert, siehe supervisor_node.py/motion_guard_node.py).
+        self.declare_parameter("allow_head_motion", False, _READ_ONLY)
+        self.declare_parameter("allow_arm_motion", False, _READ_ONLY)
+        self.declare_parameter("allow_torso_motion", False, _READ_ONLY)
         self.gesture_policy = GestureExecutionPolicy()
         # Entwicklungsauftrag 04-B, AP8-R1.8: austauschbarer Erweiterungs-
         # punkt fuer ein spaeteres ECHTES Kollisions-Backend -- None
@@ -780,6 +809,55 @@ class PepperBridgeNode(Node):
                     )
         return ""
 
+    def _resource_motion_denied(self, resources) -> str:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5 (bestaetigter
+        Fund): Ressourcenbelegung (resources_for_gesture()) und ein
+        erfolgreich erworbenes Lease beantworten NICHT, ob Kopf/Arme/
+        Torso im AKTUELLEN Modus ueberhaupt bewegt werden duerfen.
+        Restriktive Zusatzschicht -- schraenkt NUR zusaetzlich ein,
+        ersetzt keine bestehende Status-/Safety-/Kollisions-/Compiler-/
+        Lease-Pruefung. Ein gemischtes Ziel (z.B. Kopf+Arm) braucht ALLE
+        betroffenen Freigaben; fehlt auch nur eine, wird das GESAMTE
+        Ziel abgelehnt (kein Teilausfuehren). Eine unbekannte Ressource
+        gilt fail-closed als abgelehnt (BASE ist ueber diese drei
+        Parameter STRUKTURELL nie erreichbar, siehe Docstring bei der
+        Parameterdeklaration -- eine Geste, die BASE als Ressource
+        haette, wuerde also ebenfalls IMMER abgelehnt, was korrekt ist:
+        Gesten bewegen nie die Basis). Gibt bei einer Ablehnung einen
+        menschenlesbaren Grund zurueck (sonst einen leeren String).
+
+        Wie GestureExecutionPolicy.authorize()/_watchdog_check() gilt
+        auch hier: Offline-Profile (nicht in HARDWARE_CAPABLE_PROFILES)
+        beruehren STRUKTURELL nie Hardware (effective_dry_run erzwingt
+        das unabhaengig davon) -- die Bewegungsfreigaben sind dort
+        bedeutungslos und wuerden sonst jeden offline_mock-Testlauf
+        (Standardprofil) blockieren, obwohl gar keine reale Bewegung
+        stattfindet."""
+        execution_profile = self.get_parameter("execution_profile").value
+        if execution_profile not in HARDWARE_CAPABLE_PROFILES:
+            return ""
+        allow_head = self.get_parameter("allow_head_motion").value
+        allow_arm = self.get_parameter("allow_arm_motion").value
+        allow_torso = self.get_parameter("allow_torso_motion").value
+        denied = []
+        for resource in resources:
+            if resource == HEAD:
+                if not allow_head:
+                    denied.append(f"{resource} (allow_head_motion=false)")
+            elif resource in (LEFT_ARM, RIGHT_ARM):
+                if not allow_arm:
+                    denied.append(f"{resource} (allow_arm_motion=false)")
+            elif resource == TORSO:
+                if not allow_torso:
+                    denied.append(f"{resource} (allow_torso_motion=false)")
+            else:
+                # BASE oder eine unbekannte Ressource -- ueber diese
+                # Schicht STRUKTURELL nie freigebbar.
+                denied.append(f"{resource} (keine Bewegungsfreigabe fuer diese Ressource verfuegbar)")
+        if denied:
+            return "Ressourcen nicht freigegeben: " + ", ".join(denied)
+        return ""
+
     def _unregister_active_execution(self, lease_id: str) -> None:
         with self._active_execution_lock:
             self._active_gesture_cancel_events.pop(lease_id, None)
@@ -1021,6 +1099,19 @@ class PepperBridgeNode(Node):
             self.get_logger().error(f"PlayGesture '{name}' abgelehnt: {e}")
             result.success = False
             result.error_message = str(e)
+            goal_handle.abort()
+            return result
+
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: getrennte
+        # Bewegungsfreigaben je Ressourcengruppe -- VOR Lease-Erwerb und
+        # jeder bewegungsausloesenden Vorbereitung (siehe
+        # _resource_motion_denied()). Schraenkt NUR zusaetzlich ein,
+        # ersetzt keine der obigen Pruefungen.
+        motion_denied = self._resource_motion_denied(resources)
+        if motion_denied:
+            self.get_logger().warn(f"PlayGesture '{name}' abgelehnt: {motion_denied}")
+            result.success = False
+            result.error_message = motion_denied
             goal_handle.abort()
             return result
 
@@ -1340,6 +1431,18 @@ class PepperBridgeNode(Node):
         except Exception as e:
             result.success = False
             result.error_message = f"Zielwinkel ausserhalb der Sicherheitsmarge: {e}"
+            goal_handle.abort()
+            return result
+
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: SetHeadPose
+        # unterliegt derselben HEAD-Freigabe wie eine Kopfgeste -- VOR
+        # Lease-Erwerb, unabhaengig von den obigen Winkel-/
+        # Frischepruefungen.
+        motion_denied = self._resource_motion_denied({HEAD})
+        if motion_denied:
+            self.get_logger().warn(f"SetHeadPose abgelehnt: {motion_denied}")
+            result.success = False
+            result.error_message = motion_denied
             goal_handle.abort()
             return result
 

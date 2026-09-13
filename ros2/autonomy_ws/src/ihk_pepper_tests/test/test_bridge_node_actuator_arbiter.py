@@ -187,6 +187,7 @@ class _FakeNode:
     _is_lease_revoked = PepperBridgeNode._is_lease_revoked
     _get_active_execution = PepperBridgeNode._get_active_execution
     _local_resource_conflict = PepperBridgeNode._local_resource_conflict
+    _resource_motion_denied = PepperBridgeNode._resource_motion_denied
     _unregister_active_execution = PepperBridgeNode._unregister_active_execution
     _renew_lease = PepperBridgeNode._renew_lease
     _watchdog_check = PepperBridgeNode._watchdog_check
@@ -196,13 +197,23 @@ class _FakeNode:
     def __init__(self, gesture_dir, dry_run=True, arbiter_available=True, arbiter_granted=True,
                  say_fn=None, execution_profile=PROFILE_OFFLINE_MOCK,
                  safety_ok=None, pepper_reachable=None, nav2_moving=None, mapping_active=None,
-                 play_trajectory_sleep_s=0.0):
+                 play_trajectory_sleep_s=0.0,
+                 allow_head_motion=True, allow_arm_motion=True, allow_torso_motion=True):
         from ihk_pepper_bridge import safety_topics
         self._params = {
             "dry_run": dry_run, "execution_profile": execution_profile,
             "safety_state_max_age_s": 2.0, "nav2_moving_max_age_s": 2.0,
             "mapping_active_max_age_s": 2.0, "interaction_state_max_age_s": 2.0,
             "pepper_reachable_max_age_s": 12.0,
+            # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: diese Datei
+            # testet Autorisierung/Lease/Watchdog, nicht die neue
+            # Bewegungsfreigabe-Schicht -- Default True haelt alle
+            # bestehenden Szenarien unveraendert lauffaehig. Eigene,
+            # dedizierte Tests unten pruefen _resource_motion_denied()
+            # explizit mit False.
+            "allow_head_motion": allow_head_motion,
+            "allow_arm_motion": allow_arm_motion,
+            "allow_torso_motion": allow_torso_motion,
         }
         self.gesture_policy = GestureExecutionPolicy()
         # Entwicklungsauftrag 04-B, AP8-R1.8: None (Standard) laesst
@@ -553,6 +564,92 @@ def test_gesture_execution_policy_allows_the_same_gesture_in_offline_mock(tmp_pa
     goal_handle = _FakeGoalHandle(_gesture_request(name="greet_open"))
     result = node._execute_gesture(goal_handle)
     assert result.success is True
+
+
+# ---- Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5/7: getrennte Bewegungsfreigaben ----
+
+def test_arm_gesture_is_denied_in_supervised_hardware_test_without_allow_arm_motion(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 7 (Testpunkt 6, hier
+    # zunaechst die einfache Form): eine reine Arm-Geste wird abgelehnt,
+    # solange allow_arm_motion nicht explizit gesetzt ist -- VOR
+    # Lease-Erwerb (kein acquire_lease_client-Aufruf).
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _dry_run_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        allow_head_motion=True, allow_arm_motion=False, allow_torso_motion=True,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="explicitly_dry_run_validated"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert "RIGHT_ARM" in result.error_message
+    assert node.acquire_lease_client.calls == []
+
+
+def test_head_permission_alone_does_not_unlock_an_arm_gesture(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 7 (Testpunkt 5): "Ein
+    # Kopf-Test erlaubt keine Arm-/Torso-Geste." allow_head_motion=True
+    # allein darf eine Arm-Geste NICHT freischalten.
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+    node = _FakeNode(
+        _dry_run_validated_gesture_dir(tmp_path), dry_run=False,
+        execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        allow_head_motion=True, allow_arm_motion=False, allow_torso_motion=False,
+    )
+    goal_handle = _FakeGoalHandle(_gesture_request(name="explicitly_dry_run_validated"))
+    result = node._execute_gesture(goal_handle)
+    assert result.success is False
+    assert node.acquire_lease_client.calls == []
+
+
+def test_mixed_head_and_arm_gesture_requires_both_permissions(tmp_path):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 7 (Testpunkt 6):
+    # "Gemischte Geste verlangt alle Ressourcenfreigaben." Eine Geste,
+    # die SOWOHL Kopf ALS AUCH Arm bewegt, darf nur mit BEIDEN
+    # Freigaben starten -- fehlt auch nur eine, wird das GESAMTE Ziel
+    # abgelehnt (kein Teilausfuehren).
+    import yaml
+    from ihk_pepper_bridge.gesture_execution_policy import PROFILE_SUPERVISED_HARDWARE_TEST
+
+    def _mixed_gesture_dir(tmp_path):
+        data = {
+            "name": "mixed_head_and_arm", "schema_version": 2,
+            "tested_status": "dry_run_validated", "tested_date": "2026-09-01",
+            "test_note": "Test-Fixture: synthetische Evidenz.",
+            "keyframes": [
+                {"time_from_start_s": 0.0, "joints": {"HeadYaw": 0.0, "RShoulderPitch": 0.0}},
+                {"time_from_start_s": 0.3, "joints": {"HeadYaw": 0.2, "RShoulderPitch": 0.3}},
+            ],
+            "max_duration_s": 5.0,
+        }
+        with open(tmp_path / "mixed_head_and_arm.yaml", "w") as f:
+            yaml.safe_dump(data, f)
+        return str(tmp_path)
+
+    gesture_dir = _mixed_gesture_dir(tmp_path)
+
+    # Nur Kopf erlaubt -- fehlende Arm-Freigabe lehnt das GESAMTE Ziel ab.
+    node_head_only = _FakeNode(
+        gesture_dir, dry_run=False, execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        allow_head_motion=True, allow_arm_motion=False, allow_torso_motion=False,
+    )
+    result_head_only = node_head_only._execute_gesture(
+        _FakeGoalHandle(_gesture_request(name="mixed_head_and_arm")))
+    assert result_head_only.success is False
+    assert node_head_only.acquire_lease_client.calls == []
+
+    # Beide Freigaben gesetzt -- jetzt erlaubt.
+    node_both = _FakeNode(
+        gesture_dir, dry_run=False, execution_profile=PROFILE_SUPERVISED_HARDWARE_TEST,
+        safety_ok=True, pepper_reachable=True, nav2_moving=False, mapping_active=False,
+        allow_head_motion=True, allow_arm_motion=True, allow_torso_motion=False,
+    )
+    result_both = node_both._execute_gesture(
+        _FakeGoalHandle(_gesture_request(name="mixed_head_and_arm")))
+    assert result_both.success is True
 
 
 def test_a_direct_action_call_cannot_bypass_the_policy_via_a_higher_speed_scale(tmp_path):

@@ -17,6 +17,7 @@ from ihk_pepper_bridge.bridge_node import (
     HEAD_YAW_OPERATIONAL_MIN_RAD,
     PepperBridgeNode,
 )
+from ihk_pepper_bridge.gesture_execution_policy import PROFILE_OFFLINE_MOCK
 from ihk_pepper_interfaces.action import SetHeadPose
 from ihk_pepper_interfaces.srv import AcquireActuatorLease, ReleaseActuatorLease
 
@@ -147,10 +148,21 @@ class _FakeNode:
     _goal_id_str = staticmethod(PepperBridgeNode._goal_id_str)
     _goal_callback_set_head_pose = PepperBridgeNode._goal_callback_set_head_pose
     _execute_set_head_pose = PepperBridgeNode._execute_set_head_pose
+    _resource_motion_denied = PepperBridgeNode._resource_motion_denied
 
     def __init__(self, dry_run=False, arbiter_available=True, arbiter_granted=True,
-                 play_trajectory_fn=None, final_yaw=None, final_pitch=None, now_s=1000.0):
-        self._params = {"dry_run": dry_run}
+                 play_trajectory_fn=None, final_yaw=None, final_pitch=None, now_s=1000.0,
+                 execution_profile=PROFILE_OFFLINE_MOCK, allow_head_motion=True):
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: execution_profile
+        # bleibt hier immer offline_mock (diese Datei testet nicht die
+        # Ausfuehrungsprofile) -- _resource_motion_denied() ist dadurch
+        # strukturell ein No-Op, allow_head_motion=True bleibt trotzdem
+        # gesetzt fuer den Fall, dass ein Test explizit
+        # execution_profile=supervised_hardware_test uebergibt.
+        self._params = {
+            "dry_run": dry_run, "execution_profile": execution_profile,
+            "allow_head_motion": allow_head_motion,
+        }
         self.pepper = _FakePepperClient(
             play_trajectory_fn=play_trajectory_fn, final_yaw=final_yaw, final_pitch=final_pitch)
         self.interrupt_channel = _FakeInterruptChannel()

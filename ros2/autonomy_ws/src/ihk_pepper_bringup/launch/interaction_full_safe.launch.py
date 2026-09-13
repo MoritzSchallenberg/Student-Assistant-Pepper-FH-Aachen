@@ -427,6 +427,9 @@ def generate_launch_description():
     production_confirm = LaunchConfiguration("i_confirm_hardware_acceptance_complete")
     head_test_confirm = LaunchConfiguration("i_confirm_head_test_supervised")
     gesture_test_confirm = LaunchConfiguration("i_confirm_gesture_test_supervised")
+    allow_head_motion = LaunchConfiguration("allow_head_motion")
+    allow_arm_motion = LaunchConfiguration("allow_arm_motion")
+    allow_torso_motion = LaunchConfiguration("allow_torso_motion")
     respeaker_transport_kind = LaunchConfiguration("respeaker_transport_kind")
     respeaker_host = LaunchConfiguration("respeaker_host")
     respeaker_user = LaunchConfiguration("respeaker_user")
@@ -508,6 +511,22 @@ def generate_launch_description():
         DeclareLaunchArgument("i_confirm_gesture_test_supervised", default_value="false",
             description="NUR fuer mode=pepper_gesture_test/navigation_dry_run (beide "
                          "bridge_dry_run=false). Siehe docs/GESTURE_HARDWARE_ACCEPTANCE.md."),
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: getrennte
+        # Bewegungsfreigaben je Ressourcengruppe -- WEDER
+        # i_confirm_gesture_test_supervised NOCH
+        # i_confirm_hardware_acceptance_complete geben allein irgendeine
+        # Bewegungsfreigabe ("Ein Bestaetigungsflag allein ersetzt keine
+        # Ressourcenfreigabe"). Alle drei bleiben per Default aus, in
+        # JEDEM Modus (auch production) -- ein Bediener muss sie
+        # zusaetzlich EXPLIZIT setzen. Wirkungslos, solange
+        # execution_profile nicht hardwarefaehig ist (offline_mock/
+        # offline_preview), siehe bridge_node.py::_resource_motion_denied().
+        DeclareLaunchArgument("allow_head_motion", default_value="false",
+            description="Bridge-Parameter, siehe docs/GESTURE_HARDWARE_ACCEPTANCE.md."),
+        DeclareLaunchArgument("allow_arm_motion", default_value="false",
+            description="Bridge-Parameter, siehe docs/GESTURE_HARDWARE_ACCEPTANCE.md."),
+        DeclareLaunchArgument("allow_torso_motion", default_value="false",
+            description="Bridge-Parameter, siehe docs/GESTURE_HARDWARE_ACCEPTANCE.md."),
         DeclareLaunchArgument("respeaker_transport_kind", default_value="mock",
             description="mock|local_alsa|ssh_pcm|network_pcm, siehe ihk_pepper_audio/respeaker_transport.py"),
         DeclareLaunchArgument("respeaker_host", default_value=""),
@@ -556,6 +575,9 @@ def generate_launch_description():
             parameters=[{
                 "dry_run": bridge_dry_run_param,
                 "execution_profile": execution_profile_param,
+                "allow_head_motion": allow_head_motion,
+                "allow_arm_motion": allow_arm_motion,
+                "allow_torso_motion": allow_torso_motion,
             }],
         ),
         Node(

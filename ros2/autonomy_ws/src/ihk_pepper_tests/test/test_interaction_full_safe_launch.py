@@ -165,6 +165,43 @@ def test_bridge_dry_run_modes_stay_on_the_safe_offline_mock_profile(launch_modul
     assert launch_module._MODE_EXECUTION_PROFILE[mode] == "offline_mock"
 
 
+def test_bridge_node_motion_permissions_default_to_false_and_are_wired_through(launch_module):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 5: allow_head_motion/
+    # allow_arm_motion/allow_torso_motion muessen tatsaechlich an die
+    # Bridge durchgereicht werden (nicht nur deklariert sein) und per
+    # Default "false" bleiben, unabhaengig vom gewaehlten mode.
+    from launch.utilities import perform_substitutions
+    ld = launch_module.generate_launch_description()
+    bridge_node = next(
+        a for a in ld.entities if getattr(a, "node_executable", None) == "bridge_node")
+    param_dict = bridge_node._Node__parameters[0]
+    ctx = LaunchContext()
+    ctx.launch_configurations["mode"] = "production"
+    # DeclareLaunchArgument-Defaults werden erst beim tatsaechlichen
+    # Visitieren der LaunchDescription in den Kontext geschrieben (nicht
+    # bei einem manuell konstruierten LaunchContext) -- hier explizit
+    # auf den deklarierten Default gesetzt, um die WIRING (nicht die
+    # Deklaration selbst) zu pruefen.
+    ctx.launch_configurations["allow_head_motion"] = "false"
+    ctx.launch_configurations["allow_arm_motion"] = "false"
+    ctx.launch_configurations["allow_torso_motion"] = "false"
+    resolved = {
+        perform_substitutions(ctx, list(key)): perform_substitutions(ctx, list(value))
+        for key, value in param_dict.items()
+    }
+    assert resolved["allow_head_motion"] == "false"
+    assert resolved["allow_arm_motion"] == "false"
+    assert resolved["allow_torso_motion"] == "false"
+
+    ctx.launch_configurations["allow_arm_motion"] = "true"
+    resolved_after_change = {
+        perform_substitutions(ctx, list(key)): perform_substitutions(ctx, list(value))
+        for key, value in param_dict.items()
+    }
+    assert resolved_after_change["allow_arm_motion"] == "true"
+    assert resolved_after_change["allow_head_motion"] == "false"  # unabhaengig von allow_arm_motion
+
+
 def test_motion_capable_and_enable_live_motion_default_to_false(launch_module):
     ld = launch_module.generate_launch_description()
     declares = {
