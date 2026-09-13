@@ -67,6 +67,14 @@ class _FakeNode:
     def get_parameter(self, name):
         return _FakeParam(self._params[name])
 
+    def _dialogue_abort_requested(self, goal_handle, track_id):
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: diese Testdatei
+        # prueft ausschliesslich Cancel-/Denkschleifen-Verhalten, keine
+        # Safety-/Personenpruefung -- einfacher Stub statt der echten,
+        # ungebundenen Methode (die zusaetzliche _safety_ok()/_track_alive()-
+        # Infrastruktur braeuchte, die hier nicht Gegenstand des Tests ist).
+        return goal_handle.is_cancel_requested
+
     def get_logger(self):
         return _FakeLogger()
 

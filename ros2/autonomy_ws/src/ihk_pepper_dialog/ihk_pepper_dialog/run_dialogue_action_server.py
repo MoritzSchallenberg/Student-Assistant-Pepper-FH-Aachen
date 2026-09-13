@@ -29,6 +29,7 @@ response_llm_provider (LLM 3) gedacht -- knowledge_llm_provider/
 gesture_llm_provider bleiben technisch frei waehlbar, u.a. weiterhin
 "offline"/"mock".
 """
+import dataclasses
 import os
 import threading
 import time
@@ -42,7 +43,7 @@ from std_msgs.msg import Bool, String
 
 from ihk_pepper_audio.cancel_words import detect_command, is_hard_stop
 from ihk_pepper_interfaces.action import PlayGesture, RunDialogue, Say
-from ihk_pepper_interfaces.msg import DialogueState, PersonTrackArray, SafetyState
+from ihk_pepper_interfaces.msg import DialogueState, PersonIdentityArray, PersonTrackArray, SafetyState
 from ihk_pepper_interfaces.srv import GetPersonContext, SearchGestures, WriteMemorySummary
 
 from ihk_pepper_llm_contracts.gesture_planner import GestureOption, GesturePlanRequest
@@ -83,12 +84,49 @@ MAPPING_ACTIVE_MAX_AGE_S = 2.0
 GESTURE_IN_PROGRESS_MAX_AGE_S = 2.0
 CONNECTION_STATE_MAX_AGE_S = 5.0
 SAFETY_STATE_MAX_AGE_S = 2.0
+# Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter Fund):
+# _load_person_context()/_write_memory_summary() reichten session_id
+# bisher UNMITTELBAR als person_id an die Memory-Services weiter --
+# session_id/track_id sind aber NUR fuer die Dauer der Sichtbarkeit
+# gueltig (siehe PersonTrack.msg/PersonIdentity.msg-Docstrings), niemals
+# eine dauerhafte Personen-ID. /identity/person_identities (AP7,
+# Abschnitt 9) ist die bestehende, vertrauenswuerdige Zuordnung
+# track_id -> person_id (bereits konsens-/liveness-/mehrfach-bestaetigt,
+# siehe identity_frame_processor.py) -- wird jetzt tatsaechlich genutzt,
+# statt sie zu umgehen.
+PERSON_IDENTITY_MAX_AGE_S = 3.0
 
 # Beide Systemgesten (Ergaenzungsauftrag 04-A) bewegen den Kopf
 # (HeadPitch) -- nie ueber die LLM-Allowlist gesteuert, deshalb hier als
 # eigene, feste Menge fuer den Recheck in _recheck_before_gesture()
 # (Abschnitt 8) statt ueber PlanContext.head_gesture_names.
 SYSTEM_GESTURES_AFFECTING_HEAD = frozenset({"acknowledge_nod_small", "thinking_loop_subtle"})
+
+
+@dataclasses.dataclass
+class _ActionExecutionRecord:
+    """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 3: EIN Ausfuehrungs-
+    datensatz pro tatsaechlichem _send_goal_and_wait()-Aufruf auf einem
+    Kanal ("say"/"gesture"). Ersetzt die vorherige Kombination aus
+    Handle-Attribut + Call-Token-Dict + einem SET von Attributnamen, die
+    mehrere Ausfuehrungen desselben Kanals nur ueber einen gemeinsamen
+    STRING (nicht per Objektidentitaet) unterschied -- ein alter
+    Callback konnte dadurch faelschlich den Zustand eines neueren
+    Datensatzes veraendern (bestaetigter Fund). Jede Mutation dieses
+    Objekts MUSS vorher pruefen, dass `self._action_registry.get(channel)
+    is <dieser Datensatz>` gilt (siehe _send_goal_and_wait())."""
+
+    channel: str
+    action_type: str
+    session_id: str
+    generation: int
+    goal_id: object = None
+    handle: object = None
+    pending_acceptance: bool = True
+    cancel_requested: bool = False
+    terminal: bool = False
+    terminal_success: bool = False
+    unconfirmed: bool = False
 
 
 def build_faq_cache(db_path: str):
@@ -180,6 +218,10 @@ class RunDialogueActionServer(Node):
         self.faq = faq_cache
 
         self._tracks = {}  # track_id -> (PersonTrack, empfangszeit)
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: track_id ->
+        # (PersonIdentity, monotone Empfangszeit) -- siehe
+        # _resolve_persistent_person_id()/_on_person_identities().
+        self._person_identities = {}
         self._safety_state = None
         self._safety_state_received_at = None
         self._latest_transcript = None
@@ -203,31 +245,43 @@ class RunDialogueActionServer(Node):
         # von _gesture_and_wait() unmittelbar vor jeder Action gelesen
         # (Abschnitt 8) -- None ausserhalb eines Turns/fuer Systemgesten.
         self._current_gesture_recheck_context = None
-        # Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: der jeweils
-        # AKTUELL laufende Say-/PlayGesture-Goal-Handle -- ermoeglicht
-        # _cancel_active_actions(), eine bereits laufende Action aktiv
-        # abzubrechen (nicht nur zwischen zwei Segmenten zu pruefen).
-        self._active_say_goal_handle = None
-        self._active_gesture_goal_handle = None
-        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 7/3.3 (bestaetigter
-        # Fund): _send_goal_and_wait() setzte active_goal_attr bisher
-        # OHNE Eigentuemerpruefung -- ein NACH dem eigenen Timeout
-        # verspaetet eintreffendes on_goal_response() konnte den Handle
-        # EINES ANDEREN, inzwischen neu gestarteten Aufrufs ueberschreiben
-        # (oder der eigene finally-Block konnte einen bereits vom
-        # naechsten Aufruf gesetzten Handle wieder loeschen). Ein
-        # Call-Token pro _send_goal_and_wait()-Aufruf bindet jede
-        # Schreib-/Loeschoperation auf active_goal_attr an genau DIESEN
-        # Aufruf -- ein fremder/veralteter Aufruf darf sie nie beruehren.
-        self._active_goal_tokens = {}
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 3 (bestaetigter
+        # Fund): die vorherige Kombination aus zwei Handle-Attributen +
+        # einem Call-Token-Dict + einem SET von Attributnamen
+        # ("_unconfirmed_action_attrs") konnte mehrere Ausfuehrungen
+        # DESSELBEN Kanals nicht zuverlaessig auseinanderhalten -- ein
+        # Set kennt nur "der Name X ist unbestaetigt", nicht "WELCHE
+        # Ausfuehrung X als unbestaetigt markiert hat". Reproduzierter
+        # Fehler: Aufruf A laeuft -> Aufruf B desselben Kanals startet
+        # (moeglich, da der alte Check kein atomares Reservieren war)
+        # -> B erreicht sein eigenes Timeout, wird unbestaetigt markiert
+        # -> As spaeter eintreffendes Ergebnis loescht (ueber denselben
+        # Attributnamen) BS Unbestaetigt-Markierung, obwohl B selbst
+        # weiterhin kein terminales Ergebnis hat.
+        #
+        # Ersetzt durch eine kleine, gemeinsam durch _action_registry_lock
+        # geschuetzte Registry: pro "Kanal" (aktuell "say"/"gesture") hoechstens
+        # EIN _ActionExecutionRecord, jeweils per Objektidentitaet (nicht
+        # per Name) an genau den Aufruf gebunden, der ihn angelegt hat.
+        # Siehe _send_goal_and_wait()/_cancel_active_actions() fuer die
+        # vollstaendige Semantik.
+        self._action_registry_lock = threading.Lock()
+        self._action_registry = {}  # channel (str) -> _ActionExecutionRecord
         # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 4 (bestaetigter
         # Fund): _goal_callback() akzeptierte bisher JEDES eingehende
         # RunDialogue-Ziel bedingungslos -- mehrere gleichzeitig aktive
         # Sitzungen haetten sich dieselben, ungeschuetzten globalen
-        # Action-Handles (oben) geteilt. Erzwingt jetzt Einzelaktivitaet:
+        # Action-Handles geteilt. Erzwingt jetzt Einzelaktivitaet:
         # ein zweites Ziel wird abgelehnt, waehrend eines bereits laeuft.
         self._active_execution_lock = threading.Lock()
         self._active_session_id = None
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: monoton
+        # steigender Zaehler je NEUER Antwortrunde (siehe _execute()) --
+        # bindet jeden _send_goal_and_wait()-Aufruf/Registry-Eintrag an
+        # die Runde, aus der er stammt, damit ein spaetes Ergebnis einer
+        # laengst beendeten Runde erkennbar bleibt (defense in depth,
+        # zusaetzlich zur ohnehin bestehenden Session-Bindung).
+        self._response_generation = 0
         # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3 (bestaetigter
         # Fund): ein Denkschleifen-Thread, dessen begrenzter Join nach
         # einem Abbruch/normalem Ende bereits ueberschritten wurde (der
@@ -236,18 +290,6 @@ class RunDialogueActionServer(Node):
         # verweigert _acknowledge_and_run_pipeline() jede neue
         # Bestaetigungs-/Denkgeste (siehe dortiger Docstring).
         self._unconfirmed_system_gesture_thread = None
-        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter
-        # Fund): _send_goal_and_wait() gab den Handle/Token einer Say-/
-        # PlayGesture-Action bisher AUCH dann frei, wenn ihr
-        # tatsaechliches Ende nach einem eigenen Timeout NIE bestaetigt
-        # wurde -- ein Timeout/eine beendete Dialogrunde bewies dabei
-        # kein terminales Ende der noch laufenden Action. Dieses Set
-        # verfolgt active_goal_attr-Namen, deren letzte Ausfuehrung
-        # unbestaetigt blieb: eine neue Ausfuehrung fuer DASSELBE
-        # active_goal_attr wird verweigert, bis der spaeter doch noch
-        # eintreffende echte Ergebnis-Callback (on_result) den Eintrag
-        # wieder entfernt.
-        self._unconfirmed_action_attrs = set()
 
         cb_group = ReentrantCallbackGroup()
 
@@ -262,6 +304,11 @@ class RunDialogueActionServer(Node):
             Bool, safety_topics.GESTURE_IN_PROGRESS_TOPIC, self._on_gesture_in_progress, 10)
         self.create_subscription(
             String, safety_topics.CONNECTION_STATE_TOPIC, self._on_connection_state, 10)
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: track_id ->
+        # (PersonIdentity, monotone Empfangszeit) -- siehe
+        # _resolve_persistent_person_id().
+        self.create_subscription(
+            PersonIdentityArray, "/identity/person_identities", self._on_person_identities, 10)
 
         self.speaking_pub = self.create_publisher(Bool, "speaking", 10)
         self.dialogue_state_pub = self.create_publisher(DialogueState, "dialogue_state", 10)
@@ -293,13 +340,30 @@ class RunDialogueActionServer(Node):
     # ---- eingehende Daten ----
 
     def _on_tracks(self, msg: PersonTrackArray):
-        now = time.time()
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 4 (bestaetigter
+        # Fund): time.time() (Wanduhr) fuer den lokalen Empfangszeit-
+        # stempel konnte durch eine NTP-Korrektur/manuelle Verstellung
+        # rueckwaerts springen -- ein bereits veralteter Track wuerde
+        # dadurch wieder als frisch gelten (siehe _track_alive()).
+        # time.monotonic() dient hier AUSSCHLIESSLICH der lokalen
+        # Altersberechnung, wird NIE als ROS-/Datenbankzeitstempel
+        # veroeffentlicht (siehe dortige Docstrings fuer die bewusst
+        # UNVERAENDERTEN Wanduhr-Domaenen).
+        now = time.monotonic()
         for t in msg.tracks:
             self._tracks[t.track_id] = (t, now)
 
+    def _on_person_identities(self, msg: PersonIdentityArray):
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: track_id ->
+        # (PersonIdentity, monotone Empfangszeit) -- siehe
+        # _resolve_persistent_person_id().
+        now = time.monotonic()
+        for identity in msg.identities:
+            self._person_identities[identity.track_id] = (identity, now)
+
     def _on_safety_state(self, msg: SafetyState):
         self._safety_state = msg
-        self._safety_state_received_at = time.time()
+        self._safety_state_received_at = time.monotonic()
 
     def _on_transcript(self, msg: String):
         self._latest_transcript = msg.data
@@ -309,33 +373,97 @@ class RunDialogueActionServer(Node):
         self._voice_command = detect_command(msg.data)
 
     def _on_nav2_moving(self, msg: Bool):
-        self._nav2_moving.update(msg.data, time.time())
+        self._nav2_moving.update(msg.data, time.monotonic())
 
     def _on_mapping_active(self, msg: Bool):
-        self._mapping_active.update(msg.data, time.time())
+        self._mapping_active.update(msg.data, time.monotonic())
 
     def _on_gesture_in_progress(self, msg: Bool):
-        self._gesture_in_progress_fresh.update(msg.data, time.time())
+        self._gesture_in_progress_fresh.update(msg.data, time.monotonic())
 
     def _on_connection_state(self, msg: String):
-        self._pepper_connected.update(msg.data == "connected", time.time())
+        self._pepper_connected.update(msg.data == "connected", time.monotonic())
 
     def _track_alive(self, track_id) -> bool:
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 4: monotoner
+        # Vergleich -- siehe _on_tracks() fuer die Begruendung. received_at
+        # stammt selbst bereits aus time.monotonic() (siehe dort).
         entry = self._tracks.get(track_id)
         if entry is None:
             return False
         _, received_at = entry
-        return (time.time() - received_at) <= MAX_TRACK_AGE_S
+        return (time.monotonic() - received_at) <= MAX_TRACK_AGE_S
+
+    def _resolve_persistent_person_id(self, session_id) -> str:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+        Fund): _load_person_context()/_write_memory_summary() reichten
+        session_id bisher UNMITTELBAR als person_id an die Memory-
+        Services weiter -- session_id kann ein reiner Track-Bezeichner
+        sein (nur fuer die Dauer der Sichtbarkeit gueltig), NIEMALS eine
+        dauerhafte Personen-ID.
+
+        Nutzt jetzt die bestehende, vertrauenswuerdige AP7-Zuordnung
+        (`/identity/person_identities`, von identity_frame_processor.py
+        NUR nach mehrfach bestaetigtem Gesichtsabgleich + Liveness-
+        Pruefung + Einwilligung veroeffentlicht, siehe PersonIdentity.msg-
+        Docstring). Liefert die dauerhafte person_id NUR, wenn ALLE
+        gelten: session_id ist ein gueltiger track_id, ein frischer
+        PersonIdentity-Eintrag fuer genau diesen Track existiert, UND
+        `known`+`consent_granted` sind beide true. Fehlt irgendeine
+        dieser Bedingungen, liefert diese Methode None -- der Aufrufer
+        MUSS das als 'keine vertrauenswuerdige Identitaet, kein
+        persoenliches Memory lesen/schreiben' behandeln (siehe
+        _load_person_context()/_write_memory_summary())."""
+        track_id = _try_parse_int(session_id)
+        if track_id is None:
+            return None
+        entry = self._person_identities.get(track_id)
+        if entry is None:
+            return None
+        identity, received_at = entry
+        if (time.monotonic() - received_at) > PERSON_IDENTITY_MAX_AGE_S:
+            return None
+        if not identity.known or not identity.consent_granted:
+            return None
+        return identity.person_id or None
 
     def _safety_ok(self) -> bool:
         """Entwicklungsauftrag 04-B, AP5A: SafetyState unbekannt (nie
         empfangen ODER veraltet) sperrt den GESAMTEN Plan -- dieselbe
-        fail-closed Regel wie ein fehlendes Signal in motion_guard_node.py."""
+        fail-closed Regel wie ein fehlendes Signal in motion_guard_node.py.
+
+        Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 4: monotoner Vergleich
+        gegen _safety_state_received_at (selbst aus time.monotonic(),
+        siehe _on_safety_state()) -- ein Wanduhrsprung darf einen
+        veralteten SafetyState nie wieder als frisch erscheinen lassen."""
         if self._safety_state is None or self._safety_state_received_at is None:
             return False
-        if (time.time() - self._safety_state_received_at) > SAFETY_STATE_MAX_AGE_S:
+        if (time.monotonic() - self._safety_state_received_at) > SAFETY_STATE_MAX_AGE_S:
             return False
         return not self._safety_state.emergency_stop and not self._safety_state.bumper_active
+
+    def _dialogue_abort_requested(self, goal_handle, track_id) -> bool:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+        Fund): die einzelnen Wartephasen (Frage-Wartephase, Pipeline/
+        Denkschleife, Antwortausfuehrung) prueften bisher NUR
+        goal_handle.is_cancel_requested -- ein waehrend dieser Phasen
+        eintretender Safety-/Personenverlust wurde erst NACH der
+        jeweiligen Phase (am naechsten Schleifenanfang bzw. beim
+        Recheck vor Antwortstart) bemerkt. EINE gemeinsame Pruefung
+        statt je einer eigenen (potenziell auseinanderlaufenden) Kopie
+        derselben Regeln in jeder Phase -- ROS-Cancel/Codewort laufen
+        beide ueber denselben goal_handle.is_cancel_requested-Pfad
+        (Codewort-Weiterleitung nutzt denselben Mechanismus, siehe
+        docs/DIALOGUE_GESTURE_LIFECYCLE.md), Gruppenverlust praeemptiert
+        ueber dieselbe Kette (BT-seitiges MonitorParticipants ->
+        RunDialogue-Cancel), daher hier nicht separat abgefragt."""
+        if goal_handle.is_cancel_requested:
+            return True
+        if not self._safety_ok():
+            return True
+        if track_id is not None and not self._track_alive(track_id):
+            return True
+        return False
 
     def _runtime_gesture_context(self) -> dict:
         """Fail-closed Momentaufnahme der gestenrelevanten Laufzeitsignale
@@ -345,8 +473,18 @@ class RunDialogueActionServer(Node):
         pepper_reachable -> False (sperrt). Diese Werte gehen 1:1 in
         PlanContext, das selbst KEINE eigene Fail-Closed-Logik mehr
         anwenden muss (vollstaendig vom Aufrufer befuellter Kontext,
-        siehe PlanContext-Docstring in response_plan.py)."""
-        now = time.time()
+        siehe PlanContext-Docstring in response_plan.py).
+
+        Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 4: time.monotonic()
+        statt time.time() -- dieselbe FreshBool-Instanz wird auch mit
+        time.monotonic() aktualisiert (siehe _on_nav2_moving() u.a.),
+        `now` MUSS aus derselben Uhr stammen wie `received_at`, sonst
+        waere der Age-Vergleich bedeutungslos. FreshBool/FreshValue
+        selbst bleiben unveraendert (bewusst NICHT Teil dieses Fixes --
+        gemeinsam genutzte, byte-identische Kopie in drei Paketen, siehe
+        safety_topics.py-Docstring; die Klassen sind ohnehin uhr-
+        agnostisch, nur der Aufrufer legt die Uhr fest)."""
+        now = time.monotonic()
         return {
             "nav2_moving": self._nav2_moving.effective(now, NAV2_MOVING_MAX_AGE_S, True),
             "mapping_active": self._mapping_active.effective(now, MAPPING_ACTIVE_MAX_AGE_S, True),
@@ -465,7 +603,7 @@ class RunDialogueActionServer(Node):
                 # eines normalen Folgezustands, kein Memory-Schreiben
                 # (result.success bleibt False), keine neue konkurrierende
                 # Gestenausfuehrung wird durch diesen Turn ausgeloest.
-                if self._unconfirmed_action_attrs or (
+                if self._has_unconfirmed_action() or (
                     self._unconfirmed_system_gesture_thread is not None
                     and self._unconfirmed_system_gesture_thread.is_alive()
                 ):
@@ -476,7 +614,14 @@ class RunDialogueActionServer(Node):
                         feedback=feedback)
 
                 feedback(DialogueState.LISTENING, "LISTENING")
-                question = self._wait_for_question(goal_handle)
+                question = self._wait_for_question(goal_handle, track_id)
+                if question == "__ABORT__":
+                    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: kein
+                    # echter Frage-Timeout -- zur Schleifenspitze zurueck,
+                    # die Cancel/Safety/Person korrekt klassifiziert
+                    # (statt hier faelschlich QUESTION_TIMEOUT/succeed()
+                    # zu melden).
+                    continue
                 if question is None:
                     return self._finish(goal_handle, result, "QUESTION_TIMEOUT", success=True, feedback=feedback)
                 if question == "__STOP__":
@@ -484,7 +629,7 @@ class RunDialogueActionServer(Node):
                     return self._finish(goal_handle, result, "USER_STOP", success=True, feedback=feedback)
 
                 pipeline_output = self._acknowledge_and_run_pipeline(
-                    goal_handle, feedback, question, session_id, person_context, recent_gestures)
+                    goal_handle, feedback, question, session_id, person_context, recent_gestures, track_id)
                 if pipeline_output is None:
                     continue  # Sicherheitsfehler -- Segment/Runde ueberspringen, Session laeuft weiter
 
@@ -543,9 +688,15 @@ class RunDialogueActionServer(Node):
                 exec_thread = threading.Thread(target=_run_exec, daemon=True)
                 exec_thread.start()
                 while not exec_done.wait(timeout=0.1):
-                    if goal_handle.is_cancel_requested:
-                        self.get_logger().info("RunDialogue-Cancel waehrend der Ausfuehrung -- "
-                                                "aktive Say-/Gesture-Ziele werden abgebrochen.")
+                    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6
+                    # (bestaetigter Fund): prief bisher NUR
+                    # goal_handle.is_cancel_requested -- ein waehrend der
+                    # Antwortausfuehrung eintretender Safety-/
+                    # Personenverlust wurde nicht sofort erkannt, sondern
+                    # erst NACH dem natuerlichen Ende dieses Segments.
+                    if self._dialogue_abort_requested(goal_handle, track_id):
+                        self.get_logger().info("Abbruch waehrend der Ausfuehrung (Cancel/Safety/"
+                                                "Person) -- aktive Say-/Gesture-Ziele werden abgebrochen.")
                         executor.cancel()
                         exec_done.wait(5.0)
                         break
@@ -588,14 +739,25 @@ class RunDialogueActionServer(Node):
                 # Ausfuehrungsende und diesem Punkt eingetretener Verlust
                 # blockiert das Schreiben, auch wenn die Ausfuehrung
                 # selbst noch erfolgreich war.
+                # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6
+                # (bestaetigter Fund): frischer Recheck der
+                # vertrauenswuerdigen Personen-ID UNMITTELBAR vor dem
+                # Schreiben (nicht nur der zu Rundenbeginn geladene
+                # person_context) -- die Identitaetszuordnung kann sich
+                # waehrend einer laengeren Dialogrunde geaendert/
+                # verfluechtigt haben (Track verloren, Einwilligung
+                # widerrufen). Ohne eine JETZT noch gueltige,
+                # aufgeloeste person_id wird NICHTS geschrieben.
+                memory_person_id = self._resolve_persistent_person_id(session_id)
                 if (
                     exec_result.success
                     and memory_summary_candidate
                     and person_context.get("known")
+                    and memory_person_id
                     and self._safety_ok()
                     and (track_id is None or self._track_alive(track_id))
                 ):
-                    self._write_memory_summary(session_id, memory_summary_candidate, question)
+                    self._write_memory_summary(memory_person_id, session_id, memory_summary_candidate, question)
 
                 feedback(DialogueState.WAITING_FOR_FOLLOWUP, "WAITING_FOR_FOLLOWUP")
         except Exception as e:
@@ -642,10 +804,21 @@ class RunDialogueActionServer(Node):
     # ---- Pipeline ----
 
     def _load_person_context(self, session_id) -> dict:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+        Fund, Nachbesserung): rief GetPersonContext bisher mit
+        session_id ALS person_id auf -- session_id/track_id sind aber
+        nur fuer die Dauer der Sichtbarkeit gueltig, niemals eine
+        dauerhafte Personen-ID. Jetzt: OHNE eine ueber
+        _resolve_persistent_person_id() aufgeloeste, vertrauenswuerdige
+        person_id wird der Service GAR NICHT ERST aufgerufen -- kein
+        persoenliches Memory wird gelesen (result.known bleibt False)."""
+        person_id = self._resolve_persistent_person_id(session_id)
+        if person_id is None:
+            return {"known": False, "display_name": None, "person_id": None}
         if not self.get_person_context_client.wait_for_service(timeout_sec=2.0):
             return {"known": False, "display_name": None, "person_id": None}
         req = GetPersonContext.Request()
-        req.person_id = session_id
+        req.person_id = person_id
         future = self.get_person_context_client.call_async(req)
         deadline = time.monotonic() + 3.0
         while not future.done() and time.monotonic() < deadline:
@@ -656,17 +829,29 @@ class RunDialogueActionServer(Node):
         return {
             "known": resp.known,
             "display_name": resp.display_name or None,
-            "person_id": session_id if resp.known else None,
+            "person_id": person_id if resp.known else None,
         }
 
-    def _wait_for_question(self, goal_handle):
+    def _wait_for_question(self, goal_handle, track_id=None):
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+        Fund): prief bisher NUR goal_handle.is_cancel_requested -- ein
+        waehrend dieser (bis zu question_timeout_s langen) Wartephase
+        eintretender Safety-/Personenverlust wurde erst am naechsten
+        Schleifenanfang bemerkt, NACHDEM diese Methode bereits mit
+        'QUESTION_TIMEOUT'-Semantik (success=True, goal_handle.succeed())
+        zurueckgekehrt war -- ein waehrenddessen eingetroffenes ROS-
+        Cancel haette so faelschlich succeed() statt canceled() erhalten.
+        '__ABORT__' signalisiert dem Aufrufer jetzt, zur Schleifenspitze
+        zurueckzukehren (die den genauen Grund -- Cancel/Safety/Person --
+        bereits korrekt klassifiziert), statt einen echten
+        Frage-Timeout vorzutaeuschen."""
         self._latest_transcript_event.clear()
         self._voice_command = None
         timeout = self.get_parameter("question_timeout_s").value
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
-            if goal_handle.is_cancel_requested:
-                return None
+            if self._dialogue_abort_requested(goal_handle, track_id):
+                return "__ABORT__"
             if self._voice_command is not None and is_hard_stop(self._voice_command):
                 return "__STOP__"
             if self._latest_transcript_event.is_set():
@@ -738,6 +923,7 @@ class RunDialogueActionServer(Node):
 
     def _acknowledge_and_run_pipeline(
         self, goal_handle, feedback, question, session_id, person_context, recent_gestures,
+        track_id=None,
     ):
         """Orchestriert ACKNOWLEDGING -> (optional) WAITING_FOR_RESPONSE
         um die eigentliche _run_pipeline()-Ausfuehrung herum. Die
@@ -844,7 +1030,13 @@ class RunDialogueActionServer(Node):
         cancelled = False
 
         while not pipeline_done.wait(timeout=0.05):
-            if goal_handle.is_cancel_requested:
+            # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+            # Fund): prief bisher NUR goal_handle.is_cancel_requested --
+            # ein waehrend ACKNOWLEDGING/THINKING/PIPELINE eintretender
+            # Safety-/Personenverlust wurde nicht sofort erkannt. Dieselbe
+            # gemeinsame Pruefung wie in _wait_for_question()/dem
+            # Exec-Wartepfad (_dialogue_abort_requested()).
+            if self._dialogue_abort_requested(goal_handle, track_id):
                 cancelled = True
                 thinking_loop_stop.set()
                 self._cancel_active_actions()
@@ -1103,12 +1295,20 @@ class RunDialogueActionServer(Node):
             return self.faq.lookup_exact(query)
         return self.faq.lookup_semantic(query)
 
-    def _write_memory_summary(self, session_id, summary_text, question):
+    def _write_memory_summary(self, person_id, session_id, summary_text, question):
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter
+        Fund): req.person_id war bisher WORTWOERTLICH session_id -- die
+        beiden Felder blieben dadurch faktisch identisch, obwohl
+        person_id/session_id bewusst GETRENNTE Felder in
+        WriteMemorySummary.srv sind. person_id MUSS jetzt der ueber
+        _resolve_persistent_person_id() aufgeloeste, vertrauenswuerdige
+        Wert sein (siehe Aufrufer) -- session_id bleibt separat als rein
+        informativer, fluechtiger Sitzungsbezug erhalten."""
         if not self.write_memory_client.wait_for_service(timeout_sec=2.0):
             self.get_logger().warn("write_memory_summary-Service nicht erreichbar -- nicht gespeichert.")
             return
         req = WriteMemorySummary.Request()
-        req.person_id = session_id
+        req.person_id = person_id
         req.session_id = session_id
         req.source = "dialog_session"
         req.topics = [question[:64]]
@@ -1184,7 +1384,7 @@ class RunDialogueActionServer(Node):
         goal.allow_interrupt = True
         goal.max_duration_s = 0.0
         return self._send_goal_and_wait(
-            self.say_client, goal, timeout_s=30.0, active_goal_attr="_active_say_goal_handle")
+            self.say_client, goal, timeout_s=30.0, channel="say", action_type="Say")
 
     def _gesture_and_wait(self, gesture_name: str, speed_scale: float) -> bool:
         if not self._recheck_before_gesture(gesture_name):
@@ -1196,116 +1396,137 @@ class RunDialogueActionServer(Node):
         goal.gesture_name = gesture_name
         goal.speed_scale = speed_scale
         return self._send_goal_and_wait(
-            self.gesture_client, goal, timeout_s=15.0, active_goal_attr="_active_gesture_goal_handle")
+            self.gesture_client, goal, timeout_s=15.0, channel="gesture", action_type="PlayGesture")
 
-    def _send_goal_and_wait(self, client, goal, timeout_s: float, active_goal_attr: str = None) -> bool:
-        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: speichert den
-        angenommenen Goal-Handle (active_goal_attr, falls angegeben --
-        siehe _cancel_active_actions()) und ruft bei EIGENEM Timeout
-        tatsaechlich cancel_goal_async() auf, statt das Ziel einfach
-        unbeaufsichtigt weiterlaufen zu lassen. Wartet danach begrenzt
-        (nicht unbegrenzt) auf eine Cancel-Bestaetigung.
+    def _send_goal_and_wait(self, client, goal, timeout_s: float, channel: str, action_type: str = "") -> bool:
+        """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: ruft bei EIGENEM
+        Timeout tatsaechlich cancel_goal_async() auf, statt das Ziel
+        einfach unbeaufsichtigt weiterlaufen zu lassen. Wartet danach
+        begrenzt (nicht unbegrenzt) auf eine Cancel-Bestaetigung.
 
-        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3/7 (bestaetigter
-        Fund): trifft die Goal-Acceptance ERST NACH dem eigenen Timeout
-        ein (goal_state["handle"] war zu diesem Zeitpunkt noch None),
-        setzte das SPAETER eintreffende on_goal_response() active_goal_attr
-        TROTZDEM -- ohne Pruefung, ob inzwischen ein ANDERER, neuer Aufruf
-        (z.B. das naechste Segment) bereits SEINEN eigenen Handle dort
-        abgelegt hat. Ein solcher verspaeteter Callback konnte damit den
-        Handle eines fremden, noch aktiven Aufrufs ueberschreiben (oder der
-        eigene finally-Block eines laengst aufgegebenen Aufrufs konnte
-        umgekehrt den Handle des naechsten, echten Aufrufs wieder loeschen).
-        Ein Call-Token pro _send_goal_and_wait()-Aufruf bindet jetzt JEDE
-        Schreib-/Loeschoperation auf active_goal_attr an genau DIESEN
-        Aufruf (self._active_goal_tokens[active_goal_attr] muss auf den
-        eigenen Token zeigen) -- ein fremder/veralteter Aufruf kann den
-        Attributwert nie mehr beruehren. Eine NACH dem eigenen Timeout
-        verspaetet eintreffende Annahme wird ausserdem sofort storniert
-        (keine normale Fortsetzung), ihr Ergebnis wird nur noch
-        konsumiert, nie mehr verwendet.
+        Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 3 (bestaetigter Fund,
+        Nachbesserung ueber AP8.8 hinaus): die vorherige Kombination aus
+        Handle-Attribut + Call-Token-Dict + einem SET von Attributnamen
+        ("_unconfirmed_action_attrs") konnte mehrere Ausfuehrungen
+        DESSELBEN Kanals nicht anhand ihrer Identitaet unterscheiden --
+        nur anhand eines gemeinsamen STRINGS. Reproduzierter Fehler:
+        Aufruf A laeuft -> Aufruf B desselben Kanals beginnt (moeglich,
+        da der alte Check-und-Setzen-Schritt NICHT atomar war) -> B
+        erreicht sein eigenes Timeout und wird unbestaetigt markiert ->
+        As spaeter eintreffendes Ergebnis loescht (ueber denselben
+        Attributnamen) BS Unbestaetigt-Markierung, obwohl B WEITERHIN
+        kein terminales Ergebnis hat.
 
-        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2 (bestaetigter
-        Fund, weitere Nachbesserung): der bisherige finally-Block gab
-        den Handle/Token UNBEDINGT frei -- auch dann, wenn nach dem
-        eigenen Timeout selbst die zusaetzliche 2.0s-Cancel-
-        Bestaetigungswartezeit KEIN Ergebnis brachte (done blieb
-        ungesetzt). Ein Timeout beweist aber kein terminales Ende einer
-        noch laufenden Action. Freigabe passiert jetzt NUR NOCH, wenn
-        done tatsaechlich gesetzt ist (Ergebnis angekommen ODER Ziel
-        klar abgelehnt) -- sonst bleibt active_goal_attr/der Token
-        UNVERAENDERT bestehen (weiterhin per _cancel_active_actions()
-        erreichbar) UND active_goal_attr wird als unbestaetigt markiert:
-        ein NEUER Aufruf fuer DASSELBE active_goal_attr wird verweigert
-        (sichtbarer Fehlerzustand, keine konkurrierende neue Ausfuehrung),
-        bis der irgendwann doch noch eintreffende echte on_result()-
-        Callback die Markierung wieder aufhebt und (als tatsaechlicher
-        Eigentuemer) korrekt aufraeumt."""
-        if active_goal_attr and active_goal_attr in self._unconfirmed_action_attrs:
-            self.get_logger().error(
-                f"'{active_goal_attr}' ist noch unbestaetigt (cancel_unconfirmed) -- "
-                "keine neue konkurrierende Ausfuehrung wird gestartet."
-            )
-            return False
+        Jetzt: EIN _ActionExecutionRecord pro tatsaechlicher Ausfuehrung,
+        atomar unter self._action_registry_lock reserviert (Registrierung
+        VOR dem asynchronen Senden, siehe unten) -- ein Kanal gilt als
+        belegt, solange sein aktueller Datensatz weder terminal UND
+        bestaetigt ist. Das verhindert strukturell, dass ein zweiter
+        Aufruf fuer denselben Kanal ueberhaupt startet, waehrend der
+        erste noch laeuft/unbestaetigt ist (verhindert konkurrierende
+        Dialoggesten desselben Kanals bereits vor dem Start). JEDE
+        Mutation prueft per Objektidentitaet (`self._action_registry.get(
+        channel) is record`), ob der jeweilige Datensatz noch der
+        AKTUELLE ist -- ein alter/fremder Callback aendert dadurch
+        garantiert nur seinen EIGENEN Datensatz, niemals einen fremden
+        (unabhaengig davon, ob beide zufaellig denselben Kanalnamen
+        tragen). Ausstehende Goal-Acceptance bleibt nachverfolgt
+        (`pending_acceptance`); ein NACH einem bereits gestellten Cancel
+        angenommenes Ziel wird sofort nachtraeglich storniert
+        (`cancel_requested`); ein fehlgeschlagener RPC (Exception beim
+        Abrufen des Ergebnisses) beweist kein Transportende, wird aber
+        als terminal (mit `terminal_success=False`) gewertet, da rclpy
+        an dieser Stelle bereits ein WrappedResult zugestellt hat.
+        Doppeltes Result/Cleanup ist idempotent (jede Mutation prueft
+        Ownership erneut, mehrfaches Entfernen desselben Eintrags ist
+        harmlos)."""
+        with self._action_registry_lock:
+            existing = self._action_registry.get(channel)
+            if existing is not None and not (existing.terminal and not existing.unconfirmed):
+                self.get_logger().error(
+                    f"Kanal '{channel}' ist noch belegt (laeuft/unbestaetigt, "
+                    f"Sitzung '{existing.session_id}') -- keine neue konkurrierende "
+                    "Ausfuehrung wird gestartet."
+                )
+                return False
+            record = _ActionExecutionRecord(
+                channel=channel, action_type=action_type,
+                session_id=self._active_session_id or "", generation=self._response_generation)
+            self._action_registry[channel] = record
 
         done = threading.Event()
         outcome = {"success": False}
-        goal_state = {"handle": None}
-        abandoned = threading.Event()
-        call_token = object()
 
-        def _release_if_owner():
-            if active_goal_attr and self._active_goal_tokens.get(active_goal_attr) is call_token:
-                setattr(self, active_goal_attr, None)
-                self._active_goal_tokens.pop(active_goal_attr, None)
-            if active_goal_attr:
-                self._unconfirmed_action_attrs.discard(active_goal_attr)
+        def _is_owner():
+            return self._action_registry.get(channel) is record
+
+        def _finish_owned_as_terminal(success: bool):
+            # Nur unter self._action_registry_lock aufrufen. Entfernt den
+            # eigenen Datensatz -- der Kanal gilt danach wieder als frei.
+            record.terminal = True
+            record.terminal_success = success
+            record.unconfirmed = False
+            if self._action_registry.get(channel) is record:
+                del self._action_registry[channel]
 
         def on_result(fut):
-            try:
-                outcome["success"] = fut.result().result.success
-            except Exception as e:
-                self.get_logger().warn(f"Action-Ergebnis nicht abrufbar: {e}")
+            with self._action_registry_lock:
+                if _is_owner():
+                    try:
+                        success = fut.result().result.success
+                    except Exception as e:
+                        self.get_logger().warn(f"Action-Ergebnis nicht abrufbar: {e}")
+                        success = False
+                    outcome["success"] = success
+                    _finish_owned_as_terminal(success)
+                # sonst: fremder/veralteter Datensatz -- eigenes Ergebnis
+                # wird trotzdem konsumiert (verhindert eine haengende
+                # Future), veraendert aber NICHTS am aktuellen
+                # Kanal-Zustand (idempotent, kein fremdes Aufraeumen).
             done.set()
-            _release_if_owner()
 
         def on_goal_response(fut):
             gh = fut.result()
-            if not gh.accepted:
-                done.set()
-                return
-            goal_state["handle"] = gh
-            if abandoned.is_set():
-                # Verspaetete Annahme NACH eigenem Timeout -- das Ziel
-                # sofort stornieren, KEINE normale Fortsetzung, NIE
-                # active_goal_attr beruehren (koennte einem inzwischen
-                # neu gestarteten, fremden Aufruf gehoeren).
-                self.get_logger().warning(
-                    "Verspaetete Goal-Acceptance nach eigenem Timeout -- Ziel wird sofort storniert."
-                )
+            with self._action_registry_lock:
+                if not _is_owner():
+                    # Der eigene Datensatz wurde inzwischen ersetzt (z.B.
+                    # durch eine andere, legitime Ausfuehrung, nachdem
+                    # dieser Aufruf bereits als unbestaetigt/terminal
+                    # galt) -- ein trotzdem angenommenes Ziel wird sofort
+                    # storniert, OHNE den aktuellen Kanal-Zustand
+                    # anzufassen.
+                    if gh.accepted:
+                        self.get_logger().warning(
+                            f"Verspaetete Goal-Acceptance fuer einen nicht mehr "
+                            f"aktuellen '{channel}'-Ausfuehrungsdatensatz -- "
+                            "Ziel wird sofort storniert."
+                        )
+                        try:
+                            gh.cancel_goal_async()
+                        except Exception:
+                            self.get_logger().warning(
+                                "Stornierung fehlgeschlagen.", exc_info=True)
+                        gh.get_result_async()  # konsumiert, nie mehr verwendet
+                    return
+                if not gh.accepted:
+                    _finish_owned_as_terminal(False)
+                    done.set()
+                    return
+                record.handle = gh
+                record.pending_acceptance = False
+                record.goal_id = getattr(gh, "goal_id", None)
+                needs_late_cancel = record.cancel_requested
+            if needs_late_cancel:
+                # Cancel wurde bereits angefordert, BEVOR die Annahme
+                # eintraf -- jetzt kontrolliert nachholen (kein Ziel
+                # bleibt nach einem Cancel unbeaufsichtigt laufen, nur
+                # weil die Annahme spaeter kam).
                 try:
                     gh.cancel_goal_async()
                 except Exception:
                     self.get_logger().warning(
-                        "Stornierung des verspaetet angenommenen Ziels fehlgeschlagen.", exc_info=True)
-
-                def _on_late_result(_fut):
-                    # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2: das
-                    # schliesslich doch eintreffende terminale Ergebnis
-                    # dieses verspaetet angenommenen (und sofort
-                    # stornierten) Ziels hebt NUR die eigene
-                    # Unbestaetigt-Markierung auf (siehe finally-Block
-                    # unten) -- ruehrt active_goal_attr/den Token NICHT
-                    # an, der koennte laengst einem neuen, legitimen
-                    # Aufruf gehoeren.
-                    if active_goal_attr:
-                        self._unconfirmed_action_attrs.discard(active_goal_attr)
-
-                gh.get_result_async().add_done_callback(_on_late_result)
-                return
-            if active_goal_attr:
-                setattr(self, active_goal_attr, gh)
-                self._active_goal_tokens[active_goal_attr] = call_token
+                        "Nachtraegliches Cancel eines inzwischen angenommenen "
+                        "Ziels fehlgeschlagen.", exc_info=True)
             rf = gh.get_result_async()
             rf.add_done_callback(on_result)
 
@@ -1314,10 +1535,13 @@ class RunDialogueActionServer(Node):
         try:
             if done.wait(timeout_s):
                 return outcome["success"]
-            abandoned.set()
             self.get_logger().warn(
                 "Action-Aufruf hat das Timeout ueberschritten -- Cancel wird angefordert.")
-            gh = goal_state["handle"]
+            gh = None
+            with self._action_registry_lock:
+                if _is_owner():
+                    record.cancel_requested = True
+                    gh = record.handle
             if gh is not None:
                 try:
                     gh.cancel_goal_async()
@@ -1328,26 +1552,58 @@ class RunDialogueActionServer(Node):
                 done.wait(2.0)
             return False
         finally:
-            if done.is_set():
-                _release_if_owner()
-            elif active_goal_attr:
-                # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2: selbst
-                # nach der zusaetzlichen Cancel-Bestaetigungswartezeit
-                # kein Ergebnis -- NICHT freigeben, sondern sichtbar als
-                # unbestaetigt markieren (siehe Docstring oben).
-                self._unconfirmed_action_attrs.add(active_goal_attr)
+            with self._action_registry_lock:
+                if _is_owner():
+                    if done.is_set():
+                        # on_result hat bereits terminal+entfernt (siehe
+                        # oben) -- dieser Zweig ist nur eine idempotente
+                        # Absicherung, falls der Eintrag aus irgendeinem
+                        # Grund noch da waere.
+                        if record.terminal and self._action_registry.get(channel) is record:
+                            del self._action_registry[channel]
+                    else:
+                        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.2:
+                        # selbst nach der zusaetzlichen Cancel-
+                        # Bestaetigungswartezeit kein Ergebnis -- NICHT
+                        # freigeben, sondern sichtbar als unbestaetigt
+                        # markieren (Kanal bleibt belegt, siehe
+                        # busy-Check oben).
+                        record.unconfirmed = True
+
+    def _has_unconfirmed_action(self) -> bool:
+        """Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 3: ersetzt die
+        vorherige `bool(self._unconfirmed_action_attrs)`-Pruefung --
+        liest jetzt aus der Registry, ob IRGENDEIN Kanal aktuell als
+        unbestaetigt markiert ist."""
+        with self._action_registry_lock:
+            return any(r.unconfirmed for r in self._action_registry.values())
 
     def _cancel_active_actions(self):
         """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: von
         ResponsePlanExecutor.cancel() SOFORT aufgerufen -- bricht das
         GERADE LAUFENDE Say-/PlayGesture-Ziel aktiv ab, statt passiv auf
-        die naechste Segmentgrenze zu warten."""
-        for gh in (self._active_say_goal_handle, self._active_gesture_goal_handle):
-            if gh is not None:
-                try:
-                    gh.cancel_goal_async()
-                except Exception:
-                    self.get_logger().warning("Aktives Ziel konnte nicht abgebrochen werden.", exc_info=True)
+        die naechste Segmentgrenze zu warten.
+
+        Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 3: liest jetzt aus
+        der Registry statt aus zwei festen Attributen. Ist die
+        Goal-Acceptance fuer einen Kanal noch ausstehend (kein Handle),
+        wird `cancel_requested` gesetzt -- `_send_goal_and_wait()`s
+        `on_goal_response()` holt das Cancel dann nach, sobald die
+        (moeglicherweise verspaetete) Annahme eintrifft (siehe dort)."""
+        with self._action_registry_lock:
+            handles_to_cancel = []
+            for record in self._action_registry.values():
+                if record.terminal:
+                    continue
+                if record.handle is not None:
+                    handles_to_cancel.append(record.handle)
+                else:
+                    record.cancel_requested = True
+        for gh in handles_to_cancel:
+            try:
+                gh.cancel_goal_async()
+            except Exception:
+                self.get_logger().warning("Aktives Ziel konnte nicht abgebrochen werden.", exc_info=True)
 
 
 def _try_parse_int(value):

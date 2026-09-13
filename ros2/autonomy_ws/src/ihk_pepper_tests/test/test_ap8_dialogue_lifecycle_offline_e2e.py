@@ -102,16 +102,22 @@ class _DialogueFakeNode:
     _runtime_gesture_context = RunDialogueActionServer._runtime_gesture_context
     _safety_ok = RunDialogueActionServer._safety_ok
     _track_alive = RunDialogueActionServer._track_alive
+    _dialogue_abort_requested = RunDialogueActionServer._dialogue_abort_requested
+    _wait_for_question = RunDialogueActionServer._wait_for_question
 
     def __init__(self, params=None, pipeline_fn=None, gesture_fn=None, safety_ok=True):
         self._params = {
             "thinking_loop_delay_s": 0.05,
             "thinking_loop_max_repetitions": 3,
             "thinking_loop_max_duration_s": 2.0,
+            "question_timeout_s": 5.0,
         }
         self._params.update(params or {})
         self.gesture_calls = []
         self.cancel_active_actions_calls = 0
+        # _wait_for_question() braucht diese beiden Attribute.
+        self._latest_transcript_event = threading.Event()
+        self._voice_command = None
         # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3: neue
         # Unbestaetigt-Nachverfolgung fuer Systemgesten-Threads --
         # _acknowledge_and_run_pipeline() liest/schreibt dieses Attribut.
@@ -124,8 +130,8 @@ class _DialogueFakeNode:
         self._gesture_fn_override = gesture_fn
         self._current_gesture_recheck_context = None
         self._safety_ok_value = safety_ok
-        self._safety_state = object() if safety_ok else None
-        self._safety_state_received_at = time.time() if safety_ok else None
+        self._safety_state = _FakeSafetyState() if safety_ok else None
+        self._safety_state_received_at = time.monotonic() if safety_ok else None
         # _runtime_gesture_context() braucht diese FreshBool-artigen
         # Attribute -- fuer die B/C/D-Szenarien reichen einfache
         # Objekte mit einer effective()-Methode, die feste, freigebende
@@ -154,6 +160,16 @@ class _DialogueFakeNode:
 
     def _cancel_active_actions(self):
         self.cancel_active_actions_calls += 1
+
+
+class _FakeSafetyState:
+    """Entwicklungsauftrag 04-B, AP8-R3: _safety_ok() liest jetzt in
+    JEDER Wartephase (nicht nur am Rundenanfang) -- braucht deshalb ein
+    echtes Objekt mit emergency_stop/bumper_active statt eines reinen
+    object()-Platzhalters."""
+
+    emergency_stop = False
+    bumper_active = False
 
 
 class _FixedEffective:
@@ -319,7 +335,7 @@ def test_scenario_i_track_alive_becomes_false_after_max_track_age():
         track_id = 7
 
     node = _DialogueFakeNode()
-    node._tracks[7] = (_Track(), time.time() - (MAX_TRACK_AGE_S + 1.0))  # veraltet
+    node._tracks[7] = (_Track(), time.monotonic() - (MAX_TRACK_AGE_S + 1.0))  # veraltet
     assert RunDialogueActionServer._track_alive(node, 7) is False
 
 
@@ -328,5 +344,114 @@ def test_scenario_i_track_alive_true_for_a_fresh_track():
         track_id = 8
 
     node = _DialogueFakeNode()
-    node._tracks[8] = (_Track(), time.time())
+    node._tracks[8] = (_Track(), time.monotonic())
     assert RunDialogueActionServer._track_alive(node, 8) is True
+
+
+def test_scenario_i_person_lost_during_pipeline_aborts_active_system_gestures_promptly():
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6/7 (Testpunkt 8):
+    # "Personenverlust waehrend Pipeline storniert aktive Systemgesten."
+    # Ein Track, der WAEHREND einer (absichtlich haengenden) Pipeline
+    # veraltet, muss denselben sofortigen Abbruchpfad ausloesen wie ein
+    # explizites ROS-Cancel -- NICHT erst nach dem natuerlichen
+    # Pipeline-Ende bemerkt werden.
+    from ihk_pepper_dialog.run_dialogue_action_server import MAX_TRACK_AGE_S
+
+    class _Track:
+        track_id = 42
+
+    never_finishes = threading.Event()
+
+    def hanging_pipeline(*a):
+        never_finishes.wait(timeout=10.0)  # simuliert eine (zu) lange laufende Pipeline
+        return ("plan", None, {
+            "final_allowlist": set(), "head_gesture_names": set(),
+            "allowed_interaction_states_for_gestures": {}, "current_interaction_state": "CONVERSATION_READY",
+        })
+
+    node = _DialogueFakeNode(
+        params={"thinking_loop_delay_s": 5.0, "thinking_loop_max_repetitions": 3,
+                "thinking_loop_max_duration_s": 6.0},
+        pipeline_fn=hanging_pipeline,
+    )
+    node._tracks[42] = (_Track(), time.monotonic())  # zunaechst frisch
+    goal_handle = _FakeGoalHandle()
+    feedback, _feedback_calls = _make_feedback()
+
+    def _let_the_track_expire():
+        time.sleep(0.2)
+        node._tracks[42] = (_Track(), time.monotonic() - (MAX_TRACK_AGE_S + 1.0))  # veraltet
+
+    threading.Thread(target=_let_the_track_expire, daemon=True).start()
+
+    started = time.monotonic()
+    result = RunDialogueActionServer._acknowledge_and_run_pipeline(
+        node, goal_handle, feedback, "Frage?", "session-i2", {"known": False}, [], 42)
+    elapsed = time.monotonic() - started
+
+    assert result is None  # Runde wird sicher uebersprungen, kein Ergebnis verwendet
+    assert elapsed < 2.0  # deutlich vor Ablauf der 10s-Pipeline-Haengezeit
+    assert node.cancel_active_actions_calls >= 1  # aktive Systemgeste wurde aktiv abgebrochen
+
+
+def test_wait_for_question_returns_abort_not_timeout_on_safety_loss():
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter Fund):
+    # ein Safety-Verlust WAEHREND der Frage-Wartephase wurde bisher wie
+    # ein Frage-Timeout behandelt (return None -> QUESTION_TIMEOUT,
+    # success=True, goal_handle.succeed()) -- obwohl der eigentliche
+    # Grund ein Sicherheitsereignis war. '__ABORT__' signalisiert jetzt
+    # dem Aufrufer, zur Schleifenspitze zurueckzukehren, die den echten
+    # Grund korrekt klassifiziert.
+    node = _DialogueFakeNode(
+        params={"question_timeout_s": 5.0}, safety_ok=True)
+    goal_handle = _FakeGoalHandle()
+
+    def _lose_safety_shortly():
+        time.sleep(0.1)
+        node._safety_state = None  # Safety-Zustand verloren
+
+    threading.Thread(target=_lose_safety_shortly, daemon=True).start()
+
+    started = time.monotonic()
+    result = RunDialogueActionServer._wait_for_question(node, goal_handle)
+    elapsed = time.monotonic() - started
+
+    assert result == "__ABORT__"
+    assert elapsed < 1.0  # deutlich vor Ablauf der 5s question_timeout_s
+
+
+def test_wait_for_question_returns_none_on_a_genuine_timeout_with_nothing_else_wrong():
+    node = _DialogueFakeNode(params={"question_timeout_s": 0.1}, safety_ok=True)
+    goal_handle = _FakeGoalHandle()
+    result = RunDialogueActionServer._wait_for_question(node, goal_handle)
+    assert result is None  # echter Timeout, kein Abbruchgrund -- unveraendertes Verhalten
+
+
+def test_scenario_i_track_alive_uses_monotonic_time_not_wall_clock(monkeypatch):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 4 (bestaetigter Fund):
+    # _track_alive() verglich frueher gegen time.time() -- ein
+    # Wanduhrsprung rueckwaerts (NTP-Korrektur/manuelle Verstellung)
+    # liess einen bereits veralteten Track wieder als frisch erscheinen.
+    # Reproduktion der Auftragsvorgabe: Empfang bei (simulierter)
+    # Wanduhr 100 -> Pruefung bei 111 (veraltet, MAX_TRACK_AGE_S=2.0) ->
+    # Wanduhr springt auf 99 zurueck -- der Track MUSS trotzdem veraltet
+    # bleiben, weil _track_alive() time.monotonic() nutzt, das von einem
+    # Wanduhrsprung unbeeinflusst ist.
+    from ihk_pepper_dialog import run_dialogue_action_server as mod
+
+    class _Track:
+        track_id = 9
+
+    node = _DialogueFakeNode()
+    fake_wall_clock = {"value": 100.0}
+    monkeypatch.setattr(mod.time, "time", lambda: fake_wall_clock["value"])
+    # Empfang bei monotonic() = realer Testlaufzeit-Wert (nicht
+    # manipuliert) -- nur time.time() wird hier verfaelscht, um zu
+    # beweisen, dass _track_alive() davon UNBEEINFLUSST bleibt.
+    node._tracks[9] = (_Track(), time.monotonic() - (mod.MAX_TRACK_AGE_S + 1.0))
+    assert mod.RunDialogueActionServer._track_alive(node, 9) is False
+
+    fake_wall_clock["value"] = 99.0  # Wanduhr springt zurueck
+    assert mod.RunDialogueActionServer._track_alive(node, 9) is False, (
+        "Ein veralteter Track darf durch einen Wanduhrsprung nicht wieder frisch werden."
+    )

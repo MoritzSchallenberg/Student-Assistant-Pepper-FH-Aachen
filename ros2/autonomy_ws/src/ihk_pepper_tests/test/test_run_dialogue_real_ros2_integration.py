@@ -27,7 +27,14 @@ from std_msgs.msg import Bool, String
 from ihk_pepper_dialog.faq_cache import FaqCache
 from ihk_pepper_dialog.run_dialogue_action_server import RunDialogueActionServer
 from ihk_pepper_interfaces.action import PlayGesture, RunDialogue, Say
-from ihk_pepper_interfaces.msg import DialogueState, SafetyState
+from ihk_pepper_interfaces.msg import (
+    DialogueState,
+    PersonIdentity,
+    PersonIdentityArray,
+    PersonTrack,
+    PersonTrackArray,
+    SafetyState,
+)
 from ihk_pepper_interfaces.srv import GetPersonContext, WriteMemorySummary
 
 _KNOWLEDGE_MOCK = json.dumps({
@@ -142,6 +149,12 @@ class _FakePersonMemoryServices(Node):
         super().__init__("fake_person_memory_services")
         self.known = known
         self.write_memory_calls = []
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: erfasst, MIT
+        # WELCHER person_id GetPersonContext tatsaechlich aufgerufen
+        # wurde -- macht sichtbar, ob der Aufrufer noch die rohe
+        # session_id oder bereits die aufgeloeste, dauerhafte person_id
+        # verwendet.
+        self.get_person_context_requests = []
         self.create_service(
             GetPersonContext, "/get_person_context", self._get_person_context,
             callback_group=ReentrantCallbackGroup())
@@ -150,12 +163,13 @@ class _FakePersonMemoryServices(Node):
             callback_group=ReentrantCallbackGroup())
 
     def _get_person_context(self, request, response):
+        self.get_person_context_requests.append(request.person_id)
         response.known = self.known
         response.display_name = "Testperson" if self.known else ""
         return response
 
     def _write_memory_summary(self, request, response):
-        self.write_memory_calls.append(request.summary)
+        self.write_memory_calls.append((request.person_id, request.session_id, request.summary))
         response.success = True
         return response
 
@@ -173,6 +187,17 @@ class _DriverNode(Node):
         self.mapping_active_pub = self.create_publisher(Bool, "/mapping_active", 10)
         self.gesture_in_progress_pub = self.create_publisher(Bool, "/pepper_bridge/gesture_in_progress", 10)
         self.connection_state_pub = self.create_publisher(String, "/pepper_bridge/connection_state", 10)
+        # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6: optionale echte
+        # Track-/Identitaets-Keepalives fuer Tests, die eine numerische
+        # (track-gebundene) session_id UND eine aufgeloeste, dauerhafte
+        # person_id brauchen -- per Default leer (kein Track), ein Test
+        # setzt driver.track_id/driver.identity VOR dem ersten Timer-Tick.
+        self.person_tracks_pub = self.create_publisher(
+            PersonTrackArray, "/perception_node/person_tracks", 10)
+        self.person_identities_pub = self.create_publisher(
+            PersonIdentityArray, "/identity/person_identities", 10)
+        self.track_id = None
+        self.identity = None  # dict mit person_id/known/consent_granted, falls gesetzt
         self.dialogue_states = []
         self.create_subscription(DialogueState, "dialogue_state", self._on_state, 10)
         self._keepalive_timer = self.create_timer(0.3, self._publish_keepalive)
@@ -186,6 +211,21 @@ class _DriverNode(Node):
         self.mapping_active_pub.publish(Bool(data=False))
         self.gesture_in_progress_pub.publish(Bool(data=False))
         self.connection_state_pub.publish(String(data="connected"))
+        if self.track_id is not None:
+            track_msg = PersonTrackArray()
+            track = PersonTrack()
+            track.track_id = self.track_id
+            track_msg.tracks = [track]
+            self.person_tracks_pub.publish(track_msg)
+        if self.identity is not None:
+            identity_msg = PersonIdentityArray()
+            identity = PersonIdentity()
+            identity.track_id = self.track_id
+            identity.person_id = self.identity["person_id"]
+            identity.known = self.identity["known"]
+            identity.consent_granted = self.identity["consent_granted"]
+            identity_msg.identities = [identity]
+            self.person_identities_pub.publish(identity_msg)
 
 
 @pytest.fixture()
@@ -454,3 +494,52 @@ def test_say_failure_writes_no_memory_summary_even_for_a_known_person(dialogue_e
     assert person_memory.write_memory_calls == []
     handle_cleanup = goal_handle.cancel_goal_async()
     _wait_for(handle_cleanup.done, timeout_s=2.0)
+
+
+def test_a_resolved_persistent_identity_is_used_for_memory_not_the_raw_session_id(dialogue_env):
+    # Entwicklungsauftrag 04-B, AP8-R3, Abschnitt 6 (bestaetigter Fund,
+    # Nachbesserung): _load_person_context()/_write_memory_summary()
+    # reichten session_id bisher UNMITTELBAR als person_id weiter. Echter
+    # Gegenbeweis ueber ROS2: eine numerische (track-gebundene) session_id
+    # + eine real veroeffentlichte /identity/person_identities-Zuordnung
+    # (track_id -> dauerhafte person_id, known+consent_granted=true) --
+    # GetPersonContext/WriteMemorySummary muessen die AUFGELOESTE
+    # person_id sehen, NIEMALS die rohe session_id.
+    driver = dialogue_env["driver"]
+    say_server = dialogue_env["say_server"]
+    person_memory = dialogue_env["person_memory"]
+
+    driver.track_id = 501
+    driver.identity = {
+        "person_id": "person-501-stable", "known": True, "consent_granted": True,
+    }
+    # Kurze Gnadenfrist, damit der 0.3s-Keepalive-Timer mindestens einmal
+    # VOR dem Goal-Start durchlaeuft (Track/Identitaet muessen bereits
+    # frisch sein, wenn _execute() sie das erste Mal prueft).
+    assert _wait_for(lambda: driver.track_id == 501, timeout_s=1.0)
+    time.sleep(0.5)
+
+    client = ActionClient(driver, RunDialogue, "/run_dialogue")
+    assert client.wait_for_server(timeout_sec=5.0)
+
+    goal = RunDialogue.Goal()
+    goal.session_id = "501"
+    send_future = client.send_goal_async(goal)
+    assert _wait_for(send_future.done, timeout_s=5.0)
+    goal_handle = send_future.result()
+    assert goal_handle.accepted
+
+    assert _publish_transcript_until_seen(
+        driver, "Erkennst du mich wieder?", lambda: len(say_server.calls) >= 1, timeout_s=5.0)
+
+    result_future = goal_handle.get_result_async()
+    assert _wait_for(result_future.done, timeout_s=10.0)
+
+    assert person_memory.get_person_context_requests
+    assert all(pid == "person-501-stable" for pid in person_memory.get_person_context_requests)
+    assert "501" not in person_memory.get_person_context_requests
+
+    assert _wait_for(lambda: len(person_memory.write_memory_calls) >= 1, timeout_s=3.0)
+    written_person_id, written_session_id, _summary = person_memory.write_memory_calls[0]
+    assert written_person_id == "person-501-stable"
+    assert written_session_id == "501"  # session_id bleibt separat erhalten, wird aber NICHT als person_id verwendet

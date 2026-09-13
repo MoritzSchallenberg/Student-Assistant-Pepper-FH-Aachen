@@ -158,11 +158,11 @@ class _FakeNode:
             emergency_stop = not ok
             bumper_active = False
         self._safety_state = _S()
-        self._safety_state_received_at = time.time() - age_s
+        self._safety_state_received_at = time.monotonic() - age_s
 
     def mark_fresh(self, nav2_moving=False, mapping_active=False, gesture_in_progress=False,
                    pepper_reachable=True):
-        now = time.time()
+        now = time.monotonic()
         self._nav2_moving.update(nav2_moving, now)
         self._mapping_active.update(mapping_active, now)
         self._gesture_in_progress_fresh.update(gesture_in_progress, now)
@@ -418,9 +418,9 @@ def test_stale_nav2_moving_blocks_gestures_but_not_speech():
     node.mark_safety_ok(ok=True)
     # nav2_moving NIE aktualisiert -> "unbekannt" -> FreshBool.effective()
     # liefert den fail-closed Wert True (siehe _runtime_gesture_context()).
-    node._pepper_connected.update(True, time.time())
-    node._mapping_active.update(False, time.time())
-    node._gesture_in_progress_fresh.update(False, time.time())
+    node._pepper_connected.update(True, time.monotonic())
+    node._mapping_active.update(False, time.monotonic())
+    node._gesture_in_progress_fresh.update(False, time.monotonic())
     node._faq_lookup = lambda query, mode: None
     result = node._run_pipeline("Frage", "session-1", {"known": False}, [])
     assert result is not None
@@ -461,7 +461,7 @@ def test_lost_pepper_connection_blocks_gesture_not_speech():
         search_client=client, knowledge_provider=_knowledge_mock(),
         gesture_provider=gesture_mock, response_provider=response_mock,
     )
-    node._pepper_connected.update(False, time.time())  # Verbindung explizit verloren
+    node._pepper_connected.update(False, time.monotonic())  # Verbindung explizit verloren
     node._faq_lookup = lambda query, mode: None
     result = node._run_pipeline("Frage", "session-1", {"known": False}, [])
     assert result is not None
@@ -487,10 +487,10 @@ def test_stale_mapping_active_blocks_head_gesture_but_allows_speech():
         gesture_provider=gesture_mock, response_provider=response_mock,
     )
     node.mark_safety_ok(ok=True)
-    node._pepper_connected.update(True, time.time())
-    node._nav2_moving.update(False, time.time())
+    node._pepper_connected.update(True, time.monotonic())
+    node._nav2_moving.update(False, time.monotonic())
     # mapping_active NIE aktualisiert -> unbekannt -> fail-closed True.
-    node._gesture_in_progress_fresh.update(False, time.time())
+    node._gesture_in_progress_fresh.update(False, time.monotonic())
     node._faq_lookup = lambda query, mode: None
     result = node._run_pipeline("Frage", "session-1", {"known": False}, [])
     assert result is not None
@@ -516,9 +516,9 @@ def test_stale_gesture_in_progress_blocks_new_gesture():
         gesture_provider=gesture_mock, response_provider=response_mock,
     )
     node.mark_safety_ok(ok=True)
-    node._pepper_connected.update(True, time.time())
-    node._nav2_moving.update(False, time.time())
-    node._mapping_active.update(False, time.time())
+    node._pepper_connected.update(True, time.monotonic())
+    node._nav2_moving.update(False, time.monotonic())
+    node._mapping_active.update(False, time.monotonic())
     # gesture_in_progress NIE aktualisiert -> unbekannt -> fail-closed True.
     node._faq_lookup = lambda query, mode: None
     result = node._run_pipeline("Frage", "session-1", {"known": False}, [])
@@ -556,10 +556,10 @@ def test_recheck_rejects_gesture_no_longer_in_final_allowlist():
 def test_recheck_blocks_head_gesture_when_mapping_active():
     node = _FakeNode()
     node.mark_safety_ok(ok=True)
-    node._pepper_connected.update(True, time.time())
-    node._nav2_moving.update(False, time.time())
-    node._mapping_active.update(True, time.time())
-    node._gesture_in_progress_fresh.update(False, time.time())
+    node._pepper_connected.update(True, time.monotonic())
+    node._nav2_moving.update(False, time.monotonic())
+    node._mapping_active.update(True, time.monotonic())
+    node._gesture_in_progress_fresh.update(False, time.monotonic())
     node._current_gesture_recheck_context = {
         "final_allowlist": {"agree_nod"},
         "head_gesture_names": {"agree_nod"},
@@ -578,10 +578,10 @@ def test_recheck_allows_system_gesture_without_llm_allowlist():
 def test_recheck_blocks_system_gesture_when_mapping_active():
     node = _FakeNode()
     node.mark_safety_ok(ok=True)
-    node._pepper_connected.update(True, time.time())
-    node._nav2_moving.update(False, time.time())
-    node._mapping_active.update(True, time.time())
-    node._gesture_in_progress_fresh.update(False, time.time())
+    node._pepper_connected.update(True, time.monotonic())
+    node._nav2_moving.update(False, time.monotonic())
+    node._mapping_active.update(True, time.monotonic())
+    node._gesture_in_progress_fresh.update(False, time.monotonic())
     assert node._recheck_before_gesture("thinking_loop_subtle") is False
 
 
@@ -604,7 +604,7 @@ def test_state_change_between_planning_and_execution_blocks_execution():
         "current_interaction_state": "CONVERSATION_READY",
     }
     assert node._recheck_before_gesture("greet_open") is True  # noch ok
-    node._nav2_moving.update(True, time.time())  # Zustandsaenderung
+    node._nav2_moving.update(True, time.monotonic())  # Zustandsaenderung
     assert node._recheck_before_gesture("greet_open") is False  # jetzt gesperrt
 
 
