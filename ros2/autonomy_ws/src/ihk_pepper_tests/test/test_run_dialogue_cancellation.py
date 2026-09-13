@@ -80,6 +80,10 @@ class _FakeNode:
     def __init__(self):
         self._active_say_goal_handle = None
         self._active_gesture_goal_handle = None
+        # Entwicklungsauftrag 04-B, AP8.8: Call-Token-Registrierung, die
+        # _send_goal_and_wait() jetzt nutzt, um active_goal_attr nur vom
+        # tatsaechlichen Eigentuemer-Aufruf schreiben/loeschen zu lassen.
+        self._active_goal_tokens = {}
 
     def get_logger(self):
         return _FakeLogger()
@@ -142,3 +146,117 @@ def test_cancel_active_actions_survives_a_failing_cancel_call():
     node = _FakeNode()
     node._active_say_goal_handle = _RaisingGoalHandle()
     node._cancel_active_actions()  # darf nicht crashen, obwohl cancel_goal_async() wirft
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.8 (Commit 13/14, bestaetigter Fund 3.3/7) ----
+
+class _DeferredFuture:
+    """Ruft add_done_callback() NICHT sofort auf -- der Test loest sie
+    manuell per fire() aus, um eine VERSPAETETE Goal-Acceptance zu
+    simulieren (nach dem eigenen Timeout von _send_goal_and_wait())."""
+
+    def __init__(self):
+        self._cb = None
+        self._value = None
+
+    def add_done_callback(self, cb):
+        self._cb = cb
+
+    def fire(self, value):
+        self._value = value
+        self._cb(self)
+
+    def result(self):
+        return self._value
+
+
+class _DeferredActionClient:
+    def __init__(self):
+        self.future = _DeferredFuture()
+
+    def send_goal_async(self, goal):
+        return self.future
+
+
+def test_late_goal_acceptance_after_own_timeout_is_cancelled_and_never_sets_the_handle():
+    node = _FakeNode()
+    client = _DeferredActionClient()
+    result = node._send_goal_and_wait(
+        client, object(), timeout_s=0.05, active_goal_attr="_active_say_goal_handle")
+    assert result is False
+    assert node._active_say_goal_handle is None
+
+    # Die Annahme trifft ERST JETZT ein -- nachdem _send_goal_and_wait()
+    # bereits (mit False) zurueckgekehrt ist.
+    late_gh = _FakeGoalHandle(accepted=True, success=True)
+    client.future.fire(late_gh)
+
+    assert late_gh.cancel_calls == 1  # sofort storniert, keine normale Fortsetzung
+    assert node._active_say_goal_handle is None  # NIE gesetzt worden
+    assert "_active_say_goal_handle" not in node._active_goal_tokens
+
+
+def test_an_unrelated_calls_finally_never_clears_a_different_owners_handle():
+    # Bestaetigter Fund: der finally-Block von _send_goal_and_wait()
+    # loeschte active_goal_attr bisher UNBEDINGT -- ein fremder, noch
+    # aktiver Aufruf (Token-Eigentuemer) haette dadurch seinen Handle
+    # verlieren koennen.
+    node = _FakeNode()
+    sentinel_token = object()
+    node._active_goal_tokens["_active_say_goal_handle"] = sentinel_token
+    node._active_say_goal_handle = "sentinel_handle"
+
+    gh_rejected = _FakeGoalHandle(accepted=False)
+    client = _FakeActionClient(gh_rejected)
+    node._send_goal_and_wait(client, object(), timeout_s=1.0, active_goal_attr="_active_say_goal_handle")
+
+    assert node._active_say_goal_handle == "sentinel_handle"
+    assert node._active_goal_tokens["_active_say_goal_handle"] is sentinel_token
+
+
+def test_send_goal_and_wait_clears_its_own_handle_on_normal_completion():
+    node = _FakeNode()
+    gh = _FakeGoalHandle(accepted=True, success=True)
+    client = _FakeActionClient(gh)
+    result = node._send_goal_and_wait(
+        client, object(), timeout_s=1.0, active_goal_attr="_active_say_goal_handle")
+    assert result is True
+    assert node._active_say_goal_handle is None
+    assert "_active_say_goal_handle" not in node._active_goal_tokens
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.8, Abschnitt 4: Einzelaktivitaet fuer RunDialogue ----
+
+class _FakeGoalRequest:
+    def __init__(self, session_id):
+        self.session_id = session_id
+
+
+class _SingleActivityFakeNode:
+    _goal_callback = RunDialogueActionServer._goal_callback
+
+    def __init__(self):
+        import threading
+        self._active_execution_lock = threading.Lock()
+        self._active_session_id = None
+
+    def get_logger(self):
+        return _FakeLogger()
+
+
+def test_goal_callback_rejects_a_second_goal_while_one_is_active():
+    from rclpy.action import GoalResponse
+    node = _SingleActivityFakeNode()
+    assert node._goal_callback(_FakeGoalRequest("session-1")) == GoalResponse.ACCEPT
+    # Sitzung 1 ist jetzt "aktiv" (so wie _goal_callback es reserviert) --
+    # ein zweites, gleichzeitiges Ziel wird abgelehnt.
+    assert node._goal_callback(_FakeGoalRequest("session-2")) == GoalResponse.REJECT
+
+
+def test_goal_callback_accepts_a_new_goal_after_the_previous_session_id_was_cleared():
+    from rclpy.action import GoalResponse
+    node = _SingleActivityFakeNode()
+    assert node._goal_callback(_FakeGoalRequest("session-1")) == GoalResponse.ACCEPT
+    # Simuliert das Ende der ersten Sitzung (_execute()s finally-Block).
+    node._active_session_id = None
+    assert node._goal_callback(_FakeGoalRequest("session-2")) == GoalResponse.ACCEPT

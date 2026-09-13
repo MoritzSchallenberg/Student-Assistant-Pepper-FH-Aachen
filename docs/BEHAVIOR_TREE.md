@@ -145,14 +145,19 @@ Fehlschläge, 4 übersprungen** (vorher 17/0/0/3 -- 6 neue, ausschließlich
 funktionale gtest-Tests, keine Regression in den bestehenden
 Lint-/Stil-Prüfungen).
 
-**Nicht getestet**: ein vollständiger End-zu-Ende-Halt-Test mit einem
-echten Action-Server (statt eines isolierten `std::future`) wurde nicht
-gebaut -- dafür bräuchte es einen Mock-Action-Server-Testharness, den
-dieses Paket bisher nicht hat (die bestehenden 17 "Tests" sind
-Lint-/Stil-Prüfungen, kein gtest-Harness mit echtem `rclcpp_action`).
-Kein echter Pepper/keine echte RealSense in dieser Session erreichbar
--- alle Action-Aufrufe schlagen ohne laufende Gegenstelle mit `FAILURE`
-fehl (erwartet, siehe `ihk_pepper_behavior_tree/README.md`).
+**Korrektur (Entwicklungsauftrag 04-B, AP8.8)**: der vorherige Absatz
+behauptete, ein Mock-Action-Server-Testharness existiere in diesem Paket
+nicht -- das ist seit AP8.8 überholt. `test/test_bt_dialogue_gesture_lifecycle.cpp`
+baut genau so einen Harness (`FakeRunDialogueServer`, ein echter
+`rclcpp_action::create_server<RunDialogueAction>`, der Ziele offen hält
+und Cancel-Anfragen zählt) und tickt einen echten `RunDialogueViaBT`-
+Knoten dagegen -- kein isolierter `std::future`, echte
+`rclcpp_action`-Kommunikation über Loopback-DDS. Kein echter Pepper/keine
+echte RealSense in dieser Session erreichbar -- alle Action-Aufrufe
+gegen die ECHTE Bridge schlagen weiterhin ohne laufende Gegenstelle mit
+`FAILURE` fehl (erwartet, siehe `ihk_pepper_behavior_tree/README.md`);
+das bleibt unverändert, nur der Behauptungstext über den fehlenden
+Testharness war falsch und wurde hier korrigiert.
 
 **Entwicklungsauftrag 04-B, AP6**: die fünf neuen Knoten
 (`WaitForFreshWakeword`/`IsHeadOrientationAllowed`/`OrientHeadToSound`/
@@ -172,3 +177,43 @@ fehlerfrei, alle drei neuen Knotentypen werden von der Factory
 aufgelöst, sauberes Herunterfahren per SIGTERM -- der einzige über
 `colcon test` hinausgehende Nachweis, dass XML und C++-Registrierung
 tatsächlich zusammenpassen (kein automatisierter Cross-Check dafür).
+
+## `RunDialogueViaBT`: verspätete Goal-Annahme nach `onHalted()` (Entwicklungsauftrag 04-B, AP8.8)
+
+Bestätigter Fund: `goal_handle_` wird ausschließlich in `onRunning()`
+gesetzt -- ruft der Baum nach einem `onHalted()` (bei dem die Annahme
+noch aussteht, `goal_handle_` also noch `nullptr` ist) beim nächsten
+Tick `onStart()` frisch auf, gab es bis AP8.8 KEINEN Mechanismus, der
+eine INZWISCHEN doch noch eintreffende (verspätete) Annahme des ALTEN
+Ziels storniert -- dieses Ziel lief vollständig unbeaufsichtigt weiter,
+ohne dass je ein Cancel gestellt wurde.
+
+Fix: `onStart()` übergibt jetzt `SendGoalOptions` mit einem
+`goal_response_callback`, der ein neues `halted_before_acceptance_`-Flag
+prüft -- ist es gesetzt, wird das verspätet angenommene Ziel SOFORT per
+`async_cancel_goal()` storniert. `onHalted()` setzt dieses Flag genau
+dann, wenn es (im `else`-Zweig, `goal_handle_ == nullptr`) auf ein noch
+unbestätigtes Ziel trifft. Ein bestätigt abgeschlossenes Cancel-Future
+beweist dabei für sich allein weder eine erfolgreiche Annahme noch einen
+tatsächlichen Stillstand -- die bestehende Unterscheidung
+`cancel_requested`/`cancel_accepted`/`action_terminal`/
+`transport_terminal`/`physisch bestätigt` (`docs/ACTION_CANCELLATION.md`)
+bleibt hier vollständig anwendbar und unverändert.
+
+Funktional bewiesen über echte `rclcpp_action`-Kommunikation
+(`test/test_bt_dialogue_gesture_lifecycle.cpp`, neu, per
+`ament_add_gtest` registriert, verlinkt gegen `ihk_pepper_bt_nodes`
+statt nur den Header wie `test_bt_cancel_confirmation`): ein Test
+ruft `onStart()` und UNMITTELBAR DANACH `onHalted()` ohne dazwischen zu
+spinnen (garantiert `goal_handle_ == nullptr` beim Halt), spint dann
+erst und beobachtet, dass der Fake-Server tatsächlich eine Cancel-
+Anfrage empfängt; ein zweiter Test bestätigt den unveränderten
+Normalfall (Halt NACH bestätigter Annahme). `colcon test --packages-select
+ihk_pepper_behavior_tree`: **28 Tests, 0 Fehler, 0 Fehlschläge, 5
+übersprungen** (vorher 23/0/0/4). Davon direkt nachvollziehbar:
+`test_bt_dialogue_gesture_lifecycle.gtest.xml` selbst trägt genau die 2
+neuen funktionalen Tests dieses Abschnitts bei (0 übersprungen); die
+restlichen +3 Tests/+1 übersprungen stammen aus `ament_lint_auto`s
+automatischer Mitregistrierung von Lint-/Stil-Prüfläufen für die neue
+Testdatei (uncrustify mit der bereits bestehenden Zeilenumbruch-
+Korrektur bestanden, siehe Fehlerhistorie im Abschlussbericht).

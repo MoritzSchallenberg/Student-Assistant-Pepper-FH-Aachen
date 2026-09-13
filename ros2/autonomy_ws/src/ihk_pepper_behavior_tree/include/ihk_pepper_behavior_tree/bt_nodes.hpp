@@ -642,6 +642,13 @@ public:
   BT::NodeStatus onRunning() override;
   void onHalted() override;
   bool lastHaltCancelConfirmed() const {return last_halt_cancel_confirmed_;}
+  /// Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund):
+  /// true, sobald onHalted() eintraf, WAEHREND die Goal-Acceptance noch
+  /// aussteht (goal_handle_ also noch null war) -- der in onStart()
+  /// registrierte goal_response_callback prueft dieses Flag bei jeder
+  /// (moeglicherweise verspaeteten) Annahme und storniert dann sofort,
+  /// statt das Ziel unbeaufsichtigt weiterlaufen zu lassen.
+  bool haltedBeforeAcceptance() const {return halted_before_acceptance_;}
 
 private:
   using DialogueAction = ihk_pepper_interfaces::action::RunDialogue;
@@ -652,6 +659,7 @@ private:
   std::shared_future<GoalHandle::WrappedResult> result_future_;
   GoalHandle::SharedPtr goal_handle_;
   bool last_halt_cancel_confirmed_ {false};
+  bool halted_before_acceptance_ {false};
 };
 
 /// Ruft /set_interaction_state auf (neuer Service, behandelt von

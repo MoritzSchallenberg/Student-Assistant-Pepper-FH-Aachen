@@ -114,6 +114,50 @@ Executors bemerkt zu werden. Siehe `docs/ACTION_CANCELLATION.md` für die
 vollständige, schichtübergreifende Abbruchkette (Transport -> Bridge ->
 Dialog -> Behavior Tree -> Presentation Manager).
 
+## Cancel-Flag-Lebenszyklus, atomarer Doppelstart-Schutz, Gesten-Ausnahmen (Entwicklungsauftrag 04-B, AP8.8)
+
+Drei bestätigte Lücken wurden geschlossen, jeweils mit eigenem
+Regressionstest in `test_response_plan_executor.py`:
+
+- **Cancel-vor-Start wurde durch den Ausführungsstart selbst wieder
+  gelöscht.** `execute()` rief früher `self._cancel_requested.clear()`
+  ganz am ANFANG auf -- ein `cancel()`, das kurz VOR oder WÄHREND des
+  Aufrufstarts eintraf, war danach spurlos verschwunden. Die Löschung
+  sitzt jetzt im `finally`-Block am ENDE von `execute()`: ein Cancel
+  bleibt für den GESAMTEN laufenden Durchlauf sichtbar und wird erst
+  nach dessen eigenem natürlichem Ende zurückgesetzt -- für den
+  nächsten, tatsächlich neuen Durchlauf.
+- **Doppelstart-Prüfung war keine atomare Operation.** Der alte
+  "prüfen, dann setzen"-Ablauf hatte ein echtes TOCTOU-Fenster bei
+  gleichzeitigen `execute()`-Aufrufen. Ein neues `self._start_lock`
+  (`threading.Lock`) macht Prüfung und Reservierung von `self._busy`
+  jetzt atomar -- unter fünf gleichzeitigen `execute()`-Aufrufen startet
+  garantiert genau einer (`test_double_start_check_is_atomic_under_concurrent_calls`,
+  `threading.Barrier`-basiert).
+- **Eine Ausnahme in `gesture_fn` wurde nicht kontrolliert
+  eingefangen.** Ein neues `_run_gesture_safely()` fängt Exceptions aus
+  direkten `gesture_fn`-Aufrufen (`before_segment`/`after_segment`) UND
+  aus dem Hintergrund-Thread von `with_segment_start` ab, setzt
+  `SegmentExecutionResult.gesture_error` (neues Feld) und liefert
+  `gesture_success=False` zurück -- statt entweder unbehandelt zu
+  propagieren oder in einem `threading.Thread` lautlos zu verschwinden.
+
+Zusätzlich wurde die Segment-Reihenfolge geschärft:
+`before_segment` prüft `cancel_requested` jetzt ZWISCHEN Geste und
+Sprache (kein TTS-Neustart nach einem Cancel mitten in der Geste);
+`after_segment` versucht die Geste nur noch, wenn `say_success` UND kein
+Cancel vorliegt (eine fehlgeschlagene Sprachausgabe startet keine
+nachgelagerte semantische Geste mehr). `gesture_attempted` wird jetzt nur
+noch unmittelbar vor einem tatsächlichen Gestenversuch gesetzt (nicht
+mehr pauschal am Segmentanfang), damit eine wegen TTS-Fehlschlag
+übersprungene Geste korrekt `gesture_attempted=False` zeigt.
+
+Die Nachlaufpause (`post_speech_pause_s`) ist jetzt unterbrechbar:
+`time.sleep(...)` wurde durch
+`self._cancel_requested.wait(timeout=post_speech_pause_s)` ersetzt --
+ein Cancel WÄHREND der Pause beendet sie sofort (`cancelled=True`),
+statt die volle Dauer zu blockieren.
+
 ## Zusätzlicher Recheck vor `gesture_fn` (Entwicklungsauftrag 04-B, AP5A)
 
 `run_dialogue_action_server.py::_gesture_and_wait()` (die konkrete

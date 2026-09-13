@@ -209,6 +209,25 @@ class RunDialogueActionServer(Node):
         # abzubrechen (nicht nur zwischen zwei Segmenten zu pruefen).
         self._active_say_goal_handle = None
         self._active_gesture_goal_handle = None
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 7/3.3 (bestaetigter
+        # Fund): _send_goal_and_wait() setzte active_goal_attr bisher
+        # OHNE Eigentuemerpruefung -- ein NACH dem eigenen Timeout
+        # verspaetet eintreffendes on_goal_response() konnte den Handle
+        # EINES ANDEREN, inzwischen neu gestarteten Aufrufs ueberschreiben
+        # (oder der eigene finally-Block konnte einen bereits vom
+        # naechsten Aufruf gesetzten Handle wieder loeschen). Ein
+        # Call-Token pro _send_goal_and_wait()-Aufruf bindet jede
+        # Schreib-/Loeschoperation auf active_goal_attr an genau DIESEN
+        # Aufruf -- ein fremder/veralteter Aufruf darf sie nie beruehren.
+        self._active_goal_tokens = {}
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 4 (bestaetigter
+        # Fund): _goal_callback() akzeptierte bisher JEDES eingehende
+        # RunDialogue-Ziel bedingungslos -- mehrere gleichzeitig aktive
+        # Sitzungen haetten sich dieselben, ungeschuetzten globalen
+        # Action-Handles (oben) geteilt. Erzwingt jetzt Einzelaktivitaet:
+        # ein zweites Ziel wird abgelehnt, waehrend eines bereits laeuft.
+        self._active_execution_lock = threading.Lock()
+        self._active_session_id = None
 
         cb_group = ReentrantCallbackGroup()
 
@@ -320,6 +339,19 @@ class RunDialogueActionServer(Node):
     # ---- Action-Server-Callbacks ----
 
     def _goal_callback(self, goal_request):
+        # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 4: erzwingt
+        # Einzelaktivitaet fuer RunDialogue -- die Reservierung passiert
+        # HIER (nicht erst in _execute()), unter demselben Lock geprueft
+        # und gesetzt, damit zwei nahezu gleichzeitig eintreffende Ziele
+        # nicht beide noch "frei" sehen koennen (TOCTOU).
+        with self._active_execution_lock:
+            if self._active_session_id is not None:
+                self.get_logger().warn(
+                    f"RunDialogue-Ziel fuer Sitzung '{goal_request.session_id}' abgelehnt -- "
+                    f"Sitzung '{self._active_session_id}' laeuft bereits."
+                )
+                return GoalResponse.REJECT
+            self._active_session_id = goal_request.session_id
         return GoalResponse.ACCEPT
 
     def _cancel_callback(self, goal_handle):
@@ -466,6 +498,15 @@ class RunDialogueActionServer(Node):
             result.error_message = str(e)
             goal_handle.abort()
             return result
+        finally:
+            # Entwicklungsauftrag 04-B, AP8.8, Abschnitt 4: gibt die in
+            # _goal_callback() reservierte Einzelaktivitaet UNBEDINGT
+            # wieder frei -- ueber JEDEN Rueckgabepfad (Erfolg, Cancel,
+            # Fehler, Ausnahme), sonst wuerde nach der ERSTEN Sitzung nie
+            # wieder ein RunDialogue-Ziel akzeptiert.
+            with self._active_execution_lock:
+                if self._active_session_id == session_id:
+                    self._active_session_id = None
 
     def _finish(self, goal_handle, result, final_state, success, error="", feedback=None):
         """feedback() MUSS -- falls uebergeben -- vor goal_handle.succeed()/
@@ -545,11 +586,27 @@ class RunDialogueActionServer(Node):
         Aufruf, siehe dortiger Docstring), bis stop_event gesetzt ist
         ODER eine der beiden Obergrenzen erreicht wird. 'Unterbrechbar'
         heisst hier bewusst: stop_event wird NUR ZWISCHEN zwei Zyklen
-        geprueft, NICHT mitten in einer laufenden Trajektorie --
-        PlayGesture unterstuetzt aktuell keine echte Unterbrechung
-        waehrend der Ausfuehrung (bridge_node.py::_execute_gesture()
-        prueft goal_handle.is_cancel_requested nicht), das wird hier
-        bewusst nicht faelschlich behauptet."""
+        geprueft, nicht als Unterbrechung innerhalb eines einzelnen
+        laufenden Aufrufs dieser Methode.
+
+        Korrektur (Entwicklungsauftrag 04-B, AP8.8, Abschnitt 12): eine
+        fruehere Fassung dieses Docstrings behauptete, PlayGesture
+        unterstuetze GAR KEINE echte Unterbrechung waehrend der
+        Ausfuehrung und bridge_node.py::_execute_gesture() pruefe
+        goal_handle.is_cancel_requested ueberhaupt nicht -- das ist
+        inzwischen falsch und wurde hier korrigiert. Tatsaechlich prueft
+        _execute_gesture() goal_handle.is_cancel_requested in seiner
+        Polling-Schleife und setzt bei einem Cancel ein cancel_event,
+        das bis in gesture_catalog.py::_play_v1()/_play_v2() durch-
+        gereicht wird und dort ZWISCHEN Keyframes/Segmenten abgefragt
+        wird (echte Implementierung, kein Blindflug). Die verbleibende,
+        ehrliche Einschraenkung ist eine andere: das ist Unterbrechung
+        MIT Keyframe-/Segment-Granularitaet, kein hardwareseitig
+        bestaetigtes Mid-Servo-Stop mitten in einer einzelnen
+        Trajektorienbewegung -- diese feinere Garantie haengt von
+        qicli/NAOqi ab und ist ohne echten Hardwaretest nicht
+        nachweisbar (hwverificationrequired, siehe
+        docs/DIALOGUE_GESTURE_LIFECYCLE.md)."""
         started_at = time.time()
         repetitions = 0
         while (
@@ -571,14 +628,42 @@ class RunDialogueActionServer(Node):
         um die eigentliche _run_pipeline()-Ausfuehrung herum. Die
         LLM-Pipeline selbst laeuft dabei in einem eigenen Thread, damit
         hier parallel auf Zeitueberschreitung (Denkschleife starten) und
-        Abbruch (Denkschleife stoppen) reagiert werden kann -- ein
-        Abbruch waehrend der Pipeline stoppt HIER NUR die sichtbare
-        Zwischen-Geste, NICHT den laufenden LLM-Aufruf selbst (die
-        Pipeline-Stufen haben keinen eigenen Abbruch-Haken, siehe
-        pipeline.py) -- die eigentliche Sitzungsbeendigung erfolgt wie
-        bisher erst am Anfang der naechsten Schleifenrunde in _execute()."""
+        Abbruch (Denkschleife stoppen) reagiert werden kann.
+
+        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 7 (bestaetigter Fund):
+        ein Cancel waehrend der Pipeline wurde bisher NUR benutzt, um die
+        Denkschleife zu stoppen -- der Aufrufer wartete danach TROTZDEM
+        bis zum natuerlichen (moeglicherweise nicht abbrechbaren)
+        Pipeline-Ende, BEVOR ueberhaupt wieder Kontrolle an _execute()
+        zurueckging, dessen Cancel-Pruefung erst am Anfang der NAECHSTEN
+        Schleifenrunde greift. Ein bereits fertiges response_plan aus
+        einer solchen verspaeteten Rueckkehr haette _execute() dann
+        TROTZDEM noch gesprochen/gestikuliert, bevor die Cancel-Pruefung
+        ueberhaupt zum Zug kam. Jetzt: sobald ein Cancel erkannt wird,
+        bricht diese Methode SOFORT (begrenzt) ab und liefert None --
+        _execute() behandelt None bereits als 'Runde ueberspringen,
+        sofort zur naechsten Schleifenpruefung' (die den Cancel dann
+        korrekt erkennt). Der Pipeline-Thread laeuft im Hintergrund
+        (daemon) weiter, falls der Provider selbst nicht abbrechbar ist
+        (ehrlich dokumentiert, kein Vorspiegeln eines echten Provider-
+        Cancels) -- sein Ergebnis wird nie wieder gelesen (pipeline_result
+        ist eine frische, lokale Variable dieses Aufrufs).
+
+        Ausserdem wird jetzt auch waehrend ACKNOWLEDGING/THINKING (nicht
+        erst waehrend SPEAKING) sofort _cancel_active_actions() aufgerufen,
+        damit eine noch laufende Bestaetigungsgeste bei einem Cancel
+        tatsaechlich abgebrochen wird, statt unbeaufsichtigt weiterzulaufen."""
         feedback(DialogueState.ACKNOWLEDGING, "ACKNOWLEDGING", question)
-        threading.Thread(target=self._run_acknowledge_gesture, daemon=True).start()
+        acknowledge_done = threading.Event()
+
+        def _run_acknowledge():
+            try:
+                self._run_acknowledge_gesture()
+            finally:
+                acknowledge_done.set()
+
+        acknowledge_thread = threading.Thread(target=_run_acknowledge, daemon=True)
+        acknowledge_thread.start()
 
         feedback(DialogueState.THINKING, "THINKING", question)
         pipeline_result = {}
@@ -596,10 +681,14 @@ class RunDialogueActionServer(Node):
         thinking_loop_thread = None
         loop_started = False
         deadline = time.time() + self.get_parameter("thinking_loop_delay_s").value
+        cancelled = False
 
         while not pipeline_done.wait(timeout=0.05):
             if goal_handle.is_cancel_requested:
+                cancelled = True
                 thinking_loop_stop.set()
+                self._cancel_active_actions()
+                break
             if not loop_started and time.time() >= deadline:
                 feedback(DialogueState.WAITING_FOR_RESPONSE, "WAITING_FOR_RESPONSE", question)
                 thinking_loop_thread = threading.Thread(
@@ -617,8 +706,19 @@ class RunDialogueActionServer(Node):
         thinking_loop_stop.set()
         if thinking_loop_thread is not None:
             thinking_loop_thread.join(timeout=self.get_parameter("thinking_loop_max_duration_s").value + 2.0)
-        pipeline_thread.join(timeout=1.0)  # sollte durch pipeline_done bereits fertig sein
+        if not acknowledge_done.wait(timeout=2.0):
+            self.get_logger().warning(
+                "acknowledge_nod_small nach Cancel/Timeout nicht rechtzeitig bestaetigt -- "
+                "bleibt unbeaufsichtigt im Hintergrund nachverfolgt (daemon-Thread)."
+            )
 
+        if cancelled:
+            # Bewusst KEIN pipeline_thread.join() auf das (evtl. nicht
+            # abbrechbare) Pipeline-Ende -- der Thread laeuft im
+            # Hintergrund weiter, sein Ergebnis wird nie mehr gelesen.
+            return None
+
+        pipeline_thread.join(timeout=1.0)  # sollte durch pipeline_done bereits fertig sein
         return pipeline_result.get("value")
 
     def _search_gestures(self, query: str, interaction_state: str, exclude_recent: list) -> list:
@@ -918,10 +1018,36 @@ class RunDialogueActionServer(Node):
         siehe _cancel_active_actions()) und ruft bei EIGENEM Timeout
         tatsaechlich cancel_goal_async() auf, statt das Ziel einfach
         unbeaufsichtigt weiterlaufen zu lassen. Wartet danach begrenzt
-        (nicht unbegrenzt) auf eine Cancel-Bestaetigung."""
+        (nicht unbegrenzt) auf eine Cancel-Bestaetigung.
+
+        Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.3/7 (bestaetigter
+        Fund): trifft die Goal-Acceptance ERST NACH dem eigenen Timeout
+        ein (goal_state["handle"] war zu diesem Zeitpunkt noch None),
+        setzte das SPAETER eintreffende on_goal_response() active_goal_attr
+        TROTZDEM -- ohne Pruefung, ob inzwischen ein ANDERER, neuer Aufruf
+        (z.B. das naechste Segment) bereits SEINEN eigenen Handle dort
+        abgelegt hat. Ein solcher verspaeteter Callback konnte damit den
+        Handle eines fremden, noch aktiven Aufrufs ueberschreiben (oder der
+        eigene finally-Block eines laengst aufgegebenen Aufrufs konnte
+        umgekehrt den Handle des naechsten, echten Aufrufs wieder loeschen).
+        Ein Call-Token pro _send_goal_and_wait()-Aufruf bindet jetzt JEDE
+        Schreib-/Loeschoperation auf active_goal_attr an genau DIESEN
+        Aufruf (self._active_goal_tokens[active_goal_attr] muss auf den
+        eigenen Token zeigen) -- ein fremder/veralteter Aufruf kann den
+        Attributwert nie mehr beruehren. Eine NACH dem eigenen Timeout
+        verspaetet eintreffende Annahme wird ausserdem sofort storniert
+        (keine normale Fortsetzung), ihr Ergebnis wird nur noch
+        konsumiert, nie mehr verwendet."""
         done = threading.Event()
         outcome = {"success": False}
         goal_state = {"handle": None}
+        abandoned = threading.Event()
+        call_token = object()
+
+        def _release_if_owner():
+            if active_goal_attr and self._active_goal_tokens.get(active_goal_attr) is call_token:
+                setattr(self, active_goal_attr, None)
+                self._active_goal_tokens.pop(active_goal_attr, None)
 
         def on_result(fut):
             try:
@@ -929,6 +1055,7 @@ class RunDialogueActionServer(Node):
             except Exception as e:
                 self.get_logger().warn(f"Action-Ergebnis nicht abrufbar: {e}")
             done.set()
+            _release_if_owner()
 
         def on_goal_response(fut):
             gh = fut.result()
@@ -936,8 +1063,24 @@ class RunDialogueActionServer(Node):
                 done.set()
                 return
             goal_state["handle"] = gh
+            if abandoned.is_set():
+                # Verspaetete Annahme NACH eigenem Timeout -- das Ziel
+                # sofort stornieren, KEINE normale Fortsetzung, NIE
+                # active_goal_attr beruehren (koennte einem inzwischen
+                # neu gestarteten, fremden Aufruf gehoeren).
+                self.get_logger().warning(
+                    "Verspaetete Goal-Acceptance nach eigenem Timeout -- Ziel wird sofort storniert."
+                )
+                try:
+                    gh.cancel_goal_async()
+                except Exception:
+                    self.get_logger().warning(
+                        "Stornierung des verspaetet angenommenen Ziels fehlgeschlagen.", exc_info=True)
+                gh.get_result_async()  # terminales Ergebnis wird weiterhin konsumiert, nie mehr verwendet
+                return
             if active_goal_attr:
                 setattr(self, active_goal_attr, gh)
+                self._active_goal_tokens[active_goal_attr] = call_token
             rf = gh.get_result_async()
             rf.add_done_callback(on_result)
 
@@ -946,6 +1089,7 @@ class RunDialogueActionServer(Node):
         try:
             if done.wait(timeout_s):
                 return outcome["success"]
+            abandoned.set()
             self.get_logger().warn(
                 "Action-Aufruf hat das Timeout ueberschritten -- Cancel wird angefordert.")
             gh = goal_state["handle"]
@@ -959,8 +1103,7 @@ class RunDialogueActionServer(Node):
                 done.wait(2.0)
             return False
         finally:
-            if active_goal_attr:
-                setattr(self, active_goal_attr, None)
+            _release_if_owner()
 
     def _cancel_active_actions(self):
         """Entwicklungsauftrag 04-B, AP5B, Abschnitt 13: von

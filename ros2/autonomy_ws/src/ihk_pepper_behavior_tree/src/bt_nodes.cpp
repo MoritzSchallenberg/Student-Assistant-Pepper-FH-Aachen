@@ -796,7 +796,31 @@ BT::NodeStatus RunDialogueViaBT::onStart()
   DialogueAction::Goal goal;
   goal.session_id = std::to_string(session_id.value());
   goal_handle_.reset();
-  goal_future_ = client_->async_send_goal(goal);
+  halted_before_acceptance_ = false;
+
+  // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter Fund):
+  // traf onHalted() bisher ein, WAEHREND die Goal-Acceptance noch
+  // aussteht (goal_handle_ war noch null), geschah GAR NICHTS -- ein
+  // spaeter angenommenes Ziel lief danach unbeaufsichtigt weiter (kein
+  // Cancel wurde je gestellt). Der goal_response_callback wird IMMER
+  // aufgerufen, sobald der Server tatsaechlich antwortet -- unabhaengig
+  // davon, ob dieser BT-Knoten zwischenzeitlich schon gehaltet wurde --
+  // und storniert das Ziel sofort, falls das der Fall war.
+  rclcpp_action::Client<DialogueAction>::SendGoalOptions options;
+  options.goal_response_callback =
+    [this](const GoalHandle::SharedPtr & handle) {
+      if (!handle) {
+        return;
+      }
+      if (halted_before_acceptance_) {
+        RCLCPP_WARN(
+          node_->get_logger(),
+          "RunDialogueViaBT: verspaetete Goal-Acceptance NACH onHalted() -- "
+          "Ziel wird sofort storniert.");
+        client_->async_cancel_goal(handle);
+      }
+    };
+  goal_future_ = client_->async_send_goal(goal, options);
   return BT::NodeStatus::RUNNING;
 }
 
@@ -832,6 +856,13 @@ void RunDialogueViaBT::onHalted()
     last_halt_cancel_confirmed_ = waitForBoundedCancelConfirmation(
       cancel_future, kHaltCancelConfirmTimeout, node_->get_logger(), "RunDialogueViaBT");
   } else {
+    // Entwicklungsauftrag 04-B, AP8.8, Abschnitt 3.4 (bestaetigter
+    // Fund): die Goal-Acceptance steht noch aus -- es gibt (noch) keinen
+    // Handle, den wir hier stornieren koennten. Das Flag sorgt dafuer,
+    // dass der in onStart() registrierte goal_response_callback das
+    // Ziel SOFORT storniert, sobald die (moeglicherweise verspaetete)
+    // Annahme eintrifft -- keine unbeaufsichtigte Fortsetzung.
+    halted_before_acceptance_ = true;
     last_halt_cancel_confirmed_ = false;
   }
 }

@@ -205,3 +205,46 @@ meldet die Action `success=False, error_message="cancel_unconfirmed"` --
 auf denselben Ressourcen über die bestehende Arbiter-Konfliktprüfung)
 und erst bereinigt, sobald der Thread nachweislich endet. Details inkl.
 der genauen Quarantäne-Mechanik: `docs/GESTURE_CANCELLATION_AND_RESTORE.md`.
+
+## Verspätete Goal-Annahme und Handle-Besitz (Entwicklungsauftrag 04-B, AP8.8)
+
+Zwei bestätigte Race-Lücken rund um verspätet eintreffende
+Goal-Ergebnisse wurden geschlossen -- Details/Tests siehe
+`docs/DIALOGUE_GESTURE_LIFECYCLE.md` (Abschnitt "Session-/Goal-Bindung"),
+hier nur die Kurzfassung für die Abbruch-Kette:
+
+- **`run_dialogue_action_server.py::_send_goal_and_wait()`**: ein
+  `call_token = object()` pro Aufruf plus ein
+  `self._active_goal_tokens`-Dict binden ein `active_goal_attr`
+  (`_active_say_goal_handle`/`_active_gesture_goal_handle`) jetzt an den
+  EIGENEN Aufruf. Trifft eine Goal-Annahme ein, NACHDEM der eigene
+  Aufruf bereits per Timeout aufgegeben hat (`abandoned`-Event gesetzt),
+  wird das verspätet angenommene Ziel SOFORT storniert und
+  `active_goal_attr` NIE angefasst -- vorher konnte ein solches
+  Spätergebnis den Handle eines ganz anderen, neueren Aufrufs
+  überschreiben. Jeder Aufräumpfad (`on_result`, `finally`) gibt den
+  Handle nur frei, wenn der eigene Token noch der aktuell eingetragene
+  ist (`_release_if_owner()`).
+- **`RunDialogueViaBT::onHalted()`** (BT.CPP): war `goal_handle_` beim
+  Halt noch `nullptr` (Annahme steht noch aus), passierte bisher GAR
+  NICHTS -- eine später eintreffende Annahme lief danach komplett
+  unbeaufsichtigt weiter, ohne dass je ein Cancel gestellt wurde. Ein
+  neues `halted_before_acceptance_`-Flag plus ein
+  `SendGoalOptions::goal_response_callback` (statt des bisherigen
+  optionslosen `async_send_goal(goal)`) stornieren ein so verspätet
+  angenommenes Ziel jetzt unmittelbar bei Ankunft der Annahme. Ein
+  bestätigt fertiges Cancel-Future beweist dabei für sich allein WEDER
+  eine erfolgreiche Annahme NOCH einen tatsächlichen Stillstand -- die
+  bestehende Unterscheidung `cancel_requested`/`cancel_accepted`/
+  `action_terminal`/`transport_terminal`/`physisch bestätigt` bleibt
+  unverändert gültig, siehe oben. Funktional bewiesen über echte
+  `rclcpp_action`-Kommunikation gegen einen kontrollierten
+  Fake-Server: `test/test_bt_dialogue_gesture_lifecycle.cpp`.
+- **`RunDialogueActionServer._goal_callback()`**: erzwingt jetzt (unter
+  `self._active_execution_lock`) ein hartes Ein-Ziel-Limit -- ein
+  zweites `RunDialogue`-Ziel wird abgelehnt (`GoalResponse.REJECT`),
+  solange eine Sitzung bereits läuft, statt zwei Ausführungen
+  unkoordiniert dieselben globalen Action-Handle-Attribute teilen zu
+  lassen. Über echte ROS2-Action-Kommunikation bewiesen:
+  `test/test_run_dialogue_real_ros2_integration.py::
+  test_a_second_concurrent_run_dialogue_goal_is_rejected`.

@@ -47,6 +47,12 @@ class _FakeNode:
         self.gesture_calls = []
         self._pipeline_fn = pipeline_fn or (lambda *a: ("plan", None, {"final_allowlist": set(), "head_gesture_names": set(), "allowed_interaction_states_for_gestures": {}, "current_interaction_state": "CONVERSATION_READY"}))
         self._gesture_fn_override = gesture_fn
+        # Entwicklungsauftrag 04-B, AP8.8: _acknowledge_and_run_pipeline()
+        # ruft bei einem Cancel jetzt zusaetzlich _cancel_active_actions()
+        # auf (echte, ungebundene Implementierung, siehe unten).
+        self._active_say_goal_handle = None
+        self._active_gesture_goal_handle = None
+        self.cancel_active_actions_calls = 0
 
     def get_parameter(self, name):
         return _FakeParam(self._params[name])
@@ -72,6 +78,13 @@ class _FakeNode:
 # drei Methoden durchlaufen wie der echte Node.
 _FakeNode._run_acknowledge_gesture = RunDialogueActionServer._run_acknowledge_gesture
 _FakeNode._run_thinking_loop = RunDialogueActionServer._run_thinking_loop
+
+
+def _fake_cancel_active_actions(self):
+    self.cancel_active_actions_calls += 1
+
+
+_FakeNode._cancel_active_actions = _fake_cancel_active_actions
 
 
 def _make_feedback_recorder():
@@ -235,3 +248,42 @@ def test_cancel_request_stops_thinking_loop_early():
     # die 100*~0.05s (Fake-Gestendauer), die ohne Abbruch noetig waeren.
     assert len(node.gesture_calls) < 20
     assert elapsed < 2.0
+
+
+# ---- Entwicklungsauftrag 04-B, AP8.8 (Commit 13/14, bestaetigter Fund 7) ----
+
+def test_cancel_during_pipeline_returns_none_promptly_without_waiting_for_the_pipeline():
+    # Bestaetigter Fund: ein Cancel waehrend der Pipeline wurde bisher
+    # NUR genutzt, um die Denkschleife zu stoppen -- der Aufrufer wartete
+    # danach TROTZDEM bis zum natuerlichen (hier absichtlich sehr
+    # langsamen, NIE von aussen abgebrochenen) Pipeline-Ende. Jetzt muss
+    # die Methode SOFORT (begrenzt) None liefern, ohne auf
+    # pipeline_done zu warten.
+    never_finishes = threading.Event()  # wird absichtlich NIE gesetzt
+
+    def hanging_pipeline(question, session_id, person_context, recent_gestures):
+        never_finishes.wait(timeout=10.0)  # simuliert einen nicht abbrechbaren Provider-Aufruf
+        return ("sollte nie verwendet werden", None, {})
+
+    node = _FakeNode(params={
+        "thinking_loop_delay_s": 5.0,  # startet in diesem Test nie
+        "thinking_loop_max_repetitions": 3,
+        "thinking_loop_max_duration_s": 6.0,
+    }, pipeline_fn=hanging_pipeline)
+    goal_handle = _FakeGoalHandle()
+    feedback, _calls = _make_feedback_recorder()
+
+    def _cancel_soon():
+        time.sleep(0.1)
+        goal_handle.is_cancel_requested = True
+
+    threading.Thread(target=_cancel_soon, daemon=True).start()
+    start = time.time()
+    result = RunDialogueActionServer._acknowledge_and_run_pipeline(
+        node, goal_handle, feedback, "Testfrage", "session-1", {"known": False}, [])
+    elapsed = time.time() - start
+
+    assert result is None  # _execute() behandelt das als 'Runde ueberspringen'
+    assert elapsed < 2.0  # deutlich kuerzer als die 10s, auf die hanging_pipeline wartet
+    # Die Bestaetigungsgeste/aktive Aktionen wurden bei Cancel abgebrochen:
+    assert node.cancel_active_actions_calls >= 1

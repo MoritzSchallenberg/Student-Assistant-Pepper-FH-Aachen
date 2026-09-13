@@ -70,6 +70,21 @@ if(BUILD_TESTING)
     rclcpp rclcpp_action ihk_pepper_interfaces action_msgs std_msgs behaviortree_cpp
   )
 
+  # Entwicklungsauftrag 04-B, AP8.8, Commit 13/14: funktionale Tests
+  # gegen einen echten RunDialogueViaBT-Knoten + einen kontrollierten
+  # Fake-ActionServer (echte rclcpp_action-Kommunikation ueber
+  # Loopback-DDS, kein reiner Promise-/Future-Test) -- siehe
+  # test/test_bt_dialogue_gesture_lifecycle.cpp.
+  ament_add_gtest(
+    test_bt_dialogue_gesture_lifecycle test/test_bt_dialogue_gesture_lifecycle.cpp)
+  target_include_directories(test_bt_dialogue_gesture_lifecycle PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  )
+  target_link_libraries(test_bt_dialogue_gesture_lifecycle ihk_pepper_bt_nodes)
+  ament_target_dependencies(test_bt_dialogue_gesture_lifecycle
+    rclcpp rclcpp_action ihk_pepper_interfaces action_msgs std_msgs behaviortree_cpp
+  )
+
   find_package(ament_lint_auto REQUIRED)
   # ament_copyright: Copyright-Kopfzeilen sind in diesem Projekt keine
   # Konvention (keine andere Datei im Repo traegt eine) -- eine erfundene

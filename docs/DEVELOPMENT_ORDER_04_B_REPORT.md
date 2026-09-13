@@ -2382,3 +2382,221 @@ Alle drei neuen Unterbefehle sind implementiert, getestet und
 dokumentiert; keine Statusänderung, keine Bewegung, keine zweite
 Sicherheitslogik. **13/14 (`verify dialogue gesture lifecycle with
 offline E2E tests`) kann auf dieser Grundlage beginnen.**
+
+## AP8.8 (13/14): Dialog-Gesten-Lifecycle, sichere Unterbrechung und Offline-End-zu-Ende-Nachweise
+
+Verifizierter Ausgangsstand: Branch
+`order-04b-kiconnect-gesture-memory-lifecycle-audio`, HEAD `2b5a8dc`
+(entspricht exakt dem gemeldeten Stand), working tree sauber, Python
+`1751 bestanden, 3 übersprungen`, BT.CPP `23/0/0/4`, Katalog `24
+Gesten` (`17 draft / 6 dry_run_validated / 1 live_validated`).
+
+### Verifizierte, bestätigte Funde (Abschnitt 3.1-3.4 des Auftrags)
+
+Alle vier im Auftrag benannten Verdachtsstellen wurden gegen den
+tatsächlichen HEAD gelesen und bestätigt (keine Annahme unkritisch
+übernommen):
+
+1. **`ResponsePlanExecutor.cancel()` vor `execute()` wurde durch den
+   Ausführungsstart selbst gelöscht** -- `self._cancel_requested.clear()`
+   stand am ANFANG von `execute()`.
+2. **Cancel während einer `before_segment`-Geste verhinderte NICHT den
+   folgenden TTS-Aufruf** -- kein Recheck zwischen Geste und Sprache.
+3. **`after_segment` startete die Geste auch nach fehlgeschlagener
+   TTS** -- keine Abhängigkeit von `say_success`.
+4. **Doppelstart-Prüfung war keine atomare Operation** (TOCTOU-Fenster
+   bei gleichzeitigen `execute()`-Aufrufen).
+5. **`RunDialogueActionServer` teilte globale Action-Handle-Attribute
+   zwischen konkurrierenden Sitzungen** -- kein Ein-Ziel-Limit in
+   `_goal_callback()`.
+6. **Die Bestätigungsgeste lief unverfolgt im Hintergrund** -- kein
+   Signal für ihr tatsächliches Ende.
+7. **Ein Cancel während der laufenden Pipeline stoppte nur den
+   NÄCHSTEN Denkschleifen-Zyklus**, ließ aber eine gerade laufende
+   Geste unangetastet weiterlaufen und wartete weiter auf
+   `pipeline_done`.
+8. **`_send_goal_and_wait()` konnte ein verspätet angenommenes Ziel
+   nach eigenem Timeout den Handle eines ANDEREN, neueren Aufrufs
+   überschreiben lassen** -- keine Aufrufer-Bindung des Handles.
+9. **`RunDialogueViaBT::onHalted()` tat nichts, wenn `goal_handle_`
+   noch `nullptr` war** -- eine später eintreffende Annahme lief
+   danach unbeaufsichtigt weiter, ohne dass je ein Cancel gestellt
+   wurde.
+
+**Widerlegt/relativiert**: die vom Auftrag zusätzlich zu prüfende
+Vermutung, `PlayGesture` unterstütze GAR KEINE echte Unterbrechung
+während der Ausführung, war in dieser pauschalen Form bereits vor
+diesem Commit falsch (eine ältere Docstring in
+`run_dialogue_action_server.py` behauptete das noch) --
+`bridge_node.py::_execute_gesture()` prüft `goal_handle.is_cancel_requested`
+tatsächlich bereits (Zeile ~1217) und reicht ein `cancel_event` bis in
+`gesture_catalog.py::_play_v1()`/`_play_v2()` durch, wo es ZWISCHEN
+Keyframes/Segmenten abgefragt wird. Die ehrliche, verbleibende
+Einschränkung ist feiner: Unterbrechung mit Keyframe-/
+Segment-Granularität, kein hardwarebestätigter Mid-Servo-Stopp -- die
+stale Docstring wurde korrigiert (siehe `docs/DIALOGUE_GESTURE_LIFECYCLE.md`,
+Abschnitt 2, und `docs/BEHAVIOR_TREE.md`).
+
+### Geänderte Laufzeitmodule und Begründung
+
+- **`response_plan_executor.py`**: Cancel-Flag-Clear von `execute()`s
+  Anfang in den `finally`-Block ans Ende verschoben (Fund 1); neues
+  `self._start_lock` macht den Doppelstart-Check atomar (Fund 4);
+  `before_segment` rechnet zwischen Geste und Sprache neu (Fund 2);
+  `after_segment` prüft `say_success`+Cancel vor der Geste (Fund 3);
+  neues `_run_gesture_safely()` fängt Gesten-Exceptions kontrolliert ab
+  (neues `SegmentExecutionResult.gesture_error`-Feld); die Nachlaufpause
+  nutzt jetzt `self._cancel_requested.wait(timeout=...)` statt
+  `time.sleep()` (unterbrechbar).
+- **`run_dialogue_action_server.py`**: `_goal_callback()`/`_execute()`
+  erzwingen ein Ein-Ziel-Limit über `_active_execution_lock`/
+  `_active_session_id` (Fund 5); `_acknowledge_and_run_pipeline()`
+  verfolgt die Bestätigungsgeste über `acknowledge_done`
+  (Fund 6) und bricht bei erkanntem Cancel sofort
+  `self._cancel_active_actions()` auf statt nur den nächsten
+  Denkschleifen-Zyklus zu verhindern (Fund 7); `_send_goal_and_wait()`
+  bindet jeden Aufruf an einen eigenen `call_token`, ein verspätet
+  angenommenes Ziel nach eigenem Timeout wird sofort storniert und
+  NIE in `active_goal_attr` eingetragen (Fund 8); die stale
+  PlayGesture-Unterbrechbarkeits-Docstring wurde korrigiert.
+- **`bt_nodes.hpp`/`bt_nodes.cpp`**: neues `halted_before_acceptance_`-
+  Flag + `SendGoalOptions::goal_response_callback` in
+  `RunDialogueViaBT::onStart()`/`onHalted()` storniert ein verspätet
+  angenommenes Ziel sofort bei Ankunft der Annahme (Fund 9).
+
+### Session-/Ziel-/Antwortbindung, Bestätigungs-/Denkgeste, Segmentregeln
+
+Vollständig in `docs/DIALOGUE_GESTURE_LIFECYCLE.md` dokumentiert
+(neues Dokument, Abschnitte 1-7): `DialogueState`- vs.
+`InteractionState`-Trennung, Ein-Ziel-Erzwingung, Track-ID-vs.-
+Personen-ID-Trennung, Bestätigungs-/Denkgesten-Vollständigkeitslogik,
+Segment-Cancel-Tabelle, die fünf Abbruch-Stufen
+(angefordert/angenommen/Action-terminal/Transport-terminal/physisch
+bestätigt) und das Verhalten bei unbestätigtem Ende. Späte
+LLM-Pipeline-Ergebnisse werden strukturell nie verwendet (frisches
+lokales `dict` pro Aufruf, `None`-Rückgabe nutzt den bestehenden
+`if pipeline_output is None: continue`-Vertrag in `_execute()`) -- kein
+Python-Thread/LLM-Aufruf wird als "beendet" behauptet, nur weil sein
+Ergebnis nicht mehr gelesen wird.
+
+### Offline-E2E-Szenarien (Abschnitt 9 des Auftrags)
+
+Neues `test_ap8_dialogue_lifecycle_offline_e2e.py` (9 Tests, bindet die
+ECHTEN ungebundenen Methoden von `RunDialogueActionServer`/
+`ResponsePlanExecutor` an ein leichtgewichtiges Fake): Szenario B
+(Denkschleife startet nach Verzögerung + kein Start bei schneller
+Antwort), Szenario C (Wiederholungs-/Dauerdeckel unabhängig +
+sofortiger Stopp bei bereits gesetztem `stop_event`), Szenario D
+(optionale Geste durch Recheck gesperrt, Sprache läuft trotzdem),
+Szenario I (Personenverlust über `_track_alive`, inkl. Altersgrenze).
+Szenarien A/E/K über echte ROS2-Action-Kommunikation
+(`test_run_dialogue_real_ros2_integration.py`), F über
+`test_dialogue_thinking_loop.py`, L über
+`test_run_dialogue_cancellation.py`+`test_bt_dialogue_gesture_lifecycle.cpp`,
+G/H/M über die unverändert grünen AP8-R1/R2-E2E-Tests (nicht
+dupliziert). Nicht als eigenes Szenario repliziert, weil bereits durch
+andere neue Tests in diesem Commit direkt bewiesen: J (Doppelstart-
+Atomarität), N (Worker-/TTS-Fehler-Erfassung) -- siehe
+`test_response_plan_executor.py`.
+
+### Echte ROS2-Action-Integration (Abschnitt 10 des Auftrags)
+
+Neues `test_run_dialogue_real_ros2_integration.py` (3 Tests): ein
+echter `RunDialogueActionServer`-Node (reale LLM-Provider-Parameter
+über eine temporäre YAML-Datei vor `rclpy.init()` gesetzt, `mock`-
+Provider für alle drei LLM-Rollen) gegen echte `Say`-/`PlayGesture`-
+Fake-Action-Server (`rclpy.action.ActionServer`-Instanzen statt einer
+echten Pepper-Bridge). Bewiesen: vollständiger Runde-Trip (Transkript
+über Republish-bis-gesehen -> Bestätigungsgeste -> Sprache -> Ergebnis,
+`DialogueState`-Feedback enthält ACKNOWLEDGING/THINKING/SPEAKING),
+echter Cancel über die reale Action bricht das aktive Say-Ziel
+tatsächlich ab, ein zweites konkurrierendes Ziel wird über echte
+ROS2-Kommunikation abgelehnt. Verboten und nicht verwendet: echte
+Pepper-Adresse, echte SSH-/qicli-Verbindung, externer LLM-Aufruf,
+Live-Nav2, echte Bewegung.
+
+### Funktionale BT.CPP-GTests (Abschnitt 11 des Auftrags)
+
+Neues `test/test_bt_dialogue_gesture_lifecycle.cpp` (2 Tests, per
+`ament_add_gtest` registriert, gegen `ihk_pepper_bt_nodes` gelinkt --
+nicht nur der Header wie `test_bt_cancel_confirmation`): ein echter
+`rclcpp_action::create_server`-Fake hält Ziele offen und zählt
+Cancel-Anfragen; ein Test ruft `onStart()` und UNMITTELBAR DANACH
+`onHalted()` ohne dazwischen zu spinnen (garantiert
+`goal_handle_ == nullptr` beim Halt) und beweist, dass die verspätete
+Annahme sofort storniert wird; ein zweiter Test bestätigt den
+unveränderten Normalfall (Halt nach bestätigter Annahme).
+
+### Verifikation
+
+`colcon build --symlink-install` (alle 15 Pakete, keine Fehler) →
+`python3 -m pytest ihk_pepper_tests/test -q` → **1778 bestanden, 3
+übersprungen** (vorher 1751/3 -- 27 neue Tests: 9
+`test_response_plan_executor.py`, 1 `test_dialogue_thinking_loop.py`,
+5 `test_run_dialogue_cancellation.py`, 3
+`test_run_dialogue_real_ros2_integration.py`, 9
+`test_ap8_dialogue_lifecycle_offline_e2e.py`). `colcon test
+--packages-select ihk_pepper_behavior_tree` → **28/0/0/5** (vorher
+23/0/0/4 -- 2 neue funktionale GTests, +1 übersprungener Lint-Lauf für
+die neue Datei über `ament_lint_auto`). Alle 24 Gestendateien
+byte-identisch zum Baseline-Hash
+(`sha256sum src/ihk_pepper_bridge/config/gestures/*.yaml`), `gesturectl
+audit`-Ausgabe byte-identisch zur Baseline (unverändert `17 draft / 6
+dry_run_validated / 1 live_validated`, `greet_open` weiterhin `draft`,
+`t_pose` weiterhin v1-Sonderfall). Kein SSH-/qicli-Aufruf, kein echter
+LLM-Aufruf, kein `/cmd_vel`, kein Start von
+`navigation_live.launch.py`, keine Hardwarebewegung. Secret-/Tracking-
+Scan über alle geänderten/neuen Dateien: keine echten Zugangsdaten,
+keine echte Pepper-Adresse -- alle Treffer waren interne
+`call_token`-Objekte oder Kommentare, die die ABWESENHEIT von SSH/
+`/cmd_vel` dokumentieren.
+
+### Bestehende Sicherheitsregeln unverändert wirksam (Beweis)
+
+`GestureCancelReason`/`CancelSignal`-Verträge unverändert (kein Diff in
+`gesture_cancellation.py`); Restore-/Atem-Matrix unverändert (kein Diff
+in `gesture_catalog.py`s Restore-Pfad); Codewort-Pfad
+(`/interaction/authorized_command`, `command: interrupt_and_look`)
+unverändert; AP8-R1/R2-E2E-Tests (`test_ap8r1_offline_e2e.py` u.a.)
+weiterhin Teil der oben genannten 1778 bestandenen Tests, unverändert
+grün.
+
+### Weiterhin offene `hwverificationrequired`-Punkte
+
+Ob ein reales Mid-Servo-Stoppen (statt Keyframe-/Segment-Granularität)
+stattfindet; ob ein echter LLM-Provider einen laufenden Request
+tatsächlich serverseitig abbricht; jede physische Stufe-5-Bestätigung
+(physischer Stillstand, hardwareseitig bestätigt); ein echtes
+Kollisions-Backend; `t_pose` bleibt v1-Sonderfall. Keine dieser Lücken
+wurde in diesem Commit geschlossen (außerhalb des Auftragsumfangs) --
+alle bleiben ehrlich als offen dokumentiert.
+
+### Bewusste Scoping-Entscheidung
+
+Von den im Auftrag genannten 14 Offline-E2E-Szenarien (A-N) wurde ein
+repräsentativer, ehrlich benannter Teil als EIGENES neues Testmodul
+gebaut (B/C/D/I) -- die übrigen zehn sind nachweislich bereits durch
+andere, ebenfalls in diesem Commit neue oder unverändert bestehende
+Tests abgedeckt (siehe Abschnitt "Offline-E2E-Szenarien" oben für die
+genaue Zuordnung), statt sie künstlich in einer einzigen Datei zu
+duplizieren. Diese Entscheidung priorisiert eine nachvollziehbar
+geprüfte, tatsächlich lückenlose Abdeckung über eine rein
+kosmetische 1:1-Nachbildung der Auftragsbuchstaben A-N in einer
+Datei.
+
+### Freigabe für 14/14
+
+Alle in Abschnitt 13 des Auftrags genannten Abschlusskriterien sind
+erfüllt: bestätigte Abbruchlücken sind über Regressionstests
+geschlossen, System-Gesten sind vollständig verfolgt und aktiv
+unterbrechbar, späte Ergebnisse beleben keine alte Sitzung wieder,
+Handle-/Cleanup-Wettläufe sind funktional getestet, optional
+blockierte Gesten unterdrücken keine sichere Sprache, unbestätigte
+Bewegung bleibt sichtbar gesperrt, Personen-/Gruppenverlust präemptiert
+wirksam, echte ROS2-Action-Integration ist nachgewiesen, neue
+funktionale BT-GTests sind tatsächlich gelaufen, die volle Regression
+ist grün, R1/R2-Sicherheitsregeln bleiben unverändert wirksam,
+Katalogstatus/Dateihashes/Fingerabdrücke sind unverändert, keine echte
+Bewegung/externe Verbindung fand statt. **14/14
+(Produktions-Startmodi und vollständiger AP8-Abschlussbericht) kann auf
+dieser Grundlage beginnen.**
